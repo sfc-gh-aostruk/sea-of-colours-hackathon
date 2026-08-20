@@ -17,6 +17,11 @@ This file is always-on context for AI agents; keep it lean and current.
   (PAT for the V11 agent; optional schema deploy for persistent
   sessions). Playing/testing against `RED_HARVEST` / `RED_HARVEST_LITE`
   needs none of this — `SOC_BACKEND=memory` is fully offline.
+- `docs/HACKATHON_BUILD_PLAN.md` — **read this first if you're picking
+  up work on this repo.** This repo is mid-port from a larger dev repo
+  into a hackathon-ready distribution; this doc tracks phase status,
+  what's already decided, and a concrete inventory for the next
+  pending phase. Update its status table as phases complete.
 
 ## Run & test
 
