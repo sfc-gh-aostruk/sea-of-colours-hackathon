@@ -1,0 +1,426 @@
+/* Sea of Colours — landing page behaviour.
+   - Wires the Play / Multiplayer / Replay buttons.
+   - Polls /api/meta/status to drive the bottom-right health badge.
+   - Multiplayer starts a cloudflared quick tunnel, then sends the browser
+     to the public origin's /play?new=multi so invite QR codes are public.
+*/
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // Tagline auto-cycle disabled - now controlled by button hovers
+
+  // ── terminal glitch effect ────────────────────────────────────────
+  // The three title words ("sea", "of", "colours") periodically glitch
+  // into random ASCII, reconstitute, and swap RGB colors.
+  (function initGlitch() {
+    var colors = ["#ff0000", "#00ff00", "#0000ff"]; // pure R, G, B
+    var asciiChars = "!@#$%^&*()_+-=[]{}|;:,.<>?/~`";
+
+    // Assign initial random colors to each word
+    function shuffleColors() {
+      var words = document.querySelectorAll(".glitch-word");
+      if (words.length === 0) return;
+      
+      var shuffled = colors.slice();
+      for (var i = shuffled.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var temp = shuffled[i];
+        shuffled[i] = shuffled[j];
+        shuffled[j] = temp;
+      }
+      words.forEach(function (w, idx) {
+        w.style.color = shuffled[idx % shuffled.length];
+      });
+    }
+
+    // Glitch a single word: scramble -> reconstitute
+    function glitchWord(el) {
+      var original = el.dataset.word;
+      var frames = 12; // total frames for scramble + reconstitute
+      var scrambleFrames = 6;
+      var frame = 0;
+
+      var interval = setInterval(function () {
+        frame++;
+        if (frame <= scrambleFrames) {
+          // Scramble phase
+          var scrambled = "";
+          for (var i = 0; i < original.length; i++) {
+            scrambled += asciiChars[Math.floor(Math.random() * asciiChars.length)];
+          }
+          el.textContent = scrambled;
+        } else {
+          // Reconstitute phase
+          var progress = (frame - scrambleFrames) / (frames - scrambleFrames);
+          var charsRevealed = Math.floor(original.length * progress);
+          var partial = original.slice(0, charsRevealed);
+          for (var i = charsRevealed; i < original.length; i++) {
+            partial += asciiChars[Math.floor(Math.random() * asciiChars.length)];
+          }
+          el.textContent = partial;
+        }
+
+        if (frame >= frames) {
+          clearInterval(interval);
+          el.textContent = original;
+        }
+      }, 50); // 50ms per frame
+    }
+
+    // Trigger glitch sequence: pick random word, glitch it, swap all colors
+    function triggerGlitch() {
+      var words = document.querySelectorAll(".glitch-word");
+      if (words.length === 0) return;
+      
+      var target = words[Math.floor(Math.random() * words.length)];
+      glitchWord(target);
+      setTimeout(shuffleColors, 300); // swap colors mid-glitch
+    }
+
+    // Run glitch every 1.5-3 seconds (but wait for typing to complete)
+    function scheduleNext() {
+      if (!systemReady) {
+        setTimeout(scheduleNext, 500);
+        return;
+      }
+      var delay = 1500 + Math.random() * 1500;
+      setTimeout(function () {
+        triggerGlitch();
+        scheduleNext();
+      }, delay);
+    }
+    scheduleNext();
+  })();
+
+  // ── hero video autoplay kick ──────────────────────────────────────
+  // Muted autoplay is still blocked in some setups (Safari Low Power
+  // Mode, strict Chrome autoplay settings, reduced-motion). Force a
+  // play() and retry on the first user interaction so the loop starts
+  // even when the declarative ``autoplay`` attribute is ignored.
+  (function kickHeroVideo() {
+    var hero = document.getElementById("hero-bg");
+    if (!hero) return;
+    hero.muted = true;            // property form — required for autoplay
+    hero.defaultMuted = true;
+    hero.setAttribute("muted", "");
+    var attempt = function () {
+      var p = hero.play();
+      if (p && typeof p.catch === "function") p.catch(function () { /* blocked */ });
+    };
+    attempt();
+    // Retry once the page is fully ready and on the first interaction.
+    window.addEventListener("load", attempt, { once: true });
+    ["pointerdown", "keydown", "touchstart"].forEach(function (evt) {
+      document.addEventListener(evt, attempt, { once: true });
+    });
+  })();
+
+  var btnPlay = $("btn-play");
+  var btnMulti = $("btn-multiplayer");
+  var btnReplay = $("btn-replay");
+  var hintEl = $("landing-hint");
+  var badge = $("status-badge");
+  var dot = $("status-dot");
+  var label = $("status-label");
+
+  var systemReady = false; // gates glitch effects until typing completes
+
+  // ── initial typing animation ──────────────────────────────────────
+  // Types out "sea_of_colours_" character by character on page load
+  (function typeTitle() {
+    var titleContent = document.getElementById("title-content");
+    if (!titleContent) return;
+
+    var fullText = "sea_of_colours_";
+    var typed = "";
+    var charIndex = 0;
+    var initialColors = ["#ff0000", "#00ff00", "#0000ff"]; // R, G, B
+
+    titleContent.style.opacity = "1";
+    titleContent.innerHTML = '<span class="cursor-blink">_</span>'; // just cursor initially
+
+    function typeNextChar() {
+      if (charIndex < fullText.length) {
+        typed += fullText[charIndex];
+        charIndex++;
+        
+        // Rebuild with proper structure and colors as we type
+        var display = "";
+        var parts = typed.split("_");
+        
+        if (parts[0]) {
+          display += '<span class="glitch-word" data-word="sea" style="color: ' + initialColors[0] + ';">' + parts[0] + '</span>';
+        }
+        if (typed.includes("_") && parts.length > 1) {
+          display += "_";
+          if (parts[1]) {
+            display += '<span class="glitch-word" data-word="of" style="color: ' + initialColors[1] + ';">' + parts[1] + '</span>';
+          }
+        }
+        if (typed.split("_").length > 2) {
+          display += "_";
+          if (parts[2]) {
+            display += '<span class="glitch-word" data-word="colours" style="color: ' + initialColors[2] + ';">' + parts[2] + '</span>';
+          }
+        }
+        if (typed.endsWith("_") && typed.length === fullText.length) {
+          display += '<span class="cursor-blink">_</span>';
+        } else if (!typed.endsWith("_")) {
+          display += '<span class="cursor-blink">_</span>';
+        }
+        
+        titleContent.innerHTML = display;
+        setTimeout(typeNextChar, 80 + Math.random() * 60); // variable typing speed
+      } else {
+        // Typing complete - enable glitch effects
+        systemReady = true;
+      }
+    }
+
+    setTimeout(typeNextChar, 800); // pause before starting
+  })();
+
+  function setHint(text, isError) {
+    if (!hintEl) return;
+    hintEl.textContent = text || "";
+    hintEl.classList.toggle("is-error", Boolean(isError));
+  }
+
+  // ── button hover scramble + subtitle change ───────────────────────
+  // Scrambles button text on hover AND changes subtitle to description
+  (function initButtonScramble() {
+    var taglineEl = document.getElementById("tagline");
+    if (!taglineEl) return;
+
+    var defaultTagline = "an agentic game of strategy and subterfuge also playable by algorithms and humans";
+    var isTaglineScrambling = false;
+    var currentInterval = null;
+
+    var buttonDescriptions = {
+      "btn-play": "play against agents and algorithms for supremacy",
+      "btn-multiplayer": "play with other human friends as well as agents",
+      "btn-replay": "relive past games and learn new strategies"
+    };
+
+    var asciiChars = "!@#$%^&*()_+-=[]{}|;:,.<>?/~`";
+
+    function scrambleTaglineToText(targetText, isYellow) {
+      if (isTaglineScrambling) return;
+      isTaglineScrambling = true;
+      if (currentInterval) clearInterval(currentInterval);
+
+      var currentText = taglineEl.textContent;
+      var frame = 0;
+      var totalFrames = 24;
+      var scrambleStart = 6;
+      var scrambleEnd = 18;
+
+      if (isYellow) {
+        taglineEl.classList.add("is-yellow");
+      } else {
+        taglineEl.classList.remove("is-yellow");
+      }
+
+      currentInterval = setInterval(function () {
+        frame++;
+        var output = "";
+        var currentLen = Math.round(
+          currentText.length + (targetText.length - currentText.length) * (frame / totalFrames)
+        );
+
+        for (var i = 0; i < currentLen; i++) {
+          var charStart = scrambleStart + (i / currentLen) * 4;
+          var charEnd = scrambleEnd + (i / currentLen) * 4;
+
+          if (frame < charStart) {
+            output += i < currentText.length ? currentText[i] : " ";
+          } else if (frame >= charStart && frame < charEnd) {
+            output += asciiChars[Math.floor(Math.random() * asciiChars.length)];
+          } else {
+            var reconProgress = (frame - charEnd) / (totalFrames - charEnd);
+            if (i < targetText.length && reconProgress > Math.random() * 0.2) {
+              output += targetText[i];
+            } else if (i < targetText.length) {
+              output += asciiChars[Math.floor(Math.random() * asciiChars.length)];
+            }
+          }
+        }
+
+        taglineEl.textContent = output;
+
+        if (frame >= totalFrames) {
+          clearInterval(currentInterval);
+          currentInterval = null;
+          taglineEl.textContent = targetText;
+          isTaglineScrambling = false;
+        }
+      }, 35);
+    }
+
+    // Button text scramble
+    var buttons = [btnPlay, btnMulti, btnReplay];
+    buttons.forEach(function (btn) {
+      if (!btn) return;
+      var textEl = btn.querySelector(".landing-btn-text");
+      if (!textEl) return;
+
+      var originalText = textEl.textContent;
+      var isScrambling = false;
+
+      btn.addEventListener("mouseenter", function () {
+        // Scramble button text
+        if (!isScrambling) {
+          isScrambling = true;
+          var frame = 0;
+          var totalFrames = 8;
+          var scrambleFrames = 4;
+
+          var interval = setInterval(function () {
+            frame++;
+            if (frame <= scrambleFrames) {
+              var scrambled = "";
+              for (var i = 0; i < originalText.length; i++) {
+                scrambled += asciiChars[Math.floor(Math.random() * asciiChars.length)];
+              }
+              textEl.textContent = scrambled;
+            } else {
+              var progress = (frame - scrambleFrames) / (totalFrames - scrambleFrames);
+              var charsRevealed = Math.floor(originalText.length * progress);
+              var partial = originalText.slice(0, charsRevealed);
+              for (var i = charsRevealed; i < originalText.length; i++) {
+                partial += asciiChars[Math.floor(Math.random() * asciiChars.length)];
+              }
+              textEl.textContent = partial;
+            }
+
+            if (frame >= totalFrames) {
+              clearInterval(interval);
+              textEl.textContent = originalText;
+              isScrambling = false;
+            }
+          }, 40);
+        }
+
+        // Scramble subtitle to description
+        var description = buttonDescriptions[btn.id];
+        if (description) {
+          scrambleTaglineToText(description, true);
+        }
+      });
+
+      btn.addEventListener("mouseleave", function () {
+        // Scramble back to default tagline
+        scrambleTaglineToText(defaultTagline, false);
+      });
+    });
+  })();
+
+  // ── navigation ────────────────────────────────────────────────────
+  if (btnPlay) {
+    btnPlay.addEventListener("click", function () {
+      window.location.href = "/play";
+    });
+  }
+  if (btnReplay) {
+    btnReplay.addEventListener("click", function () {
+      window.location.href = "/watch.html?watch=1";
+    });
+  }
+  if (btnMulti) {
+    btnMulti.addEventListener("click", function () { startMultiplayer(); });
+  }
+
+  // Internet multiplayer over a cloudflared quick tunnel. We start the
+  // tunnel and, as soon as cloudflared has published a public URL, send the
+  // browser to that origin's /play?new=multi so every invite link/QR is
+  // reachable from anywhere. We deliberately do NOT wait on the server-side
+  // readiness probe: that probe resolves the trycloudflare hostname through
+  // the OS resolver, which a corporate VPN/security agent can block even
+  // though the browser (using its own DoH / encrypted DNS) reaches the
+  // tunnel fine. Gating on it produced false "url not reachable" failures.
+  async function startMultiplayer() {
+    if (!btnMulti) return;
+    btnMulti.disabled = true;
+    setHint("starting public tunnel\u2026");
+    var data = null;
+    try {
+      var res = await fetch("/api/tunnel/start", { method: "POST", cache: "no-store" });
+      data = await res.json();
+    } catch (e) {
+      data = { ok: false, error: "could not reach the server" };
+    }
+
+    if (data && data.error) {
+      // No cloudflared / launch failed — fall back to same-Wi-Fi LAN play.
+      setHint(data.error + " \u2014 starting a local game instead\u2026", true);
+      setTimeout(function () { window.location.href = "/play?new=multi"; }, 1600);
+      return;
+    }
+
+    var url = data && data.url;
+    if (!url) {
+      // cloudflared is still publishing — poll a few times for the URL.
+      url = await pollForTunnelUrl(20);
+    }
+
+    if (url) {
+      var dest = url.replace(/\/+$/, "") + "/play?new=multi";
+      // Brief grace for DNS/edge propagation before the browser navigates;
+      // the tunnel is up once the URL exists, this just smooths first load.
+      setHint("tunnel live \u2014 opening " + url + " \u2026");
+      setTimeout(function () { window.location.href = dest; }, 2500);
+    } else {
+      setHint("tunnel is taking a while \u2014 starting a local game instead\u2026", true);
+      setTimeout(function () { window.location.href = "/play?new=multi"; }, 1200);
+    }
+  }
+
+  async function pollForTunnelUrl(tries) {
+    for (var i = 0; i < tries; i++) {
+      await new Promise(function (r) { setTimeout(r, 750); });
+      try {
+        var res = await fetch("/api/tunnel/status", { cache: "no-store" });
+        var s = await res.json();
+        if (s && s.url) return s.url;
+        if (s && s.running === false && s.installed === false) return null;
+      } catch (e) { /* keep trying */ }
+    }
+    return null;
+  }
+
+  // ── status badge ──────────────────────────────────────────────────
+  function applyStatus(s) {
+    if (!badge || !dot || !label) return;
+    var stores = (s && s.stores) || {};
+    var state = "off";
+    var text = "off";
+    if (stores.snowflake === "ok") {
+      state = "snowflake"; text = "snowflake";
+    } else if (stores.local === "ok") {
+      // Snowflake down / not yet contacted, but local persistence is live.
+      state = "local"; text = "local";
+    } else if (s && s.backend) {
+      state = s.backend === "snowflake" ? "snowflake" : "local";
+      text = state;
+    }
+    badge.dataset.state = state;
+    var tunnelOn = s && s.tunnel && s.tunnel.running;
+    label.innerHTML = text + (tunnelOn
+      ? ' <span class="status-tunnel">&middot; public</span>'
+      : "");
+  }
+
+  async function pollStatus() {
+    try {
+      var res = await fetch("/api/meta/status", { cache: "no-store" });
+      applyStatus(await res.json());
+    } catch (e) {
+      if (badge) badge.dataset.state = "off";
+      if (label) label.textContent = "off";
+    }
+  }
+  pollStatus();
+  setInterval(pollStatus, 8000);
+})();

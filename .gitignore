@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local agent/tooling settings
+.claude/
+
+# Secrets / local config (never commit)
+*.env
+.env*
+connections.toml
+secrets.toml
+*.pem
+*.key
+
+# Local file-backed store output (SOC_BACKEND=file) + sweep artifacts.
+# Generated CSVs are regenerable; the summary .md reports are docs (kept).
+/seasons/
+/seasons_battery/
+/seasons_battery.bak_*/
+/_watch_seasons/
+/_perf_seasons/
+/_tmp_seasons_dbg/
+/reports/*.csv
+/reports/*.log
+/reports/baseline_*.md

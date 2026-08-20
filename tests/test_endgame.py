@@ -1,0 +1,248 @@
+"""v1.0 end-of-season state: final settlement orbit, vault-RED-at-loss
+scoring, Latin player names, per-seat season tallies, and the
+``get_endgame_summary`` payload (direct + HTTP)."""
+
+from __future__ import annotations
+
+import os
+
+os.environ.setdefault("SOC_BACKEND", "memory")
+
+import pytest
+from fastapi.testclient import TestClient
+
+from sea_of_colours.generator import Tile
+from sea_of_colours.game.orbit_resolver import OrbitResolver
+from sea_of_colours.game.player_names import (
+    SEAT_LABEL,
+    generate_player_name,
+    generate_player_names,
+)
+from sea_of_colours.game.session import GameSession, Phase
+from sea_of_colours.snowpark import backend as soc_backend
+from sea_of_colours.snowpark import engine as soc_engine
+from sea_of_colours.snowpark.store import InMemorySocStore
+
+
+# ── Latin player names ───────────────────────────────────────────────
+def test_player_name_is_deterministic() -> None:
+    assert generate_player_name(4444, "p1") == generate_player_name(4444, "p1")
+    # Format is "<Colour> <Animal>".
+    name = generate_player_name(4444, "p2")
+    parts = name.split(" ")
+    assert len(parts) == 2 and parts[0][0].isupper() and parts[1][0].isupper()
+
+
+def test_generate_player_names_only_names_bots_and_is_unique() -> None:
+    seats = ("p1", "p2", "p3", "p4")
+    agents = {"p1": "human", "p2": "red_harvest", "p3": "red_harvest", "p4": "red_harvest"}
+    names = generate_player_names(4444, seats, agents)
+    # Human seat omitted; the three bots are present and distinct.
+    assert "p1" not in names
+    assert set(names) == {"p2", "p3", "p4"}
+    assert len(set(names.values())) == 3
+
+
+def test_new_session_assigns_bot_names() -> None:
+    sess = GameSession.new(
+        20, 14, seed=4444,
+        players=["p1", "p2"],
+        agents={"p1": "human", "p2": "red_harvest"},
+    )
+    assert "p1" not in sess.player_names
+    assert sess.player_names.get("p2")
+    # Humans fall back to a seat-colour label.
+    assert SEAT_LABEL["p1"] == "WHITE"
+
+
+# ── Final settlement orbit ───────────────────────────────────────────
+def test_final_orbit_drops_build_actions_but_still_locks() -> None:
+    """Blocked actions are silently dropped (mirroring the greyed-out
+    buttons) so a bot/agent seat still locks and the orbit can resolve,
+    rather than deadlocking on a rejected submission."""
+    sess = GameSession.new(20, 14, seed=11)
+    sess.phase = Phase.ORBIT
+    sess.final_orbit = True
+
+    # A pure build submission still locks — but with zero actions kept.
+    ok, _ = sess.stash_orbit_actions("p1", [{"a": "build_harvester"}])
+    assert ok
+    assert sess.pending_orbit_actions["p1"] == []
+
+    # A mixed submission keeps only the allowed (refine) action.
+    ok, _ = sess.stash_orbit_actions(
+        "p1", [{"a": "build_probe"}, {"a": "refine", "source_tier": "trace"}],
+    )
+    assert ok
+    kept = sess.pending_orbit_actions["p1"]
+    assert len(kept) == 1 and kept[0].tag == "refine"
+
+    # Refine + empty are allowed outright.
+    ok, _ = sess.stash_orbit_actions("p2", [])
+    assert ok
+
+
+def test_final_orbit_resolves_to_season_complete() -> None:
+    sess = GameSession.new(20, 14, seed=12)
+    sess.phase = Phase.ORBIT
+    sess.final_orbit = True
+    OrbitResolver().run(sess, {p: [] for p in sess.players})
+    assert sess.phase == Phase.SEASON_COMPLETE
+    assert sess.is_season_complete()
+
+
+def test_full_season_runs_final_orbit_then_completes() -> None:
+    """Through the (conftest-patched) night auto-skip, a capped season
+    still flips ``final_orbit`` on and lands in SEASON_COMPLETE."""
+    sess = GameSession.new(20, 14, seed=13, season_day_cap=3)
+    for _ in range(3):
+        assert sess.phase == Phase.PLANNING
+        sess.stash_policy("p1", [])
+        sess.stash_policy("p2", [])
+        sess.maybe_resolve_if_ready()
+    assert sess.final_orbit is True
+    assert sess.is_season_complete()
+
+
+# ── Vault-RED sold at a loss ─────────────────────────────────────────
+def test_vault_red_loss_value_and_score() -> None:
+    sess = GameSession.new(20, 14, seed=14)
+    sess.hoard_squares["p1"] = [
+        {"tile_at_harvest": int(Tile.RED), "purity_at_harvest": 200},
+        {"tile_at_harvest": int(Tile.RED), "purity_at_harvest": 100},
+    ]
+    # 50% of raw purity, no tier multiplier: (200 + 100) * 0.5 = 150.
+    assert sess.vault_red_loss_value("p1") == pytest.approx(150.0)
+
+    # Not realised mid-season.
+    sess.phase = Phase.PLANNING
+    assert sess.score_for("p1") == 0
+    # Realised once the season is complete.
+    sess.phase = Phase.SEASON_COMPLETE
+    assert sess.score_for("p1") == 150
+
+
+# ── Season stats tallies ─────────────────────────────────────────────
+def test_season_stats_track_awards_builds_and_blue() -> None:
+    sess = GameSession.new(20, 14, seed=15)
+    stats = sess.season_stats["p1"]
+    # v1.1 — no birth stipend: income starts at the first Orbit entry,
+    # so a freshly minted session has awarded nothing yet.
+    assert stats["credits_awarded"] == 0
+
+    sess.credits["p1"] = 2000  # enough for a 1500c harvester
+    ok, _ = sess.apply_build_harvester("p1")
+    assert ok
+    assert sess.season_stats["p1"]["harvesters_built"] == 1
+
+    before = sess.season_stats["p1"]["blue_spent"]
+    ok, _, _ = sess.debit_blue_purity("p1", 100)
+    assert ok
+    assert sess.season_stats["p1"]["blue_spent"] == before + 100
+
+
+def test_season_stats_round_trip() -> None:
+    sess = GameSession.new(20, 14, seed=16)
+    sess.credits["p1"] += 2000
+    sess.apply_build_harvester("p1")
+    revived = GameSession.from_dict(sess.to_dict())
+    assert revived.season_stats["p1"]["harvesters_built"] == 1
+    assert revived.player_names == sess.player_names
+    # final_orbit flag round-trips too.
+    sess.final_orbit = True
+    assert GameSession.from_dict(sess.to_dict()).final_orbit is True
+
+
+# ── get_endgame_summary (direct, completed season) ───────────────────
+def _persist(store: InMemorySocStore, sess: GameSession) -> None:
+    store.save_session({
+        "session_id": sess.session_id,
+        "season_name": sess.season_name,
+        "width": sess.width,
+        "height": sess.height,
+        "seed": sess.seed,
+        "day": sess.day,
+        "phase": sess.phase.value,
+        "json_state": sess.to_dict(),
+    })
+
+
+def test_endgame_summary_shape_for_completed_season() -> None:
+    sess = GameSession.new(
+        20, 14, seed=17,
+        players=["p1", "p2"],
+        agents={"p1": "red_harvest", "p2": "red_harvest"},
+        season_day_cap=3,
+    )
+    # Harvest history feeds the per-day RED series + colour totals.
+    sess.harvest_log["p1"] = [
+        {"tile_at_harvest": int(Tile.RED), "harvested_on_planning_day": 1},
+        {"tile_at_harvest": int(Tile.RED), "harvested_on_planning_day": 2},
+        {"tile_at_harvest": int(Tile.GREEN), "harvested_on_planning_day": 2},
+    ]
+    sess.harvest_log["p2"] = [
+        {"tile_at_harvest": int(Tile.RED), "harvested_on_planning_day": 1},
+    ]
+    # p1 shipped a pure parcel; p2 is left holding a green liability.
+    sess.shipped_squares["p1"] = [{
+        "tile_at_harvest": int(Tile.RED), "purity_at_harvest": 255,
+        "effective_purity": 250, "score_tier": "pure", "score": 750,
+        "shipped_on_day": 2,
+    }]
+    sess.cumulative_shipped_score["p1"] = 750.0
+    sess.hoard_squares["p2"] = [
+        {"tile_at_harvest": int(Tile.GREEN), "purity_at_harvest": 255},
+    ]
+    sess.phase = Phase.SEASON_COMPLETE
+    sess.final_orbit = True
+
+    store = InMemorySocStore()
+    _persist(store, sess)
+    summary = soc_engine.get_endgame_summary(store, sess.session_id)
+
+    assert summary["is_season_complete"] is True
+    assert summary["days"] == [1, 2, 3]
+    players = summary["players"]
+    assert len(players) == 2
+    # Ranked: p1 (shipped 750) ahead of p2 (green-penalised).
+    assert players[0]["seat"] == "p1"
+    assert players[0]["rank"] == 1 and players[1]["rank"] == 2
+    assert all(p["is_human"] is False for p in players)
+    assert all(p["name"] for p in players)
+
+    # Per-day cumulative RED series is the right length + monotonic.
+    p1_series = summary["red_by_day"]["p1"]
+    assert len(p1_series) == 3
+    assert p1_series == sorted(p1_series)
+    assert p1_series[-1] == 2  # two red parcels total for p1
+
+    # Manifest carries the shipped parcel.
+    assert any(r["value"] == 750 and r["owner"] == "p1" for r in summary["manifest"])
+
+    # p2's green is a standing -100 liability.
+    p2 = next(p for p in players if p["seat"] == "p2")
+    assert p2["green_held"] == 1
+    assert p2["breakdown"]["green_penalty"] == 100
+
+
+# ── HTTP route ───────────────────────────────────────────────────────
+@pytest.fixture()
+def client():
+    soc_backend.reset_for_tests()
+    from server.app import app
+    return TestClient(app)
+
+
+def test_summary_route_returns_shape(client) -> None:
+    sid = client.post(
+        "/api/game/new", params={"seed": 21, "width": 12, "height": 8},
+    ).json()["session_id"]
+    body = client.get(f"/api/game/{sid}/summary").json()
+    assert "players" in body and "red_by_day" in body
+    assert "manifest" in body and "days" in body
+    for p in body["players"]:
+        assert "rank" in p and "score" in p and "name" in p
+
+
+def test_summary_route_404_for_unknown(client) -> None:
+    assert client.get("/api/game/nope/summary").status_code == 404

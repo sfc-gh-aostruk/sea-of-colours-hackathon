@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chaff FX demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #020208; color: #888; font: 12px/1.4 "Courier New", monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 16px; }
+
+  #scene {
+    position: relative;
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 0;
+    border: 1px solid #111122;
+  }
+
+  /* ── station panel ── */
+  #station {
+    width: 96px;
+    background: #040410;
+    border-right: 1px solid #0e0e1c;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 6px;
+    gap: 8px;
+  }
+  .diamond-wrap { position: relative; width: fit-content; overflow: visible; }
+  .diamond-pre {
+    margin: 0; padding: 0;
+    font-size: 14px; line-height: 0.6;
+    white-space: pre; letter-spacing: 0;
+    display: block; overflow: visible;
+    color: #4488ff;
+  }
+  .diamond-tag {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font: bold 10px/1 "Courier New", monospace;
+    color: #000; letter-spacing: 0.1em;
+    pointer-events: none; white-space: nowrap;
+  }
+  .station-label { font: 7px/1 "Courier New", monospace; color: #2a2a4a; text-transform: uppercase; letter-spacing: 0.14em; }
+
+  /* ── map area ── */
+  #map-player {
+    width: 420px;
+    height: 280px;
+    background: #030310;
+    display: grid;
+    grid-template-columns: repeat(30, 1fr);
+    grid-template-rows: repeat(20, 1fr);
+    overflow: hidden;
+  }
+  .map-cell {
+    border: 1px solid #0a0a18;
+    font-size: 6px; color: #111130;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  /* ── fx layer over scene ── */
+  #fx-layer {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  /* ── controls ── */
+  #controls { display: flex; gap: 10px; align-items: center; }
+  button {
+    font: 10px/1 "Courier New", monospace;
+    background: #080818; border: 1px solid #222244; color: #6666cc;
+    padding: 6px 14px; cursor: pointer; letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  button:hover { border-color: #4444aa; color: #aaaaff; }
+  #hint { font: 9px/1 "Courier New", monospace; color: #333; letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+
+<div id="scene">
+  <!-- station side -->
+  <div id="station">
+    <div class="diamond-wrap" id="diamond-wrap">
+      <pre class="diamond-pre" id="diamond-pre"></pre>
+      <div class="diamond-tag">P1</div>
+    </div>
+    <div class="station-label">station</div>
+  </div>
+
+  <!-- map -->
+  <div id="map-player" id="map-player">
+    <!-- cells filled by JS -->
+  </div>
+
+  <!-- fx overlay (same as collisionFxLayer in game) -->
+  <div id="fx-layer"></div>
+</div>
+
+<div id="controls">
+  <button id="btn-single">fire chaff (1 turn)</button>
+  <button id="btn-multi">fire chaff (3 turns)</button>
+  <div id="hint">station arc + map ascii noise</div>
+</div>
+
+<canvas id="anim-canvas" style="position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9500"></canvas>
+
+<script>
+// ── map cell fill ──────────────────────────────────────────────────────────
+const mapEl = document.getElementById("map-player");
+for (let i = 0; i < 600; i++) {
+  const c = document.createElement("div");
+  c.className = "map-cell";
+  if (Math.random() < 0.08) c.textContent = Math.random() < 0.5 ? "░" : "·";
+  mapEl.appendChild(c);
+}
+
+// ── diamond ────────────────────────────────────────────────────────────────
+(function buildDiamond() {
+  const HALF = 5, SIZE = 9, COLOR = "#4488ff";
+  let rows = [];
+  for (let r = 0; r < SIZE; r++) {
+    const dist = Math.abs(r - HALF);
+    const start = dist, end = SIZE - 1 - dist;
+    let row = "";
+    for (let c = 0; c < SIZE; c++) {
+      row += (c >= start && c <= end) ? "█" : " ";
+    }
+    rows.push(row);
+  }
+  const pre = document.getElementById("diamond-pre");
+  pre.textContent = rows.join("\n");
+  pre.style.color = COLOR;
+})();
+
+// ── animation canvas ───────────────────────────────────────────────────────
+const cvs  = document.getElementById("anim-canvas");
+cvs.width  = window.innerWidth;
+cvs.height = window.innerHeight;
+const ctx  = cvs.getContext("2d");
+window.addEventListener("resize", () => { cvs.width = window.innerWidth; cvs.height = window.innerHeight; });
+
+const _anims = [];
+let _raf = null;
+
+function ease(raw, kind) {
+  if (kind === "in")    return raw * raw;
+  if (kind === "out")   return 1 - (1 - raw) * (1 - raw);
+  if (kind === "inout") return raw * raw * (3 - 2 * raw);
+  return raw;
+}
+
+function animLoop(now) {
+  ctx.clearRect(0, 0, cvs.width, cvs.height);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const alive = [];
+  for (const a of _anims) {
+    const elapsed = now - a.start;
+    if (elapsed < 0) { alive.push(a); continue; }
+    const raw = Math.min(elapsed / a.dur, 1);
+    const t   = ease(raw, a.ease);
+    const x   = a.x0 + (a.x1 - a.x0) * t;
+    const y   = a.y0 + (a.y1 - a.y0) * t;
+    const dx  = a.x1 - a.x0, dy = a.y1 - a.y0;
+    const len = Math.sqrt(dx*dx + dy*dy) || 1;
+    const ux  = -dx/len, uy = -dy/len;
+
+    const ts = Math.max(4, a.size * 0.65);
+    ctx.font = `${ts}px "Courier New",monospace`;
+    for (let d = 1; d <= 3; d++) {
+      ctx.globalAlpha = Math.max(0, 0.25 - d*0.07);
+      ctx.fillStyle   = a.color;
+      ctx.fillText("·", x + ux*d*8, y + uy*d*8);
+    }
+    ctx.font        = `${a.size}px "Courier New",monospace`;
+    ctx.globalAlpha = raw > 0.95 ? 1 - (raw - 0.95) * 20 : 1;
+    ctx.fillStyle   = a.color;
+    ctx.fillText(a.glyph, x, y);
+    ctx.globalAlpha = 1;
+
+    if (raw < 1) alive.push(a);
+  }
+
+  _anims.length = 0;
+  _anims.push(...alive);
+  _raf = alive.length ? requestAnimationFrame(animLoop) : null;
+}
+
+function queueAnim(x0, y0, x1, y1, glyph, color, opts) {
+  _anims.push({ glyph, color, x0, y0, x1, y1,
+    dur:   opts?.dur   ?? 800,
+    ease:  opts?.ease  ?? "out",
+    size:  opts?.size  ?? 6,
+    start: performance.now() + (opts?.delay ?? 0),
+  });
+  if (!_raf) _raf = requestAnimationFrame(animLoop);
+}
+
+// ── station burst ──────────────────────────────────────────────────────────
+function fireStationBurst() {
+  const wrap = document.getElementById("diamond-wrap");
+  const mapR = mapEl.getBoundingClientRect();
+  const wrR  = wrap.getBoundingClientRect();
+
+  const BURST = [
+    { ch: "░", yOff: -80, delay:   0, dur: 750, col: "#cccccc" },
+    { ch: "▒", yOff: -50, delay:  25, dur: 900, col: "#999999" },
+    { ch: "▓", yOff: -20, delay:  50, dur: 820, col: "#dddddd" },
+    { ch: "░", yOff:  10, delay:  15, dur: 700, col: "#aaaaaa" },
+    { ch: "▒", yOff:  35, delay:  60, dur: 860, col: "#bbbbbb" },
+    { ch: "░", yOff:  60, delay:  35, dur: 780, col: "#888888" },
+    { ch: "▓", yOff: -65, delay:  70, dur: 680, col: "#eeeeee" },
+    { ch: "▒", yOff:  82, delay:  45, dur: 930, col: "#aaaaaa" },
+  ];
+
+  const x0 = wrR.right;
+  const cy = wrR.top + wrR.height * 0.5;
+  const mapDepth = mapR.width * 0.35;
+  const x1 = mapR.left + mapDepth;
+
+  for (const p of BURST) {
+    queueAnim(x0, cy, x1, cy + p.yOff, p.ch, p.col, { dur: p.dur, ease: "out", size: 5, delay: p.delay });
+  }
+}
+
+// ── map ascii noise overlay ────────────────────────────────────────────────
+function renderChaffMap() {
+  const fxLayer  = document.getElementById("fx-layer");
+  const mapRect  = mapEl.getBoundingClientRect();
+  const hostRect = fxLayer.getBoundingClientRect();
+  const W = mapRect.width, H = mapRect.height;
+  if (W < 1 || H < 1) return;
+
+  const nc = document.createElement("canvas");
+  nc.width  = Math.ceil(W);
+  nc.height = Math.ceil(H);
+  nc.style.cssText =
+    `position:absolute;` +
+    `left:${mapRect.left - hostRect.left}px;` +
+    `top:${mapRect.top  - hostRect.top}px;` +
+    `pointer-events:none;mix-blend-mode:screen;`;
+  fxLayer.appendChild(nc);
+
+  const nc2  = nc.getContext("2d");
+  const CHARS = "░▒▓░▒▓·×░▒░▓·▒░";
+  const CELL  = 14;
+  const cols  = Math.ceil(W / CELL);
+  const rows  = Math.ceil(H / CELL);
+  const DUR   = 680;
+  const t0    = performance.now();
+
+  nc2.font         = `${CELL}px "Courier New",monospace`;
+  nc2.textBaseline = "top";
+
+  (function tick(now) {
+    const elapsed = now - t0;
+    if (elapsed > DUR) { nc.remove(); return; }
+    const t     = elapsed / DUR;
+    const alpha = t < 0.12 ? t / 0.12 : 1 - (t - 0.12) / 0.88;
+    nc2.clearRect(0, 0, W, H);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const ch  = CHARS[Math.floor(Math.random() * CHARS.length)];
+        const brt = 0.15 + Math.random() * 0.55;
+        nc2.fillStyle = `rgba(255,255,255,${(alpha * brt).toFixed(3)})`;
+        nc2.fillText(ch, c * CELL, r * CELL);
+      }
+    }
+    requestAnimationFrame(tick);
+  })(performance.now());
+}
+
+// ── fire ───────────────────────────────────────────────────────────────────
+function fire(turns) {
+  for (let k = 0; k < turns; k++) {
+    setTimeout(() => {
+      fireStationBurst();
+      renderChaffMap();
+    }, k * 620);
+  }
+}
+
+document.getElementById("btn-single").addEventListener("click", () => fire(1));
+document.getElementById("btn-multi").addEventListener("click", () => fire(3));
+</script>
+</body>
+</html>

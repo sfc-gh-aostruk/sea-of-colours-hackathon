@@ -1,0 +1,1836 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sea_of_colours · command centre</title>
+    <!-- v0.7.4 — VT323 is the classic 8-bit DOS-terminal bitmap face
+         used only by the PRAXIS timeline so the feed reads like a
+         live tty stream. preconnect keeps the first paint snappy. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=VT323&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <!-- Optional inline orbital "space station" panels. Inert unless the
+         station UI is enabled (?station=1); see station.js / station.css. -->
+    <link rel="stylesheet" href="/static/station.css" />
+  </head>
+  <body>
+    <div id="crt-viewport" class="crt-viewport cc-shell">
+      <header class="cc-header">
+        <div class="cc-header-left">
+          <span class="prompt-sigil">$</span>
+          <span class="prompt-cmd">sea_of_colours</span>
+          <span class="dim cc-subhead">· command centre</span>
+          <span class="prompt-caret">_</span>
+        </div>
+        <div class="cc-header-mid">
+          <button id="new-game-btn" type="button" class="cli-btn cli-btn-primary">
+            [ &gt; NEW GAME ]
+          </button>
+          <label class="dim cc-newgame-cap-label" for="new-game-cap"
+                 title="Season length in nights (1-60). v0.9.18 default: 7.">
+            NIGHTS
+          </label>
+          <input
+            id="new-game-cap"
+            type="number"
+            min="1"
+            max="60"
+            step="1"
+            value="7"
+            class="cc-newgame-cap-input"
+            aria-label="Season length in nights"
+          />
+          <!-- v0.9.6 — N-seat launcher modal lives at body level
+               (just before </body>) so its `position: fixed` overlay
+               resolves against the document viewport, not against
+               #crt-viewport (which has a CSS `filter` that
+               otherwise becomes the containing block for fixed
+               descendants and squashes the modal into the header). -->
+          <!-- Watcher mode (Phase C): season picker — populated from
+               /api/sessions. Visible only when ?session= / ?season= /
+               ?watch=1 boots the page into watcher mode. -->
+          <div id="watch-picker-wrap" class="cc-watch-picker" hidden>
+            <label class="dim cc-watch-picker-label" for="watch-season-picker">
+              SEASON
+            </label>
+            <select id="watch-season-picker" class="cc-watch-picker-select"
+                    aria-label="Choose a persisted season to watch">
+              <option value="">// loading…</option>
+            </select>
+            <button id="watch-delete-btn" type="button"
+                    class="cc-watch-delete" title="Delete this replay"
+                    aria-label="Delete the selected replay" hidden>&#x1F5D1;</button>
+            <span id="watch-picker-meta" class="dim cc-watch-picker-meta"></span>
+          </div>
+          <span id="phase-line" class="dim cc-status"># idle — start a session</span>
+        </div>
+        <div class="cc-header-right">
+          <label class="cli-check dim" for="toggle-gridlines">
+            <input
+              type="checkbox"
+              id="toggle-gridlines"
+              class="cli-check-input"
+              checked
+            />
+            <span class="cli-check-box" aria-hidden="true">[x]</span>
+            <span class="cli-check-caption dim">grid</span>
+          </label>
+        </div>
+      </header>
+
+      <main class="cc-main">
+        <!-- Optional station UI wrapper. When the station UI is off the side
+             columns are display:none and .os-map-row is a transparent
+             single-child flex passthrough, so layout matches production. -->
+        <div class="os-map-row">
+        <div class="os-side os-side--left" id="os-side-left"></div>
+        <section class="cc-map-area" aria-label="Player percept">
+          <div class="cc-map-frame">
+            <div class="cc-map-frame-head">
+              <span class="cc-frame-title">YOUR MAP</span>
+              <span class="dim cc-map-sub" id="solo-map-heading">fog · trails</span>
+              <div class="cc-map-zoom" role="group" aria-label="Map zoom">
+                <button
+                  type="button"
+                  class="cc-map-zoom-btn"
+                  id="cc-map-zoom-out"
+                  title="Zoom out (Ctrl/Cmd + -)"
+                  aria-label="Zoom out"
+                >−</button>
+                <span class="cc-map-zoom-label">ZOOM</span>
+                <input
+                  type="range"
+                  id="cc-map-zoom-slider"
+                  class="cc-map-zoom-slider"
+                  min="10"
+                  max="28"
+                  step="1"
+                  value="14"
+                  aria-label="Map zoom level"
+                  title="Drag to resize the map (Ctrl/Cmd + scroll over map)"
+                />
+                <button
+                  type="button"
+                  class="cc-map-zoom-btn"
+                  id="cc-map-zoom-in"
+                  title="Zoom in (Ctrl/Cmd + +)"
+                  aria-label="Zoom in"
+                >+</button>
+                <span class="cc-map-zoom-readout" id="cc-map-zoom-readout">100%</span>
+              </div>
+            </div>
+            <div class="cc-map-viewport">
+              <div id="pick-mode-banner" class="pick-mode-banner" hidden>
+                <span>// <strong id="pick-mode-label"></strong></span>
+                <button type="button" id="pick-mode-cancel" class="cli-btn pick-mode-cancel-btn">[ stop ]</button>
+              </div>
+              <div id="map-player" class="map-host map-host--main">
+                <span class="dim"># start NEW GAME</span>
+              </div>
+              <!-- title card: sibling of map-player, sized dynamically by JS -->
+              <div
+                id="cc-map-titlecard"
+                class="cc-map-titlecard"
+                aria-hidden="true"
+                hidden
+              ></div>
+              <!-- v1.1 — daylight wash. A single cheap yellow film over
+                   the whole play area that marks DAY (orbit phase). The
+                   dawn/dusk sweep wipes it in/out left→right via clip-path
+                   (one element — no per-cell overlays). -->
+              <div id="cc-daylight-wash" class="cc-daylight-wash" aria-hidden="true"></div>
+              <div id="collision-fx-layer" class="collision-fx-layer" aria-hidden="true"></div>
+              <!-- v1.1 — submission framing. While a transmitted turn
+                   resolves on the server we dim the map + composer and
+                   foreground "what the server is doing": a calm banner,
+                   the live progress timeline, and a recap of the policy
+                   the player just locked in. VAULT / INTEL tabs stay
+                   interactive underneath. Cleared when the dawn cinematic
+                   takes over the map. -->
+              <div
+                id="cc-resolving-overlay"
+                class="cc-resolving-overlay"
+                aria-live="polite"
+                hidden
+              >
+                <div class="cc-resolving-card">
+                  <div class="cc-resolving-banner">
+                    <span class="cc-resolving-pip" aria-hidden="true">◆</span>
+                    <span class="cc-resolving-title">LOCKED IN</span>
+                    <span class="cc-resolving-sub">resolving praxis…</span>
+                  </div>
+                  <ol
+                    id="cc-resolving-progress"
+                    class="cc-resolving-progress"
+                    role="status"
+                    aria-live="polite"
+                  ></ol>
+                  <div
+                    id="cc-resolving-recap"
+                    class="cc-resolving-recap"
+                    aria-label="Submitted policy recap"
+                  ></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <div class="os-side os-side--right" id="os-side-right"></div>
+        </div><!-- end .os-map-row -->
+
+        <!-- v0.7.5 universal replay strip — pinned below the map,
+             always visible regardless of which side panel is active.
+             LIVE button pulses while a live game is accepting policies.
+             The single-line "now-playing" row underneath always shows
+             D{n} H{nn} + the most recent action (live caption or
+             scrub-cursor frame caption). -->
+        <section
+          id="replay-strip"
+          class="cc-replay-strip"
+          aria-label="Universal replay controls"
+        >
+          <section
+            id="replay-bar"
+            class="cc-replay-bar dim"
+            aria-label="Replay — full season history"
+          >
+            <div class="cc-replay-toolbar">
+              <button type="button" id="replay-live" class="cli-btn">
+                [ LIVE ]
+              </button>
+              <button
+                type="button"
+                id="replay-day-prev"
+                class="cli-btn"
+                title="Jump to previous Nox"
+              >
+                [&laquo;&nbsp;DAY]
+              </button>
+              <button type="button" id="replay-prev" class="cli-btn">[&lt;-]</button>
+              <button type="button" id="replay-play" class="cli-btn">[ play ]</button>
+              <button type="button" id="replay-next" class="cli-btn">[-&gt;]</button>
+              <button
+                type="button"
+                id="replay-day-next"
+                class="cli-btn"
+                title="Jump to next Nox"
+              >
+                [DAY&nbsp;&raquo;]
+              </button>
+              <span id="replay-day-badge" class="replay-day-badge"></span>
+              <span id="replay-slot" class="replay-slot dim"></span>
+            </div>
+            <div class="cc-replay-scrub-wrap">
+              <input
+                type="range"
+                id="replay-scrub"
+                class="replay-scrub-slider"
+                min="0"
+                max="0"
+                value="0"
+                step="1"
+                disabled
+                aria-label="Replay timeline"
+              />
+              <div
+                id="replay-day-ticks"
+                class="cc-replay-day-ticks"
+                aria-hidden="true"
+              ></div>
+            </div>
+            <div class="cc-replay-view-row" id="cc-replay-view-row" role="group" aria-label="View perspective">
+              <!-- v0.9.9 — populated dynamically by renderReplayViewButtons():
+                   one button per active seat (with the seat's stroke colour),
+                   plus a single OBS button that shows everything everyone sees.
+                   The pre-v0.9.9 hard-coded P1 / P2 / P1+P2 / OBS markup is
+                   gone — those buttons never adapted to 3- or 4-seat games. -->
+              <button type="button" id="replay-view-obs" class="cli-btn cc-replay-view-btn" title="Observer view — every active seat's vision combined">[ OBS ]</button>
+              <!-- v0.9.11 — open the two full-screen orbit reports for
+                   the current context day (replay cursor day, or live
+                   session day). Always present; auto-pop is governed by
+                   the "show orbital summaries as pop-ups" setting. -->
+              <button type="button" id="replay-recap-btn" class="cli-btn cc-replay-view-btn" title="Open the Pre-Orbital Recap for this day">[ RECAP ]</button>
+              <button type="button" id="replay-briefing-btn" class="cli-btn cc-replay-view-btn" title="Open the Post-Orbital Briefing for this day">[ BRIEFING ]</button>
+              <!-- v1.0 — only shown once the loaded season is complete; opens
+                   the end-of-season results screen (also auto-pops at the end
+                   of the scrub and has a pip on the timeline). -->
+              <button type="button" id="replay-results-btn" class="cli-btn cc-replay-view-btn cc-replay-results-btn" title="Open the end-of-season results" hidden>[ RESULTS ]</button>
+            </div>
+            <div id="replay-caption" class="replay-caption dim"></div>
+          </section>
+          <!-- One-line latest-action ticker. In LIVE mode it shows the
+               most recent engine caption; in REPLAY mode it shows the
+               cursor-frame's caption + D{n} H{nn} clock. -->
+          <div id="replay-now-playing" class="cc-now-playing" aria-live="polite">
+            <span class="cc-now-clock" id="replay-now-clock">D&mdash; H&mdash;</span>
+            <span class="cc-now-caption" id="replay-now-caption"># idle &mdash; start NEW GAME</span>
+          </div>
+        </section>
+
+        <nav class="cc-tabbar" aria-label="Command centre panels">
+          <!-- v0.8.0 — ORBIT is the daytime phase that opens before
+               every PRAXIS night. The tab auto-activates when the
+               session phase is "orbit"; it's hidden by ``app.js`` when
+               we're in PLANNING or SEASON_COMPLETE. The numeric keys
+               renumber: ORBIT=[1], ORDERS=[2], ..., GRAPHICS=[8]. -->
+          <button type="button" class="cc-tab" data-cc-tab="orbit">
+            <span class="cc-tab-key">[1]</span>
+            <span class="cc-tab-label">ORBIT</span>
+            <span id="cc-tab-orbit-meta" class="cc-tab-meta dim">0/3</span>
+          </button>
+          <button type="button" class="cc-tab cc-tab--active" data-cc-tab="orders">
+            <span class="cc-tab-key">[2]</span>
+            <span class="cc-tab-label">ORDERS</span>
+            <span id="cc-tab-orders-meta" class="cc-tab-meta dim">0/21</span>
+          </button>
+          <button type="button" class="cc-tab" data-cc-tab="intel">
+            <span class="cc-tab-key">[3]</span>
+            <span class="cc-tab-label">INTEL</span>
+            <span id="cc-tab-intel-meta" class="cc-tab-meta dim">—</span>
+          </button>
+          <button type="button" class="cc-tab" data-cc-tab="vault">
+            <span class="cc-tab-key">[4]</span>
+            <span class="cc-tab-label">VAULT</span>
+            <span id="cc-tab-vault-meta" class="cc-tab-meta dim">0</span>
+          </button>
+          <button type="button" class="cc-tab" data-cc-tab="shipped">
+            <span class="cc-tab-key">[5]</span>
+            <span class="cc-tab-label">SHIPPED</span>
+            <span id="cc-tab-shipped-meta" class="cc-tab-meta dim">0</span>
+          </button>
+          <button type="button" class="cc-tab" data-cc-tab="replay">
+            <span class="cc-tab-key">[6]</span>
+            <span class="cc-tab-label">LOG</span>
+            <span id="cc-tab-replay-meta" class="cc-tab-meta dim">·</span>
+          </button>
+          <button type="button" class="cc-tab" data-cc-tab="log">
+            <span class="cc-tab-key">[7]</span>
+            <span class="cc-tab-label">AGENT</span>
+          </button>
+          <button type="button" class="cc-tab" data-cc-tab="graphics">
+            <span class="cc-tab-key">[8]</span>
+            <span class="cc-tab-label">SETTINGS</span>
+          </button>
+        </nav>
+
+        <aside id="cc-drawer" class="cc-drawer cc-drawer--open" aria-label="Active panel">
+          <!-- ORBIT panel (v0.8.0) ----------------------------------------- -->
+          <section
+            id="cc-panel-orbit"
+            class="cc-panel"
+            data-cc-panel="orbit"
+            role="tabpanel"
+            aria-label="Compose orbit phase actions"
+          >
+            <header class="cc-panel-head">
+              <span class="cc-panel-title">ORBIT &middot; daytime planner</span>
+              <span class="dim cc-panel-sub">
+                Build &middot; refine &middot; bid &middot; <span class="cc-orbit-budget">3</span> actions / turn
+              </span>
+            </header>
+
+            <div class="cc-orbit-readouts">
+              <div class="cc-orbit-readout" data-readout="credits">
+                <span class="cc-orbit-readout-label dim">CREDITS</span>
+                <span id="cc-orbit-credits" class="cc-orbit-readout-value">0c</span>
+              </div>
+              <div class="cc-orbit-readout" data-readout="probe-stock">
+                <span class="cc-orbit-readout-label dim">PROBE STOCK</span>
+                <span id="cc-orbit-probe-stock" class="cc-orbit-readout-value">0</span>
+              </div>
+              <div class="cc-orbit-readout" data-readout="harvesters">
+                <span class="cc-orbit-readout-label dim">HARVESTERS</span>
+                <span id="cc-orbit-harvesters" class="cc-orbit-readout-value">0/3</span>
+              </div>
+              <div class="cc-orbit-readout" data-readout="green-owned">
+                <span class="cc-orbit-readout-label dim">GREEN OWNED</span>
+                <span id="cc-orbit-green" class="cc-orbit-readout-value">0 (&Sigma;0p)</span>
+              </div>
+              <div class="cc-orbit-readout" data-readout="tier-counts">
+                <span class="cc-orbit-readout-label dim">RED TIERS</span>
+                <span id="cc-orbit-tier-counts" class="cc-orbit-readout-value">trace 0 &middot; vein 0 &middot; mass 0</span>
+              </div>
+              <div class="cc-orbit-readout" data-readout="blue-tier-counts">
+                <span class="cc-orbit-readout-label dim">BLUE TIERS (&Sigma; <span id="cc-orbit-blue-total">0</span>p)</span>
+                <span id="cc-orbit-blue-tier-counts" class="cc-orbit-readout-value">shallow 0 &middot; mid 0 &middot; sink 0 &middot; deep 0</span>
+              </div>
+              <div class="cc-orbit-readout" data-readout="weapon-stock">
+                <span class="cc-orbit-readout-label dim">WEAPONS</span>
+                <span id="cc-orbit-weapon-stock" class="cc-orbit-readout-value cc-weapon-stock-readout">
+                  <span class="cc-weapon-stock-chip" data-weapon="emp">
+                    <span class="cc-weapon-icon cc-weapon-icon-emp" aria-hidden="true"></span>
+                    <span data-weapon-stock-count="emp">0</span>
+                  </span>
+                  <span class="cc-weapon-stock-chip" data-weapon="mine">
+                    <span class="cc-weapon-icon cc-weapon-icon-mine" aria-hidden="true"></span>
+                    <span data-weapon-stock-count="mine">0</span>
+                  </span>
+                  <span class="cc-weapon-stock-chip" data-weapon="chaff">
+                    <span class="cc-weapon-icon cc-weapon-icon-chaff" aria-hidden="true"></span>
+                    <span data-weapon-stock-count="chaff">0</span>
+                  </span>
+                </span>
+              </div>
+            </div>
+
+            <!-- v0.9.5 — full asset roster so the seat can see every
+                 owned harvester / probe / orblift, including damaged
+                 status and live coords. The orbit panel was previously
+                 reduced to "0/3 harvesters" with no way to tell which
+                 unit was damaged or which surface tile a harvester
+                 was sitting on. -->
+            <div class="cc-orbit-assets" id="cc-orbit-assets-pane">
+              <header class="cc-orbit-assets-head">
+                <span class="dim">ASSETS</span>
+                <span class="dim cc-orbit-assets-sub" id="cc-orbit-assets-sub">none owned</span>
+              </header>
+              <ul class="cc-orbit-assets-list" id="cc-orbit-assets-list"></ul>
+            </div>
+
+            <form
+              id="solo-orbit-form"
+              class="cc-orders-form cc-orbit-form"
+              autocomplete="off"
+              onsubmit="return false;"
+            >
+              <fieldset class="cc-queue-fieldset">
+                <legend class="cc-queue-legend">
+                  <span class="dim">orbit action queue</span>
+                  <span id="solo-orbit-queue-count" class="solo-queue-count">0/3</span>
+                </legend>
+                <div
+                  id="solo-orbit-queue"
+                  class="cc-move-queue"
+                  aria-label="Ordered orbit action queue"
+                ></div>
+                <!-- v1.0 — final settlement orbit banner. Shown only
+                     when the season has run its course and the last
+                     restricted orbit is open (refine / ship / flush
+                     only). app.js toggles this + greys the blocked
+                     construct / weapon / repair buttons. -->
+                <div id="final-orbit-banner" class="final-orbit-banner" hidden>
+                  <div class="final-orbit-banner-copy">
+                    FINAL SETTLEMENT ORBIT &mdash; the <strong>Final Refinery</strong> is open:
+                    caps are lifted, so you can fold your whole vault up the tiers and
+                    ship it <em>this</em> turn. Building and repairs are closed. Blue is
+                    your only limiter. The season ends once this orbit resolves.
+                  </div>
+                  <div class="final-orbit-refinery">
+                    <button
+                      type="button"
+                      id="final-refine-cascade"
+                      class="cc-btn final-orbit-btn"
+                      title="Fold every RED parcel up to mass in one action, spending all available blue (RULEBOOK §4.3.1)."
+                    >&#9650; Refine everything up</button>
+                    <button
+                      type="button"
+                      id="final-ship-auto"
+                      class="cc-btn final-orbit-btn"
+                      title="Bid on your best RED parcels after the refinery folds — needed because refined parcels' ids are minted at settlement."
+                    >&#8648; Ship best (auto)</button>
+                  </div>
+                </div>
+                <!-- v0.9.5 — orbit action toolbar grouped into four
+                     functional blocks so the user can scan the panel
+                     instead of hunting through a flat button strip:
+                       1. CONSTRUCT / REPAIR — fleet build + workshop
+                       2. WEAPONS — EMP / MINE / CHAFF stockpile
+                       3. REFINE — RED tier promotion
+                       4. SHIPPING / JETTISON — catapult lanes -->
+                <div class="cc-queue-toolbar cc-orbit-toolbar">
+                  <div class="cc-orbit-block" data-orbit-block="construct">
+                    <div class="cc-orbit-block-head dim">// construct &middot; repair</div>
+                    <div class="cc-orbit-block-body">
+                      <button
+                        type="button"
+                        class="cli-btn solo-add-orbit cc-add-btn"
+                        data-orbit-action="build_harvester"
+                        title="Mint a new orbital harvester (1500c, max 3)"
+                      >
+                        [ + build harvester (1500c) ]
+                      </button>
+                      <span class="cc-add-btn-group" data-orbit-group="build_probe">
+                        <button
+                          type="button"
+                          class="cli-btn solo-add-orbit cc-add-btn"
+                          data-orbit-action="build_probe"
+                          title="Mint N probes in one action slot (250c each)"
+                        >
+                          [ + build probes &times;<span class="cc-probe-count" data-orbit-probe-count>1</span> (250c) ]
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max="20"
+                          step="1"
+                          value="1"
+                          id="solo-orbit-probe-count"
+                          class="cc-probe-count-input"
+                          title="How many probes to mint this slot"
+                          aria-label="Probe count"
+                        />
+                      </span>
+                      <button
+                        type="button"
+                        class="cli-btn solo-add-orbit cc-add-btn"
+                        data-orbit-action="repair"
+                        title="Repair a damaged harvester (500c)"
+                      >
+                        [ + repair (500c) &middot; <span data-orbit-damaged-count>0</span> damaged ]
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="cc-orbit-block" data-orbit-block="weapons">
+                    <div class="cc-orbit-block-head dim">// weapons bay</div>
+                    <div class="cc-orbit-block-body">
+                      <span class="cc-add-btn-group" data-orbit-group="build_emp">
+                        <button
+                          type="button"
+                          class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
+                          data-orbit-action="build_emp"
+                          title="Construct N EMP warheads (200 blue + 250c each)"
+                        >
+                          [ + build
+                            <span class="cc-weapon-icon cc-weapon-icon-emp" aria-hidden="true"></span>
+                            EMP &times;<span class="cc-weapon-count" data-orbit-weapon-count="emp">1</span>
+                            (200b/250c) ]
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          step="1"
+                          value="1"
+                          id="solo-orbit-emp-count"
+                          class="cc-probe-count-input"
+                          title="How many EMP warheads to build this slot"
+                          aria-label="EMP count"
+                        />
+                      </span>
+                      <span class="cc-add-btn-group" data-orbit-group="build_mine">
+                        <button
+                          type="button"
+                          class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
+                          data-orbit-action="build_mine"
+                          title="Construct N caltrop mines (100 blue + 100c each)"
+                        >
+                          [ + build
+                            <span class="cc-weapon-icon cc-weapon-icon-mine" aria-hidden="true"></span>
+                            MINE &times;<span class="cc-weapon-count" data-orbit-weapon-count="mine">1</span>
+                            (100b/100c) ]
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          step="1"
+                          value="1"
+                          id="solo-orbit-mine-count"
+                          class="cc-probe-count-input"
+                          title="How many mines to build this slot"
+                          aria-label="Mine count"
+                        />
+                      </span>
+                      <span class="cc-add-btn-group" data-orbit-group="build_chaff">
+                        <button
+                          type="button"
+                          class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
+                          data-orbit-action="build_chaff"
+                          title="Construct N orbital chaff flares (255 blue)"
+                        >
+                          [ + build
+                            <span class="cc-weapon-icon cc-weapon-icon-chaff" aria-hidden="true"></span>
+                            CHAFF &times;<span class="cc-weapon-count" data-orbit-weapon-count="chaff">1</span>
+                            (255b) ]
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          step="1"
+                          value="1"
+                          id="solo-orbit-chaff-count"
+                          class="cc-probe-count-input"
+                          title="How many chaff flares to build this slot"
+                          aria-label="Chaff count"
+                        />
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="cc-orbit-block" data-orbit-block="refine">
+                    <div class="cc-orbit-block-head dim">// refine RED</div>
+                    <div class="cc-orbit-block-body">
+                      <button
+                        type="button"
+                        class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-refine"
+                        data-orbit-action="refine_trace"
+                        title="Promote EVERY RED trace parcel into vein (auto)"
+                      >
+                        [ + refine all trace &rarr; vein
+                          (<span data-orbit-tier-pill="trace">0</span>) ]
+                      </button>
+                      <button
+                        type="button"
+                        class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-refine"
+                        data-orbit-action="refine_vein"
+                        title="Promote EVERY RED vein parcel into mass (auto)"
+                      >
+                        [ + refine all vein &rarr; mass
+                          (<span data-orbit-tier-pill="vein">0</span>) ]
+                      </button>
+                      <button
+                        type="button"
+                        class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-refine"
+                        data-orbit-action="refine_pick"
+                        title="Pick up to 5 same-tier parcels and preview the promotion + blue cost before committing"
+                      >
+                        [ + refine (pick&hellip;) ]
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="cc-orbit-block" data-orbit-block="shipping">
+                    <div class="cc-orbit-block-head dim">// shipping &middot; green flush</div>
+                    <div class="cc-orbit-block-body">
+                      <button
+                        type="button"
+                        class="cli-btn solo-add-orbit cc-add-btn"
+                        data-orbit-action="ship_catapult"
+                        title="RED catapult — 4 rows × 5 slots. Bid credits per parcel; highest bids win the low-transit rows. Each parcel pays its row's transit charge (10/25/50/100 purity)."
+                      >
+                        [ + ship catapult ]
+                      </button>
+                      <button
+                        type="button"
+                        class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-jettison"
+                        data-orbit-action="solar_jettison"
+                        title="GREEN catapult — flush toxic green to avoid the -100/parcel endgame penalty. Commit RED fuel; slots get cheaper as more houses flush together."
+                      >
+                        [ + green flush ]
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="cc-orbit-block cc-orbit-block--foot">
+                    <button
+                      type="button"
+                      id="solo-orbit-queue-clear"
+                      class="cli-btn cc-add-btn cc-clear-btn"
+                    >
+                      [ clear ]
+                    </button>
+                  </div>
+                </div>
+              </fieldset>
+
+              <div class="cc-orbit-foot">
+                <button
+                  type="button"
+                  class="cli-btn cli-btn-primary cc-transmit-btn"
+                  id="solo-commit-orbit"
+                >
+                  [ &raquo; COMMIT ORBIT PHASE ]
+                </button>
+                <ol
+                  id="solo-commit-orbit-progress"
+                  class="cc-transmit-progress"
+                  role="status"
+                  aria-live="polite"
+                  hidden
+                ></ol>
+                <p id="err-solo-orbit" class="policy-err dim" hidden></p>
+              </div>
+            </form>
+          </section>
+
+          <!-- ORDERS panel ------------------------------------------------- -->
+          <section
+            id="cc-panel-orders"
+            class="cc-panel cc-panel--active"
+            data-cc-panel="orders"
+            role="tabpanel"
+            aria-label="Compose policy"
+          >
+            <header class="cc-panel-head">
+              <span class="cc-panel-title">ORDERS · policy composer</span>
+              <span class="dim cc-panel-sub">
+                Build a directive · <span class="move-budget">21</span> slots / Nox
+              </span>
+            </header>
+
+            <form
+              id="solo-night-form"
+              class="cc-orders-form"
+              autocomplete="off"
+              onsubmit="return false;"
+            >
+              <div class="cc-policy-meta dim">
+                <span>// one row = one slot · illegal moves struck through · <strong>5</strong> reds max / Nox</span>
+              </div>
+
+              <fieldset id="solo-standard-fieldset" class="cc-queue-fieldset">
+                <legend class="cc-queue-legend">
+                  <span class="dim">directive queue</span>
+                  <span id="solo-queue-count" class="solo-queue-count">0/21 slots</span>
+                </legend>
+                <div
+                  id="solo-move-queue"
+                  class="cc-move-queue"
+                  aria-label="Ordered move queue"
+                ></div>
+                <!-- v0.8.0 asset-first roster (replaces the legacy
+                     [+probe][+drop][+step][+pickup] toolbar). Each
+                     chip IS the action selector:
+                       click a harvester (on surface)  → step mode
+                       click a harvester (in orbit)    → hint to use DROP
+                       click the probe-stock chip      → probe mode
+                       click ORBLIFT > DROP / PICKUP   → 2-step flow
+                     Wired by ``renderOrdersAssetRoster`` in app.js. -->
+                <div
+                  id="orders-asset-roster"
+                  class="cc-orders-roster"
+                  aria-label="Asset roster — click a unit to compose an order"
+                ></div>
+                <div class="cc-queue-toolbar">
+                  <button
+                    type="button"
+                    id="solo-queue-clear"
+                    class="cli-btn cc-add-btn cc-clear-btn"
+                  >
+                    [ clear queue ]
+                  </button>
+                  <!-- v0.9.5 — toggle that expands the queue to show
+                       all 21 hour slots at once; empty slots render
+                       as (wait) placeholders and remain valid drop
+                       targets for the drag-reorder API. -->
+                  <button
+                    type="button"
+                    id="solo-queue-show-all"
+                    class="cli-btn cc-add-btn cc-queue-show-all-btn"
+                    aria-pressed="false"
+                    title="Show all 21 hour slots; empty slots render as (wait) placeholders"
+                  >
+                    [ show all 21 slots ]
+                  </button>
+                </div>
+              </fieldset>
+
+              <div class="cc-orders-foot">
+                <button
+                  type="button"
+                  class="cli-btn cli-btn-primary cc-transmit-btn"
+                  id="solo-commit-night"
+                >
+                  [ &raquo; TRANSMIT / PRAXIS ]
+                </button>
+                <ol
+                  id="solo-commit-progress"
+                  class="cc-transmit-progress"
+                  role="status"
+                  aria-live="polite"
+                  hidden
+                ></ol>
+                <p id="err-solo" class="policy-err dim" hidden></p>
+                <p class="dim cc-orders-agent-link">// autoplay / versus &rarr; AGENT tab [7]</p>
+              </div>
+            </form>
+          </section>
+
+          <!-- INTEL panel -------------------------------------------------- -->
+          <section
+            id="cc-panel-intel"
+            class="cc-panel"
+            data-cc-panel="intel"
+            role="tabpanel"
+            aria-label="Intel"
+            hidden
+          >
+            <header class="cc-panel-head">
+              <span class="cc-panel-title">INTEL · roster &amp; hoard</span>
+              <span class="dim cc-panel-sub">live inventory &amp; surface journal</span>
+            </header>
+            <pre
+              id="inventory-player"
+              class="cc-intel-pre dim"
+              aria-label="Inventory"
+            ></pre>
+          </section>
+
+          <!-- VAULT panel -------------------------------------------------- -->
+          <section
+            id="cc-panel-vault"
+            class="cc-panel"
+            data-cc-panel="vault"
+            role="tabpanel"
+            aria-label="Vault"
+            hidden
+          >
+            <header class="cc-panel-head">
+              <span class="cc-panel-title">VAULT · certified harvest</span>
+              <span class="dim cc-panel-sub">
+                Banked squares · hash = certificate of origin
+              </span>
+            </header>
+            <!-- v0.7.5 seat sub-tabs. In live play the opponent button
+                 is hidden (your own vault only). In replay / watch
+                 both buttons are visible and the vault contents
+                 (hoard + assets) gradually fill as the scrub cursor
+                 walks the night. -->
+            <div
+              id="vault-seat-tabs"
+              class="cc-seat-tabs"
+              role="group"
+              aria-label="Choose vault seat"
+            >
+              <button
+                type="button"
+                id="vault-seat-p1"
+                class="cli-btn cc-replay-view-btn cc-replay-view-btn--active"
+                data-seat="p1"
+              >[ P1 ]</button>
+              <button
+                type="button"
+                id="vault-seat-p2"
+                class="cli-btn cc-replay-view-btn"
+                data-seat="p2"
+                hidden
+              >[ P2 ]</button>
+            </div>
+            <p class="cc-vault-blurb">
+              // 15-slot orbital cargo bay · hover any slot for the full
+              hash + coordinate + harvest Nox (RULEBOOK §3.12).
+            </p>
+            <!-- v0.8.0 live readouts. ``cc-vault-meta-row`` mirrors
+                 the orbit panel: a horizontal strip of compact
+                 [label · value] cells refreshed by ``renderVault``
+                 (credits, shipped RED sum, shipped count). Live play
+                 reads the agent view; replay reads the per-tick
+                 reconstruction (v1.1 per-frame credits snapshot) so
+                 the readout tracks the scrubber. All cells stay
+                 rendered even when zero so the layout doesn't jump. -->
+            <div
+              id="vault-meta-row"
+              class="cc-vault-meta-row"
+              aria-label="Live vault readouts"
+            >
+              <div class="cc-vault-meta" data-meta="credits">
+                <span class="cc-vault-meta-label">CREDITS</span>
+                <span class="cc-vault-meta-value" id="vault-meta-credits">0c</span>
+              </div>
+              <div class="cc-vault-meta" data-meta="shipped-red">
+                <span class="cc-vault-meta-label">RED SHIPPED (&Sigma;p)</span>
+                <span class="cc-vault-meta-value" id="vault-meta-shipped-red">0</span>
+              </div>
+              <div class="cc-vault-meta" data-meta="shipped-count">
+                <span class="cc-vault-meta-label">PARCELS SHIPPED</span>
+                <span class="cc-vault-meta-value" id="vault-meta-shipped-count">0</span>
+              </div>
+              <!-- v0.9 — Blue-purity readout. The weapons economy
+                   (RULEBOOK §4.9) burns blue-purity-summed parcels,
+                   lowest-first, so this number is the budget a seat
+                   has to fire EMP / mines / chaff this turn. -->
+              <div class="cc-vault-meta" data-meta="blue-purity">
+                <span class="cc-vault-meta-label">BLUE PURITY (&Sigma;p)</span>
+                <span class="cc-vault-meta-value" id="vault-meta-blue-purity">0</span>
+              </div>
+            </div>
+            <div
+              id="vault-grid"
+              class="cc-vault-grid"
+              aria-label="15-slot vault inventory"
+            ></div>
+
+            <div class="cc-assets-divider" role="separator">
+              <span>— — — in orbit — — —</span>
+            </div>
+            <div
+              id="vault-assets-in-orbit"
+              class="cc-assets-row"
+              aria-label="In-orbit assets"
+            ></div>
+
+            <div class="cc-assets-divider" role="separator">
+              <span>— — — on surface — — —</span>
+            </div>
+            <div
+              id="vault-assets-on-surface"
+              class="cc-assets-row"
+              aria-label="On-surface assets"
+            ></div>
+
+            <div class="cc-assets-divider" role="separator">
+              <span>— — — destroyed — — —</span>
+            </div>
+            <div
+              id="vault-assets-destroyed"
+              class="cc-assets-row cc-assets-row--destroyed"
+              aria-label="Destroyed assets"
+            ></div>
+
+            <!-- v0.9.5 — weapons economy lives in the VAULT as two
+                 bays: AVAILABLE (current stockpile, drained as the
+                 night phase fires) and USED (lifetime counter,
+                 monotonically grows across the season). The ORDERS
+                 panel only shows AVAILABLE; this bay is read-only. -->
+            <div class="cc-assets-divider" role="separator">
+              <span>— — — weapons bay · available — — —</span>
+            </div>
+            <div
+              id="vault-weapons-available"
+              class="cc-assets-row cc-assets-row--weapons"
+              aria-label="Weapons available"
+            ></div>
+
+            <div class="cc-assets-divider" role="separator">
+              <span>— — — weapons bay · used (lifetime) — — —</span>
+            </div>
+            <div
+              id="vault-weapons-used"
+              class="cc-assets-row cc-assets-row--weapons cc-assets-row--weapons-used"
+              aria-label="Weapons used lifetime"
+            ></div>
+          </section>
+
+          <!-- SHIPPED panel ------------------------------------------------ -->
+          <section
+            id="cc-panel-shipped"
+            class="cc-panel"
+            data-cc-panel="shipped"
+            role="tabpanel"
+            aria-label="Shipped"
+            hidden
+          >
+            <header class="cc-panel-head">
+              <span class="cc-panel-title">SHIPPED · catapulted to Earth</span>
+              <span class="dim cc-panel-sub">
+                Tier-multiplier score \u00B7 RULEBOOK \u00A73.1 / \u00A74.4
+              </span>
+            </header>
+            <p class="cc-vault-blurb">
+              // post-catapult manifest \u00B7 these parcels are the
+              only ones that score. Capacity 25.
+            </p>
+            <!-- v0.9.9 — per-seat shipped stats row reads
+                 ``cumulative_shipped_score`` (the same source the HUD
+                 scoreboard uses) so the tab is informative even when
+                 the grid is empty. ``#cc-shipped-stats`` is populated
+                 by ``renderShippedStats`` in app.js. -->
+            <div
+              id="cc-shipped-stats"
+              class="cc-shipped-stats"
+              aria-label="Shipped score by seat"
+            ></div>
+            <div
+              id="shipped-grid"
+              class="cc-vault-grid"
+              aria-label="shipped manifest (uncapped)"
+            ></div>
+          </section>
+
+          <!-- LOG panel (renamed from REPLAY in v0.7.5).
+               Holds the scoreboard + the VT323 PRAXIS timeline. The
+               replay controls now live in #replay-strip below the
+               map; this panel only owns the per-night feed. -->
+          <section
+            id="cc-panel-replay"
+            class="cc-panel"
+            data-cc-panel="replay"
+            role="tabpanel"
+            aria-label="Log · season feed"
+            hidden
+          >
+            <header class="cc-panel-head">
+              <span class="cc-panel-title">LOG · season feed</span>
+              <span class="dim cc-panel-sub">
+                scoreboard + PRAXIS timeline (synced to scrub)
+              </span>
+            </header>
+            <!-- v0.7.5 scoreboard — two seat rows (P1 / P2). In live
+                 play only the active player's row shows real numbers;
+                 in replay/watch both rows fill gradually as the scrub
+                 cursor walks the night. -->
+            <section
+              id="replay-scoreboard"
+              class="cc-scoreboard"
+              aria-label="Scoreboard — synced to scrub"
+            >
+              <div class="cc-scoreboard-row" data-seat="p1">
+                <span class="cc-scoreboard-tag">P1</span>
+                <span class="cc-scoreboard-cell" data-stat="score">score 0</span>
+                <span class="cc-scoreboard-cell" data-stat="vault">vault 0/15</span>
+                <span class="cc-scoreboard-cell" data-stat="surface">surface 0</span>
+                <span class="cc-scoreboard-cell" data-stat="damaged">damaged 0</span>
+                <span class="cc-scoreboard-cell" data-stat="destroyed">destroyed 0</span>
+              </div>
+              <div class="cc-scoreboard-row" data-seat="p2">
+                <span class="cc-scoreboard-tag">P2</span>
+                <span class="cc-scoreboard-cell" data-stat="score">score 0</span>
+                <span class="cc-scoreboard-cell" data-stat="vault">vault 0/15</span>
+                <span class="cc-scoreboard-cell" data-stat="surface">surface 0</span>
+                <span class="cc-scoreboard-cell" data-stat="damaged">damaged 0</span>
+                <span class="cc-scoreboard-cell" data-stat="destroyed">destroyed 0</span>
+              </div>
+              <!-- v0.9.6 — extra seats are hidden by default and
+                   un-hidden by app.js when the active session has 3+
+                   seats. The DOM order matches NGM_SEAT_IDS so the
+                   renderScoreboard loop can address them positionally. -->
+              <div class="cc-scoreboard-row" data-seat="p3" hidden>
+                <span class="cc-scoreboard-tag">P3</span>
+                <span class="cc-scoreboard-cell" data-stat="score">score 0</span>
+                <span class="cc-scoreboard-cell" data-stat="vault">vault 0/15</span>
+                <span class="cc-scoreboard-cell" data-stat="surface">surface 0</span>
+                <span class="cc-scoreboard-cell" data-stat="damaged">damaged 0</span>
+                <span class="cc-scoreboard-cell" data-stat="destroyed">destroyed 0</span>
+              </div>
+              <div class="cc-scoreboard-row" data-seat="p4" hidden>
+                <span class="cc-scoreboard-tag">P4</span>
+                <span class="cc-scoreboard-cell" data-stat="score">score 0</span>
+                <span class="cc-scoreboard-cell" data-stat="vault">vault 0/15</span>
+                <span class="cc-scoreboard-cell" data-stat="surface">surface 0</span>
+                <span class="cc-scoreboard-cell" data-stat="damaged">damaged 0</span>
+                <span class="cc-scoreboard-cell" data-stat="destroyed">destroyed 0</span>
+              </div>
+            </section>
+            <!-- v0.7.4 — unified TIMELINE feed. One row per frame in
+                 the current night: pre-cursor rows render in the
+                 owner's seat colour at low opacity (still upcoming),
+                 cursor-and-earlier rows render full-opacity (already
+                 executed), failures render red with the engine's
+                 reason inline. Boundary events (opening / dawn /
+                 swap collisions) render dim/neutral. Filters by the
+                 P1 / P2 / Both view buttons; auto-scrolls to the
+                 cursor as the scrubber walks the night. -->
+            <section
+              id="replay-feed"
+              class="cc-replay-feed"
+              aria-label="PRAXIS timeline — orders &amp; log unified"
+              hidden
+            >
+              <div class="cc-replay-feed-head">
+                <span class="cc-replay-feed-title">
+                  PRAXIS &middot; TIMELINE <span class="cc-replay-feed-day" id="replay-feed-day"></span>
+                </span>
+                <span
+                  class="cc-replay-feed-filter"
+                  role="tablist"
+                  aria-label="Filter log by phase"
+                >
+                  <button
+                    type="button"
+                    class="cc-log-filter-chip cc-log-filter-chip--active"
+                    data-log-filter="all"
+                    title="Show every line"
+                  >ALL</button>
+                  <button
+                    type="button"
+                    class="cc-log-filter-chip"
+                    data-log-filter="night"
+                    title="Show only Nox-phase frames"
+                  >NOX</button>
+                  <button
+                    type="button"
+                    class="cc-log-filter-chip"
+                    data-log-filter="orbit"
+                    title="Show only orbit-phase actions for this day"
+                  >ORBIT</button>
+                </span>
+              </div>
+              <div
+                id="replay-feed-timeline"
+                class="cc-replay-feed-timeline"
+                aria-live="polite"
+                aria-label="PRAXIS timeline — every order, success and failure for this Nox"
+              ></div>
+            </section>
+          </section>
+
+          <!-- AGENT panel (renamed from LOG in v0.7.5).
+               Direct agent rationale only — filtered to the active
+               turn (live: current day; replay: the day under the
+               scrub cursor). Seat sub-tabs mirror the replay-view
+               buttons: in live play the opponent seat is hidden; in
+               replay/watch both are visible.
+
+               #orch-log stays in the DOM as a hidden buffer so the
+               legacy status-poll path (renderOrchLog) keeps working
+               unchanged — we layer the structured AGENT feed on top
+               via the agentLogByDay bucket. -->
+          <section
+            id="cc-panel-log"
+            class="cc-panel"
+            data-cc-panel="log"
+            role="tabpanel"
+            aria-label="Agent thinking"
+            hidden
+          >
+            <header class="cc-panel-head">
+              <span class="cc-panel-title">AGENT · thinking</span>
+              <span class="dim cc-panel-sub">
+                per-turn reasoning, timing &amp; submitted moves
+              </span>
+            </header>
+            <!-- v1.1 — the live-play controls (autoplay / versus) that used
+                 to live here were removed; games are driven via the CLI /
+                 season runner now. This tab is purely the agent's reasoning
+                 trace, the LOG tab ([6]) carries the pure PRAXIS command
+                 feed. The seat sub-tabs + feed keep their original ids so
+                 the app.js bindings are unchanged. -->
+            <header class="cc-panel-subhead dim">
+              # per-turn thinking
+            </header>
+            <div
+              id="agent-seat-tabs"
+              class="cc-seat-tabs"
+              role="group"
+              aria-label="Choose agent seat"
+            >
+              <button
+                type="button"
+                id="agent-seat-p1"
+                class="cli-btn cc-replay-view-btn cc-replay-view-btn--active"
+                data-seat="p1"
+              >[ P1 ]</button>
+              <button
+                type="button"
+                id="agent-seat-p2"
+                class="cli-btn cc-replay-view-btn"
+                data-seat="p2"
+              >[ P2 ]</button>
+            </div>
+            <div
+              id="agent-feed"
+              class="cc-agent-feed"
+              aria-live="polite"
+              aria-label="Agent thinking for the current turn"
+            ># quiet &mdash; no agent thinking yet</div>
+            <pre id="orch-log" class="cc-log-pre dim" hidden></pre>
+          </section>
+
+          <!-- GRAPHICS panel ---------------------------------------------- -->
+          <section
+            id="cc-panel-graphics"
+            class="cc-panel"
+            data-cc-panel="graphics"
+            role="tabpanel"
+            aria-label="Graphics"
+            hidden
+          >
+            <header class="cc-panel-head">
+              <span class="cc-panel-title">SETTINGS · CRT &amp; observer</span>
+              <span class="dim cc-panel-sub">debug overlay (no fog)</span>
+            </header>
+            <div class="cc-gfx-block">
+              <p class="cc-block-head dim"># ANIMATION</p>
+              <label class="cli-check" for="toggle-emp-lulls">
+                <input type="checkbox" id="toggle-emp-lulls" class="cli-check-input" checked />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">show empty EMP turns</span>
+              </label>
+              <!-- v0.9.11 — gate the auto-play of the just-resolved
+                   night animation. When OFF, a fresh night drops the
+                   map straight to its resolved state (no last-turn
+                   playback). Persisted as ``soc.replay.lastTurnFx``. -->
+              <label class="cli-check" for="toggle-last-turn-fx">
+                <input type="checkbox" id="toggle-last-turn-fx" class="cli-check-input" checked />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">replay last turn animation</span>
+              </label>
+              <!-- v1.1 — gate the cinematic title cards flashed over the
+                   map (NIGHT n BEGINS / PRAXIS BEGINS). When OFF the
+                   dawn/dusk sweep + day/night tint still play, just
+                   without the text. Persisted as ``soc.cinematic.titleCards``. -->
+              <label class="cli-check" for="toggle-title-cards">
+                <input type="checkbox" id="toggle-title-cards" class="cli-check-input" checked />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">show title cards (NOX / PRAXIS)</span>
+              </label>
+              <!-- Orbit→surface sequencing: when ON a station launch anim
+                   plays first and the matching on-board landing is held back
+                   a beat, so the orbital action reads as "launched from
+                   orbit, then executes on the surface". OFF = simultaneous.
+                   Persisted as ``soc.orbit.launchSequencing``. -->
+              <label class="cli-check" for="toggle-orbit-seq">
+                <input type="checkbox" id="toggle-orbit-seq" class="cli-check-input" checked />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">sequence orbit launch &rarr; surface</span>
+              </label>
+              <!-- Replay tail: when ON, replay autoplay/next wraps back to
+                   day 1 at the end of the timeline. Default OFF (stops on the
+                   last available window). Persisted as ``soc.replay.loop``. -->
+              <label class="cli-check" for="toggle-replay-loop">
+                <input type="checkbox" id="toggle-replay-loop" class="cli-check-input" />
+                <span class="cli-check-box" aria-hidden="true">[ ]</span>
+                <span class="cli-check-caption dim">loop replay (cycle to day 1 at end)</span>
+              </label>
+              <!-- Replay tail: when ON (and loop is OFF), reaching the end of
+                   the timeline plays the closing settlement + victory
+                   celebration + score card. Default ON. Persisted as
+                   ``soc.replay.endAnimation``. -->
+              <label class="cli-check" for="toggle-replay-end-anim">
+                <input type="checkbox" id="toggle-replay-end-anim" class="cli-check-input" checked />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">play ending on replay (settlement &rarr; victory)</span>
+              </label>
+              <!-- v0.9.11 — gate whether the Pre-Orbital Recap /
+                   Post-Orbital Briefing reports auto-pop. When OFF the
+                   reports are only reachable via the replay-strip
+                   [ RECAP ] / [ BRIEFING ] buttons. Persisted as
+                   ``soc.orbit.autoPopReports``. -->
+              <label class="cli-check" for="toggle-autopop-reports">
+                <input type="checkbox" id="toggle-autopop-reports" class="cli-check-input" checked />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">show orbital summaries as pop-ups</span>
+              </label>
+              <!-- v0.9.9 — orbit summary flash duration. Replay
+                   auto-play pauses on each synthetic orbit_summary
+                   tick for this many seconds. Persisted in
+                   localStorage as ``soc.replay.orbitFlashSeconds``. -->
+              <div class="cc-range-row">
+                <label class="dim" for="replay-orbit-flash-secs"># orbit flash</label>
+                <input
+                  type="range"
+                  id="replay-orbit-flash-secs"
+                  class="crt-intensity-slider"
+                  min="0.5"
+                  max="5"
+                  step="0.5"
+                  value="2"
+                  aria-label="Orbit summary flash duration in seconds"
+                />
+                <span id="replay-orbit-flash-secs-val" class="cc-range-row-val">2.0s</span>
+              </div>
+            </div>
+            <div class="cc-gfx-block">
+              <p class="cc-block-head dim"># CRT</p>
+              <label class="cli-check" for="toggle-crt">
+                <input type="checkbox" id="toggle-crt" class="cli-check-input" />
+                <span class="cli-check-box" aria-hidden="true">[ ]</span>
+                <span class="cli-check-caption dim">CRT mode</span>
+              </label>
+              <div class="cc-range-row">
+                <label class="dim" for="crt-intensity"># intensity</label>
+                <input
+                  type="range"
+                  id="crt-intensity"
+                  class="crt-intensity-slider"
+                  min="0"
+                  max="100"
+                  value="45"
+                />
+              </div>
+              <div class="cc-range-row">
+                <label class="dim" for="crt-curve"># curve</label>
+                <input
+                  type="range"
+                  id="crt-curve"
+                  class="crt-intensity-slider"
+                  min="0"
+                  max="100"
+                  value="60"
+                />
+              </div>
+              <label class="cli-check" for="toggle-glitch">
+                <input type="checkbox" id="toggle-glitch" class="cli-check-input" checked />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">glitch</span>
+              </label>
+            </div>
+
+            <!-- v0.9.x — FULL MAP is an omniscient (no-fog) board view.
+                 It is a CHEAT during live play, so it is hidden unless
+                 the session context is allowed to be omniscient (the
+                 dedicated watcher page or a finished season). Toggled by
+                 ``syncFullMapCheatVisibility`` keyed on
+                 ``opponentSeatVisible()``. -->
+            <div class="cc-gfx-block" id="cc-fullmap-block" hidden>
+              <p class="cc-block-head dim"># FULL MAP (cheat)</p>
+              <div class="cc-observer-frame">
+                <div id="map-observer" class="map-host map-host--debug">
+                  <span class="dim"># observer — NEW GAME paints here</span>
+                </div>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </main>
+
+      <!-- v0.9.13 — sticky mobile orders bar. Only rendered on the
+           stacked (<=900px) layout and once a session is live (JS toggles
+           the hidden attribute). Keeps the queue count + TRANSMIT in
+           thumb reach without scrolling the drawer. -->
+      <div id="cc-mobile-orders" class="cc-mobile-orders" hidden>
+        <button
+          type="button"
+          id="cc-mobile-orders-open"
+          class="cli-btn cc-mobile-orders-open"
+          aria-label="Open ORDERS panel"
+        >▤ ORDERS · <span id="cc-mobile-orders-count" class="cc-mobile-orders-count">0</span></button>
+        <button
+          type="button"
+          id="cc-mobile-orders-tx"
+          class="cli-btn cc-mobile-orders-tx"
+          aria-label="Transmit orders"
+        >» TRANSMIT</button>
+      </div>
+
+      <div class="crt-rgb-mask" aria-hidden="true"></div>
+      <div class="crt-glitch-band crt-glitch-band--top" aria-hidden="true"></div>
+      <div class="crt-glitch-band crt-glitch-band--bot" aria-hidden="true"></div>
+      <div
+        id="crt-cursor-follower"
+        class="crt-cursor-follower"
+        aria-hidden="true"
+      ></div>
+    </div>
+
+    <!-- v0.9.6 ORBIT phase replay flash overlay.
+         Populated by ``renderOrbitFlash`` in app.js when the user
+         toggles [ ORBIT ] on in the replay strip. Shows that day's
+         catapult settlement (single-lane ship_catapult + solar
+         jettison) per seat, each shipped parcel rendered with an
+         owner-coloured border and a vault-style hover tooltip. Click
+         the backdrop or press ESC to dismiss. -->
+    <!-- v0.9.9 — HUD scoreboard. Permanent top-right fixture
+         showing each seat's cumulative tier-multiplier shipped score.
+         Reads ``cumulative_shipped_score`` from /status (live) and
+         /replay (scrubber). Lives at body level so the position:fixed
+         is unaffected by #crt-viewport's CSS filter. -->
+    <div id="cc-hud-scoreboard" class="cc-hud-scoreboard" hidden aria-label="Shipped score per seat">
+      <div class="cc-hud-scoreboard-head dim">// shipped score</div>
+      <div id="cc-hud-scoreboard-rows" class="cc-hud-scoreboard-rows"></div>
+    </div>
+
+    <!-- v0.9.11 — unified full-screen ORBIT REPORT shell. Hosts the
+         two minimalist reports that map 1:1 to the night/orbit phase
+         transitions: the PRE-ORBITAL RECAP (night chronicle + station
+         observations) and the POST-ORBITAL BRIEFING (catapults +
+         post-settlement observations + per-player orbit log). The
+         segmented header toggle flips between them for the current
+         context day. Replaces the legacy ``#cc-orbit-flash`` modal +
+         the transient on-map orbit banner. Lives at body level so its
+         ``position: fixed`` is unaffected by #crt-viewport's filter. -->
+    <div id="cc-report" class="cc-report" hidden aria-hidden="true">
+      <div class="cc-report-backdrop" id="cc-report-backdrop"></div>
+      <div
+        class="cc-report-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cc-report-title"
+      >
+        <header class="cc-report-head">
+          <span id="cc-report-title" class="cc-report-title">ORBIT REPORT</span>
+          <div class="cc-report-seg" role="group" aria-label="Report kind">
+            <button type="button" id="cc-report-tab-recap" class="cli-btn cc-report-seg-btn" data-report-kind="recap">[ RECAP ]</button>
+            <button type="button" id="cc-report-tab-briefing" class="cli-btn cc-report-seg-btn" data-report-kind="briefing">[ BRIEFING ]</button>
+          </div>
+          <span id="cc-report-day" class="cc-report-day dim">day &mdash;</span>
+          <button
+            type="button"
+            id="cc-report-close"
+            class="cli-btn cc-report-close"
+            aria-label="Close orbit report"
+          >[ &times; ]</button>
+        </header>
+        <div id="cc-report-body" class="cc-report-body"></div>
+      </div>
+    </div>
+
+    <!-- v1.0 — END OF SEASON results screen. Fades in over the board
+         once the final settlement orbit resolves (live) or when a
+         replay scrubs to season-complete. Shows the winner, runner-ups
+         with full tallies, a cumulative-RED step chart, and a sortable
+         shipping manifest. Reopenable from the #cc-endgame-reopen pill
+         (wired in app.js). Lives at body level like #cc-report so its
+         fixed positioning escapes the CRT viewport filter. -->
+    <div id="cc-endgame" class="cc-endgame" hidden aria-hidden="true">
+      <div class="cc-endgame-backdrop" id="cc-endgame-backdrop"></div>
+      <div
+        class="cc-endgame-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cc-endgame-title"
+      >
+        <header class="cc-endgame-head">
+          <span id="cc-endgame-title" class="cc-endgame-title">SEASON COMPLETE</span>
+          <span id="cc-endgame-season" class="cc-endgame-season dim"></span>
+          <button
+            type="button"
+            id="cc-endgame-close"
+            class="cli-btn cc-endgame-close"
+            aria-label="Close end of season screen"
+          >[ &times; ]</button>
+        </header>
+        <div id="cc-endgame-body" class="cc-endgame-body"></div>
+      </div>
+    </div>
+
+    <!-- Reopen pill for the end-of-season screen (shown once a season
+         is complete / a replay has reached its end). -->
+    <button type="button" id="cc-endgame-reopen" class="cc-endgame-reopen cli-btn" hidden>
+      [ SEASON RESULTS ]
+    </button>
+
+    <!-- v0.9.9 — Catapult submission mini-interface. Replaces the
+         legacy ``window.prompt`` pair (parcel count + fps) with a
+         3-column visual: clickable RED hoard pips populate a 4×5
+         catapult preview, max-fuel-per-slot stepper sits between.
+         Sits at body level (sibling of #cc-orbit-flash) so its
+         ``position: fixed`` is unaffected by any ancestor filter /
+         transform on #crt-viewport. -->
+    <div id="cc-cat-submit" class="cc-cat-submit" hidden aria-hidden="true">
+      <div class="cc-cat-submit-backdrop" id="cc-cat-submit-backdrop"></div>
+      <div
+        class="cc-cat-submit-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cc-cat-submit-title"
+      >
+        <header class="cc-cat-submit-head">
+          <span id="cc-cat-submit-title" class="cc-cat-submit-title">
+            SHIPPING CATAPULT &middot; submit
+          </span>
+          <span id="cc-cat-submit-sub" class="cc-cat-submit-sub dim">
+            click hoard pips to bid &middot; highest credit bids win the low-transit rows
+          </span>
+          <button
+            type="button"
+            id="cc-cat-submit-close"
+            class="cli-btn cc-cat-submit-close"
+            aria-label="Close catapult submit"
+          >[ &times; ]</button>
+        </header>
+        <div class="cc-cat-submit-body">
+          <div class="cc-cat-submit-col cc-cat-submit-col--hoard">
+            <div class="cc-cat-submit-col-head dim">// your RED hoard</div>
+            <div id="cc-cat-submit-hoard" class="cc-cat-submit-hoard"></div>
+            <div id="cc-cat-submit-hoard-empty" class="cc-cat-submit-hoard-empty dim" hidden>
+              // no RED parcels in hoard
+            </div>
+          </div>
+          <div class="cc-cat-submit-col cc-cat-submit-col--ctrl">
+            <div class="cc-cat-submit-col-head dim">// credits / parcel</div>
+            <div class="cc-cat-submit-fps">
+              <button
+                type="button"
+                class="cli-btn cc-cat-submit-fps-btn"
+                id="cc-cat-submit-fps-dec"
+                aria-label="Decrease credit bid per parcel"
+              >[ - ]</button>
+              <input
+                type="number"
+                id="cc-cat-submit-fps"
+                class="cc-cat-submit-fps-input"
+                min="0"
+                max="9999"
+                step="1"
+                value="25"
+              />
+              <button
+                type="button"
+                class="cli-btn cc-cat-submit-fps-btn"
+                id="cc-cat-submit-fps-inc"
+                aria-label="Increase credit bid per parcel"
+              >[ + ]</button>
+            </div>
+            <div class="cc-cat-submit-ramp dim" id="cc-cat-submit-ramp">
+              <div>row1 transit 10</div>
+              <div>row2 transit 25</div>
+              <div>row3 transit 50</div>
+              <div>row4 transit 100</div>
+            </div>
+            <div class="cc-cat-submit-meta">
+              <div>
+                <span class="dim">parcels</span>
+                <span id="cc-cat-submit-meta-slots">0</span>
+              </div>
+              <div>
+                <span class="dim">bid / parcel</span>
+                <span id="cc-cat-submit-meta-fps">0</span> cr
+              </div>
+              <div>
+                <span class="dim">credits cost</span>
+                <span id="cc-cat-submit-meta-cost">0</span> cr
+              </div>
+              <div class="cc-cat-submit-meta-total" title="Sum of (purity - row transit) x tier-multiplier for every selected parcel, IF it lands in the previewed row uncontested. Rivals' higher bids can push you into a harsher row.">
+                <span>TOTAL SCORE</span>
+                <span id="cc-cat-submit-meta-score">0</span> pts
+              </div>
+            </div>
+          </div>
+          <div class="cc-cat-submit-col cc-cat-submit-col--grid">
+            <div class="cc-cat-submit-col-head dim">// catapult preview</div>
+            <div id="cc-cat-submit-grid" class="cc-cat-grid cc-cat-grid--preview"></div>
+          </div>
+        </div>
+        <footer class="cc-cat-submit-foot">
+          <button
+            type="button"
+            id="cc-cat-submit-cancel"
+            class="cli-btn cc-cat-submit-cancel"
+          >[ cancel ]</button>
+          <button
+            type="button"
+            id="cc-cat-submit-ok"
+            class="cli-btn cli-btn-primary cc-cat-submit-ok"
+          >[ + queue ship_catapult ]</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- v0.9.x — GREEN CATAPULT flush dialog (RULEBOOK §4.5). Sibling
+         of the shipping catapult modal; reuses its frame/column CSS.
+         Green is a punishment to dispose: every undisposed vault-green
+         costs -100 at endgame. Slots cost RED purity, diminishing by
+         global draft position (cheaper when more houses flush together)
+         — the preview shows your SOLO best case. -->
+    <div id="cc-green-submit" class="cc-cat-submit cc-cat-submit--green" hidden aria-hidden="true">
+      <div class="cc-cat-submit-backdrop" id="cc-green-submit-backdrop"></div>
+      <div
+        class="cc-cat-submit-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cc-green-submit-title"
+      >
+        <header class="cc-cat-submit-head">
+          <span id="cc-green-submit-title" class="cc-cat-submit-title">
+            GREEN CATAPULT &middot; flush
+          </span>
+          <span id="cc-green-submit-sub" class="cc-cat-submit-sub dim">
+            click toxic parcels to flush &middot; commit RED fuel &middot; cheaper when houses flush together
+          </span>
+          <button
+            type="button"
+            id="cc-green-submit-close"
+            class="cli-btn cc-cat-submit-close"
+            aria-label="Close green catapult flush"
+          >[ &times; ]</button>
+        </header>
+        <div class="cc-cat-submit-body">
+          <div class="cc-cat-submit-col cc-cat-submit-col--hoard">
+            <div class="cc-cat-submit-col-head dim">// your GREEN hoard</div>
+            <div id="cc-green-submit-hoard" class="cc-cat-submit-hoard"></div>
+            <div id="cc-green-submit-hoard-empty" class="cc-cat-submit-hoard-empty dim" hidden>
+              // no GREEN parcels in hoard
+            </div>
+          </div>
+          <div class="cc-cat-submit-col cc-cat-submit-col--ctrl">
+            <div class="cc-cat-submit-col-head dim">// RED fuel committed</div>
+            <div class="cc-cat-submit-fps">
+              <button
+                type="button"
+                class="cli-btn cc-cat-submit-fps-btn"
+                id="cc-green-submit-fuel-dec"
+                aria-label="Decrease RED fuel"
+              >[ - ]</button>
+              <input
+                type="number"
+                id="cc-green-submit-fuel"
+                class="cc-cat-submit-fps-input"
+                min="0"
+                max="9999"
+                step="10"
+                value="50"
+              />
+              <button
+                type="button"
+                class="cli-btn cc-cat-submit-fps-btn"
+                id="cc-green-submit-fuel-inc"
+                aria-label="Increase RED fuel"
+              >[ + ]</button>
+            </div>
+            <div class="cc-cat-submit-ramp dim" id="cc-green-submit-ramp">
+              <div>slot1 cost 50</div>
+              <div>slot2 cost 45</div>
+              <div>&hellip; &minus;5 / slot</div>
+            </div>
+            <div class="cc-cat-submit-meta">
+              <div>
+                <span class="dim">flush</span>
+                <span id="cc-green-submit-meta-green">0</span>
+              </div>
+              <div>
+                <span class="dim">RED fuel</span>
+                <span id="cc-green-submit-meta-fuel">0</span>
+              </div>
+              <div>
+                <span class="dim">solo flush</span>
+                <span id="cc-green-submit-meta-flush">0</span>
+              </div>
+              <div class="cc-cat-submit-meta-total" title="Endgame penalty avoided: -100 score per vault-green you successfully flush. Costs shown are your SOLO best case; flushing alongside other houses gets cheaper.">
+                <span>PENALTY AVOIDED</span>
+                <span id="cc-green-submit-meta-penalty">0</span> pts
+              </div>
+            </div>
+          </div>
+          <div class="cc-cat-submit-col cc-cat-submit-col--grid">
+            <div class="cc-cat-submit-col-head dim">// flush preview (solo)</div>
+            <div id="cc-green-submit-grid" class="cc-cat-grid cc-cat-grid--preview cc-cat-grid--green"></div>
+          </div>
+        </div>
+        <footer class="cc-cat-submit-foot">
+          <button
+            type="button"
+            id="cc-green-submit-cancel"
+            class="cli-btn cc-cat-submit-cancel"
+          >[ cancel ]</button>
+          <button
+            type="button"
+            id="cc-green-submit-ok"
+            class="cli-btn cli-btn-primary cc-cat-submit-ok"
+          >[ + queue green flush ]</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- REPAIR HARVESTER dialog — one damaged harvester per action.
+         Reuses the catapult frame/column CSS. -->
+    <div id="cc-repair-submit" class="cc-cat-submit cc-cat-submit--repair" hidden aria-hidden="true">
+      <div class="cc-cat-submit-backdrop" id="cc-repair-submit-backdrop"></div>
+      <div
+        class="cc-cat-submit-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cc-repair-submit-title"
+      >
+        <header class="cc-cat-submit-head">
+          <span id="cc-repair-submit-title" class="cc-cat-submit-title">
+            REPAIR HARVESTER &middot; select unit
+          </span>
+          <span class="cc-cat-submit-sub dim">
+            click a damaged harvester &middot; one repair per action &middot; cost deducted from credits
+          </span>
+          <button
+            type="button"
+            id="cc-repair-submit-close"
+            class="cli-btn cc-cat-submit-close"
+            aria-label="Close repair harvester dialog"
+          >[ &times; ]</button>
+        </header>
+        <div class="cc-cat-submit-body">
+          <div class="cc-cat-submit-col cc-cat-submit-col--hoard">
+            <div class="cc-cat-submit-col-head dim">// harvesters</div>
+            <div id="cc-repair-submit-list" class="cc-repair-submit-list"></div>
+            <div id="cc-repair-submit-list-empty" class="cc-cat-submit-hoard-empty dim" hidden>
+              // no harvesters deployed
+            </div>
+          </div>
+          <div class="cc-cat-submit-col cc-cat-submit-col--ctrl">
+            <div class="cc-cat-submit-col-head dim">// repair summary</div>
+            <div class="cc-cat-submit-meta">
+              <div>
+                <span class="dim">unit</span>
+                <span id="cc-repair-submit-meta-unit">&mdash;</span>
+              </div>
+              <div>
+                <span class="dim">status</span>
+                <span id="cc-repair-submit-meta-status">&mdash;</span>
+              </div>
+              <div>
+                <span class="dim">repair cost</span>
+                <span id="cc-repair-submit-meta-cost">&mdash;</span> cr
+              </div>
+              <div>
+                <span class="dim">available</span>
+                <span id="cc-repair-submit-meta-wallet">&mdash;</span> cr
+              </div>
+              <div class="cc-cat-submit-meta-total cc-repair-submit-balance">
+                <span>BALANCE AFTER</span>
+                <span id="cc-repair-submit-meta-balance">&mdash;</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <footer class="cc-cat-submit-foot">
+          <button
+            type="button"
+            id="cc-repair-submit-cancel"
+            class="cli-btn cc-cat-submit-cancel"
+          >[ cancel ]</button>
+          <button
+            type="button"
+            id="cc-repair-submit-ok"
+            class="cli-btn cli-btn-primary cc-cat-submit-ok"
+            disabled
+          >[ + queue repair ]</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- v0.9.x — REFINE dialog (RULEBOOK §4.3). Sibling of the catapult
+         composer; reuses its frame/column CSS. Pick up to 5 same-tier
+         RED parcels (trace or vein), pay BLUE per parcel, and preview
+         the promoted outputs + residual BEFORE committing. One grade
+         up only; outputs are locked from same-turn cascade. -->
+    <div id="cc-refine-submit" class="cc-cat-submit cc-cat-submit--refine" hidden aria-hidden="true">
+      <div class="cc-cat-submit-backdrop" id="cc-refine-submit-backdrop"></div>
+      <div
+        class="cc-cat-submit-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cc-refine-submit-title"
+      >
+        <header class="cc-cat-submit-head">
+          <span id="cc-refine-submit-title" class="cc-cat-submit-title">
+            REFINERY &middot; promote
+          </span>
+          <span id="cc-refine-submit-sub" class="cc-cat-submit-sub dim">
+            pick up to 5 same-tier RED parcels &middot; one grade up &middot; costs BLUE
+          </span>
+          <button
+            type="button"
+            id="cc-refine-submit-close"
+            class="cli-btn cc-cat-submit-close"
+            aria-label="Close refinery"
+          >[ &times; ]</button>
+        </header>
+        <div class="cc-cat-submit-body">
+          <div class="cc-cat-submit-col cc-cat-submit-col--hoard">
+            <div class="cc-cat-submit-col-head dim">// your RED hoard (trace/vein)</div>
+            <div id="cc-refine-submit-hoard" class="cc-cat-submit-hoard"></div>
+            <div id="cc-refine-submit-hoard-empty" class="cc-cat-submit-hoard-empty dim" hidden>
+              // no refinable RED parcels
+            </div>
+          </div>
+          <div class="cc-cat-submit-col cc-cat-submit-col--ctrl">
+            <div class="cc-cat-submit-col-head dim">// promotion</div>
+            <div class="cc-cat-submit-ramp dim" id="cc-refine-submit-ramp">
+              <div>trace &rarr; vein &middot; 10 blue/ea</div>
+              <div>vein &rarr; mass &middot; 20 blue/ea</div>
+              <div>max 5 inputs &middot; same tier</div>
+            </div>
+            <div class="cc-cat-submit-meta">
+              <div>
+                <span class="dim">inputs</span>
+                <span id="cc-refine-submit-meta-inputs">0</span>
+              </div>
+              <div>
+                <span class="dim">grade</span>
+                <span id="cc-refine-submit-meta-grade">&mdash;</span>
+              </div>
+              <div>
+                <span class="dim">blue cost</span>
+                <span id="cc-refine-submit-meta-cost">0</span>
+              </div>
+              <div>
+                <span class="dim">&Sigma; purity</span>
+                <span id="cc-refine-submit-meta-sum">0</span>
+              </div>
+              <div class="cc-cat-submit-meta-total" title="Output = floor(sum / M) full target-tier parcels at purity M, plus one residual parcel at sum mod M in the source tier.">
+                <span>OUTPUT</span>
+                <span id="cc-refine-submit-meta-out">&mdash;</span>
+              </div>
+            </div>
+          </div>
+          <div class="cc-cat-submit-col cc-cat-submit-col--grid">
+            <div class="cc-cat-submit-col-head dim">// output preview</div>
+            <div id="cc-refine-submit-grid" class="cc-cat-grid cc-cat-grid--preview cc-cat-grid--refine"></div>
+          </div>
+        </div>
+        <footer class="cc-cat-submit-foot">
+          <button
+            type="button"
+            id="cc-refine-submit-cancel"
+            class="cli-btn cc-cat-submit-cancel"
+          >[ cancel ]</button>
+          <button
+            type="button"
+            id="cc-refine-submit-ok"
+            class="cli-btn cli-btn-primary cc-cat-submit-ok"
+          >[ + queue refine ]</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- v0.9.6 — N-seat new-game launcher modal. MUST sit at body
+         level, outside #crt-viewport, because #crt-viewport applies
+         a CSS `filter` and any ancestor with `filter` / `transform`
+         / `perspective` becomes the containing block for
+         `position: fixed` descendants. Nested inside the header,
+         the modal collapsed into a header flex slot instead of
+         overlaying the whole document. Keep this block here. -->
+    <div id="new-game-modal" class="cc-newgame-modal" hidden role="dialog"
+         aria-modal="true" aria-labelledby="new-game-modal-title">
+      <div class="cc-newgame-modal-panel">
+        <header class="cc-newgame-modal-head">
+          <h2 id="new-game-modal-title">// new game launcher</h2>
+          <button id="new-game-modal-close" type="button"
+                  class="cli-btn" aria-label="Close launcher">
+            [ X ]
+          </button>
+        </header>
+        <div class="cc-newgame-modal-body">
+          <div class="cc-newgame-row">
+            <label class="cc-newgame-label" for="ngm-width">MAP WIDTH</label>
+            <input id="ngm-width" type="number" min="20" max="60" step="2"
+                   value="40" class="cc-newgame-input"
+                   aria-label="Map width in cells (20-60)" />
+            <label class="cc-newgame-label" for="ngm-height">HEIGHT</label>
+            <input id="ngm-height" type="number" min="14" max="48" step="2"
+                   value="28" class="cc-newgame-input"
+                   aria-label="Map height in cells (14-48)" />
+            <label class="cc-newgame-label" for="ngm-cap">NIGHTS</label>
+            <input id="ngm-cap" type="number" min="1" max="60" step="1"
+                   value="7" class="cc-newgame-input"
+                   aria-label="Season length in nights (1-60)" />
+          </div>
+          <div class="cc-newgame-row">
+            <label class="cc-newgame-label">SEATS</label>
+            <div id="ngm-seat-count" class="cc-newgame-seatcount" role="radiogroup"
+                 aria-label="Number of seats">
+              <button type="button" data-count="1"
+                      class="cli-btn cc-newgame-seatbtn">1</button>
+              <button type="button" data-count="2"
+                      class="cli-btn cc-newgame-seatbtn cc-newgame-seatbtn--on">2</button>
+              <button type="button" data-count="3"
+                      class="cli-btn cc-newgame-seatbtn">3</button>
+              <button type="button" data-count="4"
+                      class="cli-btn cc-newgame-seatbtn">4</button>
+            </div>
+          </div>
+          <div class="cc-newgame-row cc-newgame-row--vert">
+            <label class="cc-newgame-label">PLAYERS</label>
+            <ul id="ngm-seats" class="cc-newgame-seats">
+              <!-- Populated by app.js based on the active seat count. -->
+            </ul>
+          </div>
+          <div class="cc-newgame-row">
+            <label class="cc-newgame-label">VISIBILITY</label>
+            <div class="cc-newgame-visgroup" role="radiogroup"
+                 aria-label="Visibility mode">
+              <label class="cc-newgame-visopt">
+                <input type="radio" name="ngm-visibility" value="hidden" checked />
+                <span>HIDDEN — fog-of-war (you only see what your units see)</span>
+              </label>
+              <label class="cc-newgame-visopt">
+                <input type="radio" name="ngm-visibility" value="open" />
+                <span>OPEN — omniscient (every seat sees the whole board)</span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <footer class="cc-newgame-modal-foot">
+          <button id="new-game-modal-spawn" type="button"
+                  class="cli-btn cli-btn-primary">[ &gt; SPAWN SESSION ]</button>
+          <span id="new-game-modal-status" class="dim"></span>
+        </footer>
+      </div>
+    </div>
+
+    <!-- QR Code Generator (Kazuhiko Arase, MIT) — offline, no network.
+         Exposes a global `qrcode()` used by the invite modal to render a
+         scannable LAN link for phone players. -->
+    <script src="/static/vendor/qrcode.js"></script>
+    <script src="/static/app.js"></script>
+    <!-- Optional inline orbital station panels. Self-gates on ?station=1;
+         must load AFTER app.js so the window.osOnX hooks are wired before
+         the first replay payload fires osOnOrbitalDataLoaded. -->
+    <script src="/static/station.js"></script>
+  </body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Sea of Colours</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/landing.css" />
+</head>
+<body>
+  <!-- Full-bleed looping hero. Drop hero.webm / hero.mp4 / hero-poster.jpg
+       into /static/media/. Until then the CSS gradient fallback shows. -->
+  <video
+    id="hero-bg"
+    class="hero-bg"
+    autoplay
+    muted
+    loop
+    playsinline
+    webkit-playsinline
+    preload="auto"
+    poster="/static/media/hero-poster.jpg"
+  >
+    <source src="/static/media/hero.webm" type="video/webm" />
+    <source src="/static/media/hero.mp4" type="video/mp4" />
+  </video>
+  <div class="hero-overlay" aria-hidden="true"></div>
+
+  <!-- ═══ CIRCUIT FX OVERLAY — to revert, comment out this block ═══ -->
+  <canvas id="fx-cv" aria-hidden="true"></canvas>
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <main class="landing">
+    <h1 class="landing-title">
+      <span class="prompt-chevron">&gt;</span> <span id="title-content" style="opacity: 0;"><span class="glitch-word" data-word="sea">sea</span>_<span class="glitch-word" data-word="of">of</span>_<span class="glitch-word" data-word="colours">colours</span><span class="cursor-blink">_</span></span>
+    </h1>
+    <p class="landing-tagline" id="tagline">an agentic game of strategy and subterfuge also playable by algorithms and humans</p>
+    <nav class="landing-actions">
+      <button id="btn-play" type="button" class="landing-btn">
+        <span class="landing-btn-chevron">&gt;</span>
+        <span class="landing-btn-text">Play</span>
+      </button>
+      <button id="btn-multiplayer" type="button" class="landing-btn">
+        <span class="landing-btn-chevron">&gt;</span>
+        <span class="landing-btn-text">Multiplayer</span>
+      </button>
+      <button id="btn-replay" type="button" class="landing-btn">
+        <span class="landing-btn-chevron">&gt;</span>
+        <span class="landing-btn-text">Replay</span>
+      </button>
+    </nav>
+    <p id="landing-hint" class="landing-hint" role="status" aria-live="polite"></p>
+  </main>
+
+  <!-- Bottom-right server-status badge (polls /api/meta/status). -->
+  <div id="status-badge" class="status-badge" title="Server status">
+    <span class="status-dot" id="status-dot"></span>
+    <span class="status-label" id="status-label">&hellip;</span>
+  </div>
+
+  <script src="/static/landing.js"></script>
+  <!-- ═══ CIRCUIT FX OVERLAY — to revert, comment out this line ════ -->
+  <script src="/static/fx.js"></script>
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+</body>
+</html>

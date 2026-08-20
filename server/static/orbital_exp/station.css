@@ -1,0 +1,260 @@
+/* orbital_exp/station.css */
+
+.cc-hud-scoreboard { display: none !important; }
+
+
+/* Remove the 640px height cap on the main map host so the full board is visible */
+.map-host.map-host--main { max-height: none !important; overflow: visible !important; }
+.cc-map-viewport          { overflow: auto !important; }
+
+/* ── map row layout ──────────────────────────────────────────────── */
+
+.os-map-row {
+  grid-area: map;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.os-map-row > .cc-map-area {
+  grid-area: unset;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.os-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #030308;
+  flex: 0 0 96px;
+  overflow: hidden;
+}
+
+/* ── station panel ───────────────────────────────────────────────── */
+
+.os-station {
+  flex: 1 1 0;
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 4px;
+  gap: 0;
+  background: #05050e;
+  border: 1px solid #0e0e1c;
+  overflow: visible;
+  cursor: default;
+  transition: background 0.5s;
+}
+
+.os-station--night { background: #040410; }
+.os-station--day   { background: #060610; }
+
+/* ── unicode diamond ─────────────────────────────────────────────── */
+
+.os-diamond-wrap {
+  position: relative;
+  width: fit-content;
+  overflow: visible;
+}
+
+.os-diamond {
+  margin: 0;
+  padding: 0;
+  font-size: 14px;
+  line-height: 0.6;
+  white-space: pre;
+  letter-spacing: 0;
+  display: block;
+  overflow: visible;
+  /* color set inline per station via --os-color */
+}
+
+/* ── vault overlay pre ───────────────────────────────────────────── */
+
+/* Second <pre> laid exactly over the diamond. The main diamond pre leaves
+   the vault corner as spaces; this overlay renders only the vault chars,
+   so body chars never bleed into the vault region. */
+.os-vault-pre {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  padding: 0;
+  font-size: 14px;
+  line-height: 0.6;
+  white-space: pre;
+  letter-spacing: 0;
+  display: block;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+  background: transparent;
+}
+
+/* Each vault char is clipped to exactly one line-height slot (0.6em = 8.4px).
+   The shade glyphs are uniform fills so clipping 40% off looks identical —
+   same density, no bleed into adjacent rows. */
+.os-vault-pre span {
+  display: inline-block;
+  width: 1ch;
+  height: 0.6em;
+  overflow: hidden;
+  vertical-align: top;
+}
+
+.os-diamond-tag {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font: bold 10px/1 "Courier New", monospace;
+  color: #000;
+  letter-spacing: 0.12em;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ── central catapult panel (bottom of left column) ─────────────── */
+
+.os-catapult {
+  flex: 0 0 auto;
+  padding: 5px 4px 6px;
+  background: #040410;
+  border: 1px solid #0e0e1c;
+  border-top: 1px solid #1a1a2a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.os-catapult-label {
+  font: 7px/1 "Courier New", monospace;
+  color: #2a2a3a;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.os-catapult-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 13px);
+  gap: 1px;
+}
+
+.os-cat-slot {
+  width: 13px;
+  height: 13px;
+  background: #080814;
+  border: 1px solid #111120;
+  font: bold 8px/13px "Courier New", monospace;
+  color: var(--os-color, #222);
+  text-align: center;
+  display: inline-block;
+  transition: background 0.2s, color 0.2s;
+}
+
+.os-cat-slot[data-active] {
+  background: color-mix(in srgb, var(--os-color, #fff) 16%, #08081a);
+}
+
+/* Brief bright pulse at the moment of launch */
+.os-cat-slot[data-firing] {
+  background: color-mix(in srgb, var(--os-color, #fff) 40%, #08081a);
+  color: var(--os-color, #fff);
+}
+
+/* ── score ───────────────────────────────────────────────────────── */
+
+.os-score {
+  margin-top: 5px;
+  font: bold 14px/1 "Courier New", monospace;
+  color: var(--os-color, #fff);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 1px 3px;
+  transition: background 0.3s, color 0.3s;
+}
+
+.os-side--left  .os-score { align-self: flex-end;   padding-right: 6px; }
+.os-side--right .os-score { align-self: flex-start;  padding-left:  6px; }
+
+.os-score--lead {
+  background: var(--os-color, #fff);
+  color: #000;
+  padding: 1px 5px;
+}
+
+/* ── hover cards ─────────────────────────────────────────────────── */
+
+/* Shared floating hover card container. Uses the game's existing
+   .cc-report-* / .cc-cat-* CSS since we render the real report DOM. */
+.os-hover-card {
+  position: fixed;
+  z-index: 9200;
+  background: #06060f;
+  border: 1px solid #1a1a2e;
+  padding: 10px 12px;
+  width: 320px;
+  max-height: 80vh;
+  overflow-y: auto;
+  pointer-events: auto;
+  /* Inherit the game's base font so .cc-report-* rules render correctly */
+  font-family: "Courier New", monospace;
+}
+
+/* Catapult card is narrower — just the grid + legend */
+.os-hover-card--cat {
+  width: 260px;
+}
+
+.os-hover-card-head {
+  font: 700 9px/1.4 "Courier New", monospace;
+  color: #aaa;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.os-hover-card-dim {
+  font: 9px/1.4 "Courier New", monospace;
+  color: #444;
+  padding: 4px 0;
+}
+
+.os-hover-card-hint {
+  font: 8px/1 "Courier New", monospace;
+  color: #333;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 8px;
+  text-align: right;
+}
+
+/* Give the embedded report panels a bit of breathing room */
+.os-hover-card .cc-report-obs { margin-bottom: 10px; }
+.os-hover-card .cc-report-orbital-panel { margin-bottom: 0; }
+
+/* ── launch delay toggle ─────────────────────────────────────────── */
+
+.os-setting-btn {
+  font: 8px/1 "Courier New", monospace;
+  background: #0a0a18;
+  border: 1px solid #222233;
+  color: #444;
+  padding: 3px 6px;
+  cursor: pointer;
+  letter-spacing: 0.08em;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.os-setting-btn:hover   { border-color: #444466; color: #888; }
+.os-setting--on         { border-color: #4444aa !important; color: #8888ff !important; }
