@@ -1440,6 +1440,21 @@
     activateTab(visibleTabs[nx].dataset.tab);
   }
 
+  // ── deep links: #tab=orders ─────────────────────────────────────
+  // The install guide (guide/index.html) cites individual tabs, so a
+  // reader can land on the exact demo a step refers to. Namespaced as
+  // `tab=` rather than a bare `#orders` because `#editor` is already
+  // claimed as the author-mode switch above.
+  function tabFromHash() {
+    const m = /^#tab=([a-z0-9_-]+)$/i.exec(location.hash || "");
+    const name = m && m[1].toLowerCase();
+    return name && tabs.some((t) => t.dataset.tab === name) ? name : null;
+  }
+  window.addEventListener("hashchange", () => {
+    const name = tabFromHash();
+    if (name) activateTab(name);
+  });
+
   // ═══════════════════════════════════════════════════════════════
   // TAB 1 — the surface: staged fog → reveal → red → blue → green
   //
@@ -20271,5 +20286,7 @@
   // because the tiles tab already has `is-active` from the HTML, so
   // we must trigger it explicitly to actually run `tab1_start()`.
   applySectionFilter("basics");
-  activateTab("tiles");
+  // Honour a `#tab=` deep link from the install guide; activateTab
+  // pulls the strip over to that tab's own section on the way.
+  activateTab(tabFromHash() || "tiles");
 })();

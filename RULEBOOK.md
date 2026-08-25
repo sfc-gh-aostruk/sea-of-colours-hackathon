@@ -2312,8 +2312,8 @@ python scripts/deploy_soc_schema.py
 # schema/views only (safe to re-run; tables use CREATE TABLE IF NOT EXISTS)
 python scripts/deploy_soc_schema.py --schema-only
 
-# everything except the Cortex agent
-python scripts/deploy_soc_schema.py --no-agent
+# check where you're about to deploy, without connecting
+python scripts/deploy_soc_schema.py --dry-run
 ```
 
 Re-running the full deploy script is **non-destructive**: tables use

@@ -8,6 +8,11 @@ than the one in the box.
 
 ## Quickstart — play a game in two minutes
 
+**New here? Open [`guide/index.html`](guide/index.html) in a browser** —
+an illustrated walkthrough from downloading this repo to finishing your
+first season, including the Snowflake setup for the LLM agent. The rest
+of this file is the reference version of the same ground.
+
 Needs Python 3.10+. No Snowflake account, no config, no build step.
 
 ```bash
@@ -28,6 +33,7 @@ Open <http://127.0.0.1:8000>, hit **NEW GAME**, leave your seat as
 
 | I want to… | Go to |
 | --- | --- |
+| Be walked through the whole thing | [`guide/index.html`](guide/index.html) — install → first game → first agent change |
 | Learn the rules interactively | `manual/index.html` — open it in a browser |
 | Read the canonical rules | [RULEBOOK.md](RULEBOOK.md) |
 | Win a harder game | Set the rival to `RED_HARVEST` (weapons on) |
@@ -345,7 +351,6 @@ Flags:
 | ---- | ------ |
 | `--schema-only` | Stop after `soc_schema.sql` + `soc_views.sql`. |
 | `--no-procs`    | Skip `soc_procedures.sql` (procedures will be missing). |
-| `--no-agent`    | Skip any `soc_create_agent*.sql`. This distribution ships none, so it's a no-op — kept for BYO agent specs. |
 | `--config FILE` | Use a different Snowflake config (default: `~/.ssh/sf_config`). |
 | `--dry-run`     | Print the resolved target database / schema / warehouse and exit without connecting. |
 

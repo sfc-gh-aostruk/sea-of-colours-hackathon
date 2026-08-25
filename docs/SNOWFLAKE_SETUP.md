@@ -75,10 +75,11 @@ directly, same as the heuristic agents.
    PY
    ```
    `ready: True` and a response containing `pong` means you're set.
-7. **Play a game against V12** (or run it headless — see
-   `scripts/run_matchup_v12.py` / `scripts/run_season.py --p2 cortex`).
-   Keep `SOC_BACKEND=memory`; V12 does **not** need the Snowflake
-   backend — that's section 2 and entirely separate.
+7. **Play a game against V12** — seat P2 as `V12` in the New Game
+   launcher, or run it headless with
+   `python scripts/run_matchup_v12.py --modes heur lite`. Keep
+   `SOC_BACKEND=memory`; V12 does **not** need the Snowflake backend —
+   that's section 2 and entirely separate.
 
 ### Cost / rate-limit notes
 
@@ -124,8 +125,6 @@ pip install -r requirements-snowflake.txt
    account. Non-destructive — safe to re-run:
    ```bash
    python scripts/deploy_soc_schema.py
-   # or, to skip the Cortex Agents-API specs (not needed for V12):
-   python scripts/deploy_soc_schema.py --no-agent
    ```
 4. Run with the Snowflake backend:
    ```bash

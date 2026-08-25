@@ -1,19 +1,21 @@
-"""Competitive validation sweep for tabula_v12 (the WORLD-VIEW release).
+"""Competitive validation sweep for tabula_v12 — the benchmark to beat.
 
-Mirror of ``run_matchup_v11.py`` with p1 bound to tabula_v12, plus a v11 mode so
-v12 can be benchmarked head-to-head against the frozen v11 champion. Per-seat
-agents are bound via ``run_agent_turn(agent_label=...)`` so one season can mix
-v12 / v11 / v8 / v7 / heuristic:
+Headless seasons with p1 bound to tabula_v12 against the heuristic bots, so a
+change to the harness can be scored instead of eyeballed. Per-seat agents are
+bound via ``run_agent_turn(agent_label=...)``:
 
-  * mode=heur   — p1 tabula_v12  vs  p2 heuristic                 (performance floor)
-  * mode=mirror — p1/p2/p3 all tabula_v12                         (self-collision spread)
-  * mode=lite   — p1 tabula_v12  vs  p2 red_harvest_lite          (tutorial opponent)
-  * mode=v8v7   — p1 tabula_v12  vs  p2 tabula_v8  vs  p3 tabula_v7
+  * mode=heur   — p1 tabula_v12  vs  p2 RED_HARVEST                (performance floor)
+  * mode=lite   — p1 tabula_v12  vs  p2 RED_HARVEST_LITE           (tutorial opponent)
+  * mode=mirror — p1/p2/p3 all tabula_v12                          (self-collision spread)
+
+Needs Cortex credentials (see docs/SNOWFLAKE_SETUP.md §1) — every V12 seat
+calls the inference API each night. ``SOC_BACKEND=memory`` is fine; the
+Snowflake backend only buys you durable replay rows.
 
 Usage::
 
-    SOC_BACKEND=snowflake python scripts/run_matchup_v12.py \
-        --modes heur v11 --seeds 69 2 56 --jobs 3
+    SOC_BACKEND=memory python scripts/run_matchup_v12.py \
+        --modes heur lite --seeds 69 2 56 --jobs 3
 """
 
 from __future__ import annotations
@@ -36,9 +38,6 @@ _MODES: Dict[str, Dict[str, Optional[str]]] = {
     "heur3": {"p1": "tabula_v12", "p2": None, "p3": None, "p4": None},
     "mirror": {"p1": "tabula_v12", "p2": "tabula_v12", "p3": "tabula_v12"},
     "lite": {"p1": "tabula_v12", "p2": "red_harvest_lite"},
-    "v8v7": {"p1": "tabula_v12", "p2": "tabula_v8", "p3": "tabula_v7"},
-    "v7": {"p1": "tabula_v12", "p2": "tabula_v7"},
-    "v8": {"p1": "tabula_v12", "p2": "tabula_v8"},
 }
 
 _HERO = "tabula_v12"
@@ -136,19 +135,22 @@ def _run_one_safe(mode: str, seed: int, *, days: Optional[int], tag: str) -> dic
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="run_matchup_v12")
-    p.add_argument("--modes", nargs="*", default=["heur", "v11", "v8v7"],
+    p.add_argument("--modes", nargs="*", default=["heur", "lite"],
                    choices=list(_MODES.keys()))
     p.add_argument("--seeds", type=int, nargs="*", default=[69, 2, 56])
     p.add_argument("--pairs", nargs="*", default=None,
                    help="explicit MODE:SEED tasks (overrides --modes x --seeds), "
-                        "e.g. --pairs heur:69 v11:69 v8:69")
+                        "e.g. --pairs heur:69 lite:69 mirror:2")
     p.add_argument("--days", type=int, default=None)
     p.add_argument("--tag", default="VAL")
     p.add_argument("--jobs", type=int, default=1,
                    help="run this many seasons in parallel (separate processes)")
     args = p.parse_args(argv)
 
-    os.environ.setdefault("SOC_BACKEND", "snowflake")
+    # Memory, not snowflake: a benchmark run needs Cortex credentials but not
+    # a deployed schema, and defaulting to snowflake made the first run fail on
+    # a missing snowpark install rather than on anything to do with the agent.
+    os.environ.setdefault("SOC_BACKEND", "memory")
 
     # Build the task list: explicit pairs win, else the modes x seeds cross-product.
     if args.pairs:

@@ -13,6 +13,11 @@ This file is always-on context for AI agents; keep it lean and current.
   entry (and the triage table) when you fix something; mark it `✅ (DONE, vX.Y)`
   with root cause + fix.
 - `README.md` — CLI map generator + web/Snowflake setup and flags.
+- `guide/index.html` — the attendee-facing install guide + tutorial
+ (self-contained HTML, sibling to `manual/`, deep-links into it via
+ `#tab=<name>`). It quotes concrete commands, expected output and the
+ pytest baseline, so **it's a fan-out surface**: if you change install
+ steps, env vars, agent names or the new-game modal, reconcile it.
 - `docs/SNOWFLAKE_SETUP.md` — BYO-Snowflake-trial-account walkthrough
   (PAT for the V12 agent; optional schema deploy for persistent
   sessions). Playing/testing against `RED_HARVEST` / `RED_HARVEST_LITE`
@@ -114,6 +119,9 @@ Checklist for any rule/constant/formula change:
    and the `orchestrator_2/harnesses/pilot_v*` compilers must derive coverage /
    caps / costs from the constant or `tuning.py` — never a hardcoded copy
    (e.g. `_fog_yield` reads `probe_vision_radius()`).
+4b. **Onboarding surfaces.** `guide/index.html` and `manual/` restate
+ rules and numbers in prose an attendee reads *before* touching code —
+ the place a stale value does the most damage. Grep both.
 5. **Client/UI.** Mirror, don't hard-code, in `server/static/` (`app.js`,
    `index.html`, `styles.css`, `mobile.html`, and the `orbital_exp/` copies):
    check rendered denominators, `title=`/`aria-label=`/placeholder text, and

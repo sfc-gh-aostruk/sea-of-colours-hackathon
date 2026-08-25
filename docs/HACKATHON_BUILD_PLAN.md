@@ -92,7 +92,7 @@ weapons decision for the attendee to make.
 | 3 | Easy install & first-run verification pass — **the north-star phase**; untangle the two Snowflake dependencies, preserve the multiplayer/tunnel suite. Treat it as a product goal, not a checkbox | pending |
 | 4 | Simplify the Orbital phase down to purchasing + weapons buying (drop refine/catapult/jettison); re-teach all three agents the new orbit | pending — shape agreed, **confirm the open questions with the user before any implementation** |
 | 5 | Finish/polish the interactive manual (`manual/`) | pending |
-| 6 | Hackathon Guide (tab-shell onboarding, sibling to `manual/`) | pending |
+| 6 | Hackathon Guide (onboarding, sibling to `manual/`) | 🟡 first cut landed (2026-08-25) — `guide/index.html`; revisit after Phases 3/4 change the install story and the orbit |
 | 7 | In-game read-only agent advisor — invoke V12/RED_HARVEST mid-turn from the UI: reasoning card (readable + txt dump), magenta board overlay, adopt-into-your-policy | pending — V12 dispatch path now verified (Phase 2 notes), so the advisor can reuse it |
 | 7.5 | **The agent iteration loop** — make the turn-replay suite something an attendee can actually use to improve a fork | pending |
 | 8 | Drift-testing alarms + PR-based submission workflow doc; "add weapons to V12" as the flagship worked example | pending |
@@ -777,14 +777,12 @@ first move.
   in this phase.
 - Keep `SOC_BACKEND=memory` working and tested — it's what `pytest`
   uses and the offline fallback.
-- ⚠️ **`pytest.ini` sets `testpaths = tests`, so the 737 tests under
-  `sea_of_colours/orchestrator_2/tests/` never run on a bare `pytest`**
-  — including every test covering V12, the agent attendees fork. They
-  pass (verified in Phase 1.5), but an attendee who breaks their fork
-  gets a green suite. Add that directory to `testpaths`, or give the
-  guide an explicit "test your agent" command. Note it roughly doubles
-  runtime (~8s → ~70s), so it may be worth a marker rather than making
-  it the default.
+- ✅ (DONE, Phase 2) **`pytest.ini` collected only `tests`**, so the
+  ~737 orchestrator tests — including every test covering V12, the
+  agent attendees fork — never ran on a bare `pytest`, and someone who
+  broke their fork got a green suite. `testpaths` is now
+  `tests sea_of_colours/orchestrator_2/tests`. The feared cost didn't
+  materialise: both trees together run in ~6s, so no marker was needed.
 
 ### Isolate the deployment under its own database (decided)
 
@@ -1062,6 +1060,50 @@ demos. The tab ladder **is** the north-star arc, one rung at a time:
 Note this ladder deliberately front-loads *playing* (tabs 1–6) before
 *building* (7–10) — someone who hasn't felt a chaff flare cancel their
 turn has no intuition for why the weapons gap in V12 matters.
+
+### First cut — shipped 2026-08-25 (`guide/index.html`)
+
+Built as a **scrolling document**, not a tab shell. The ladder above is
+a reading order, and a scroll with a sticky section nav expresses that
+better than tabs, which invite jumping into step 7 before step 2. The
+manual keeps the tab shell because its tabs are independent demos; the
+guide's sections are sequential and each one assumes the last.
+Self-contained single file (inline CSS/JS), so it opens from a
+downloaded folder before Python exists on the machine.
+
+Palette, fonts and frame chrome are lifted from `manual/manual.css`, so
+the two read as one publication. Sections map to the ladder as:
+`00 What this is` (1) · `01 Install` + `02 First run` (2) ·
+`03 First game` (4) · `04 First night` (3, via deep links) ·
+`05 Snowflake` (2's ladder) · `06 Play V12` (5, 7) ·
+`07 Multiplayer` (6) · `08 Build` (7–9) · `09 Trouble`.
+
+**Also landed:** `manual/manual.js` now honours `#tab=<name>` deep
+links (`activateTab(tabFromHash() || "tiles")` plus a `hashchange`
+listener), so a guide step can drop the reader on the exact demo it
+cites. Namespaced `tab=` because bare `#editor` was already taken.
+Invalid or absent hashes fall back to `tiles`.
+
+**Deliberately honest, don't "fix" these by softening the text:**
+- The repo is **private** (`sfc-gh-lgalan/sea-of-colours-hackathon`), so
+  the guide says so and explains that GitHub 404s rather than 403s for
+  repos you can't see — otherwise every un-added attendee reads "404" as
+  "wrong URL". Attendees must be added as collaborators. If it ever goes
+  public, update the `data-repo-url` block in §01 and drop that note.
+- The `pytest` checkpoint names the known `two_seams_choose_one`
+  failure and its expected count rather than claiming green, so an
+  attendee doesn't debug a pre-existing bug as an install problem.
+- `02 First run` leads with `SOC_BACKEND=memory` and explains *why* the
+  env var is mandatory. **Phase 3 should delete that explanation**, not
+  reword it — when the backend auto-detects, this whole callout and the
+  matching troubleshooting rows come out.
+
+**Still owed (tabs 8 and 10 of the ladder):** the mint-a-new-agent
+workflow and the ship-it/drift-testing checklist are one-paragraph
+gestures in `08 Build`, pending Phases 7.5 and 8. `04 First night`
+narrates the loop against the *current* orbit — Phase 4's rework
+invalidates its last step and the `07 Multiplayer` hosting advice
+depends on Phase 3's backend decision.
 
 ## Phase 7 — In-game agent advisor (front-end invoker)
 
