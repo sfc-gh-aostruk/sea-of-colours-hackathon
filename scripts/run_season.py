@@ -155,13 +155,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("snowflake", "memory", "file"),
         default=None,
         help=(
-            "Storage backend (default: whatever SOC_BACKEND env is set to, "
-            "or 'snowflake' if unset)."
-            "since they reach the game state via the SOC_GET_VIEW stored "
-            "procedure — a memory-backed session is invisible to them. "
-            "'file' persists one JSON file per season under --store-dir so "
-            "the season is watchable offline (no Snowflake) by a "
-            "SOC_BACKEND=file server pointed at the same directory."
+            "Storage backend. Defaults to SOC_BACKEND, or auto-detect when "
+            "that is unset. 'memory' keeps the season in this process, so "
+            "a separate watcher server cannot see it. 'file' persists one "
+            "JSON file per season under --store-dir, making the season "
+            "watchable offline by a SOC_BACKEND=file server pointed at the "
+            "same directory. 'snowflake' persists to the deployed schema."
         ),
     )
     p.add_argument(
@@ -226,10 +225,24 @@ def _configure_backend(arg_backend: Optional[str]) -> str:
     """
     if arg_backend is not None:
         os.environ["SOC_BACKEND"] = arg_backend
-    # Default to snowflake when nothing else is set — the whole point of
-    # the CLI runner is to persist a season for the watcher.
-    os.environ.setdefault("SOC_BACKEND", "snowflake")
-    return os.environ["SOC_BACKEND"].lower()
+
+    # v1.12 — was a hard `setdefault("snowflake")`, on the reasoning
+    # that the point of the CLI runner is to persist a season for the
+    # watcher. True, but it made the runner unusable on a machine with
+    # no Snowflake at all. Defer to auto-detect and warn instead: a
+    # season nobody else can see is a surprise worth one line, not a
+    # crash.
+    from sea_of_colours.snowpark import backend as soc_backend
+
+    resolved = soc_backend.resolution()
+    if not resolved.persists:
+        print(
+            f"[season] {resolved.summary()} — this season will not be "
+            "visible to a separate watcher process. Use --backend file "
+            "for offline sharing, or --backend snowflake to persist.",
+            file=sys.stderr,
+        )
+    return resolved.name
 
 
 def _slug(name: Optional[str]) -> str:

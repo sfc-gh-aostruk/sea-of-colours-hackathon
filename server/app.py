@@ -1,9 +1,11 @@
 """FastAPI app — thin proxy over the SOC_* engine layer.
 
-Every game route delegates to :mod:`sea_of_colours.snowpark.engine`, with
-the storage backend selected via the ``SOC_BACKEND`` environment variable
-(``snowflake`` by default, writing live SOC_* tables; ``memory`` for the
-zero-setup offline store — see :mod:`sea_of_colours.snowpark.backend`).
+Every game route delegates to :mod:`sea_of_colours.snowpark.engine`. The
+storage backend is **auto-detected** unless ``SOC_BACKEND`` names one:
+``snowflake`` when the Snowpark deps and key-pair config are both
+present, otherwise the zero-setup in-process ``memory`` store. The
+resolved choice and the reason for it are printed at boot and served
+from ``/api/meta/backend`` — see :mod:`sea_of_colours.snowpark.backend`.
 
 Routes::
 
@@ -45,7 +47,8 @@ from sea_of_colours.evals.assertions import AssertionContext
 from sea_of_colours.evals.scenarios import SCENARIOS
 from sea_of_colours.generator import GenerationParams, generate_grid
 from sea_of_colours.render import cell_visual
-from sea_of_colours.snowpark.backend import SOC_BACKEND, get_store
+from sea_of_colours.snowpark import backend as soc_backend
+from sea_of_colours.snowpark.backend import get_store
 from sea_of_colours.snowpark import engine as soc_engine
 from sea_of_colours.game.session import MAX_SEATS
 
@@ -320,29 +323,46 @@ _MOBILE_HTML = _STATIC_DIR / "mobile.html"
 _LANDING_HTML = _STATIC_DIR / "landing.html"
 
 # ── Boot banner ────────────────────────────────────────────────────────
-# Log the resolved backend conspicuously on every startup — a stale
-# SOC_BACKEND inherited from another shell is otherwise invisible until
-# something fails mid-game.
-print(
-    f"[soc] FastAPI starting · SOC_BACKEND={SOC_BACKEND!r}",
-    file=sys.stderr,
-    flush=True,
-)
-if SOC_BACKEND == "memory":
-    # Be precise about what memory does and doesn't cost you. It is the
-    # supported zero-setup path: human seats, both heuristics, and the
-    # in-process LLM harness (V12 / ``harness_in_process``, which reaches
-    # Cortex over REST with a PAT) all work fine. The ONLY thing it
-    # breaks is the legacy Cortex Agents-API path, whose stored procs
-    # query Snowflake and so can't see an in-RAM session.
-    print(
-        "[soc] memory backend — sessions live in this process only and "
-        "are lost on restart. Human seats, RED_HARVEST/_LITE and the "
-        "V12 harness all work. (Only the legacy stored-proc Cortex "
-        "runtime needs SOC_BACKEND=snowflake.)",
-        file=sys.stderr,
-        flush=True,
-    )
+# Resolve and OPEN the store here, before serving. Building the Snowpark
+# session lazily meant a bad key or an undeployed schema surfaced as a
+# 500 on whichever API call happened to come first — nowhere near the
+# command the operator had just run.
+def _boot_banner() -> None:
+    print("[soc] FastAPI starting", file=sys.stderr, flush=True)
+    try:
+        res = soc_backend.probe_store()
+    except soc_backend.BackendUnavailable as exc:
+        print(f"[soc] {exc}", file=sys.stderr, flush=True)
+        if exc.fix:
+            print(f"[soc]   fix: {exc.fix}", file=sys.stderr, flush=True)
+        # Explicit request, explicit failure: don't limp along on a
+        # backend they didn't ask for and silently lose their seasons.
+        sys.exit(2)
+
+    print(f"[soc] {res.summary()}", file=sys.stderr, flush=True)
+    print(f"[soc]   {res.reason}", file=sys.stderr, flush=True)
+    if res.fix:
+        # Only call it a fix when something the operator asked for
+        # failed. Landing on memory because no Snowflake setup exists is
+        # the normal, supported outcome, and labelling that "fix" tells a
+        # first-timer their working install is broken.
+        label = "fix" if res.requested != "auto" else "for persistence"
+        print(f"[soc]   {label}: {res.fix}", file=sys.stderr, flush=True)
+    if not res.persists:
+        # Be precise about what memory does and doesn't cost you. It is
+        # the supported zero-setup path: human seats, both heuristics,
+        # and the in-process V12 harness (which reaches Cortex over REST
+        # with a PAT) all work fine. The only thing you lose is
+        # durability across a restart.
+        print(
+            "[soc]   human seats, RED_HARVEST/_LITE and V12 all work on "
+            "memory; you only lose seasons across a restart.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+_boot_banner()
 
 app = FastAPI(
     title="Sea of Colours",
@@ -1432,8 +1452,21 @@ def api_agent_think(
 
 @app.get("/api/meta/backend")
 def api_meta_backend() -> dict[str, Any]:
-    """Diagnostic — which storage backend is the proxy talking to."""
-    return {"backend": SOC_BACKEND}
+    """Diagnostic — which storage backend is the proxy talking to, and why.
+
+    ``reason`` matters as much as ``backend``: with auto-detection the
+    answer to "where did my game go?" is usually a sentence about a
+    missing dependency or config, not the backend name.
+    """
+    res = soc_backend.resolution()
+    return {
+        "backend": res.name,
+        "requested": res.requested,
+        "reason": res.reason,
+        "fix": res.fix,
+        "persists": res.persists,
+        "summary": res.summary(),
+    }
 
 
 @app.get("/api/meta/status")
@@ -1446,7 +1479,8 @@ def api_meta_status() -> dict[str, Any]:
     """
     from server import tunnel as soc_tunnel
 
-    backend = SOC_BACKEND
+    res = soc_backend.resolution()
+    backend = res.name
     stores: dict[str, str] = {}
     store = _store()
     health = getattr(store, "health", None)
@@ -1460,6 +1494,8 @@ def api_meta_status() -> dict[str, Any]:
         stores = {backend: "ok"}
     return {
         "backend": backend,
+        "persists": res.persists,
+        "reason": res.reason,
         "stores": stores,
         "tunnel": soc_tunnel.status(),
     }

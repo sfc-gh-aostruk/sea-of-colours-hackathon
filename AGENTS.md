@@ -36,9 +36,15 @@ python run_web.py        # FastAPI UI on http://127.0.0.1:8000 (reload on)
 pytest                   # tests/ (pythonpath=. via pytest.ini)
 ```
 
-- **Backend toggle:** `SOC_BACKEND` defaults to `snowflake`
-  (`sea_of_colours/snowpark/backend.py`). Use `SOC_BACKEND=memory` for offline,
-  in-process runs. **Tests set `memory`** — never require live Snowflake.
+- **Backend selection:** unset = **auto-detect**
+  (`sea_of_colours/snowpark/backend.py`) — `snowflake` only when the
+  Snowpark extras *and* key-pair `sf_config` are both present, else
+  `memory`. `SOC_BACKEND` overrides, and an explicit value is strict
+  (the server exits rather than falling back). **Auto never resolves to
+  a live backend under pytest** — detection keys off a config file most
+  dev machines have, and `init_session` wipes the target schema, so
+  that guard is what stops a test run writing to your account. Tests
+  that need a specific store set `SOC_BACKEND` themselves.
 - A dev server is usually already running (see the terminals folder). Check
   before starting another.
 

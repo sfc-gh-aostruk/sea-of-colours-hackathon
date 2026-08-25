@@ -1,7 +1,7 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.11
-Last updated: 2026-08-23
+Version: 1.12
+Last updated: 2026-08-25
 
 This is the single source of truth for the world, the fiction, and how
 play resolves. Every change is recorded in the [Changelog](#changelog) at
@@ -2156,11 +2156,16 @@ through `IMPORTS = '@SOC_PY_STAGE/sea_of_colours.zip'`.
 
 ### 5.3 Backend switch & cost guard
 
-- `SOC_BACKEND=snowflake` (**default**) — `SnowparkSocStore` against
-  the live schema named by `SOC_DATABASE` / `SOC_SCHEMA` (default
+- **Unset = auto-detect (v1.12, default).** Resolves to `snowflake`
+  only when the Snowpark extras and key-pair auth are both present,
+  otherwise `memory`. An explicit `SOC_BACKEND` always wins and is
+  strict: the server exits rather than silently degrading. Auto never
+  selects a live backend under pytest.
+- `SOC_BACKEND=snowflake` — `SnowparkSocStore` against the live schema
+  named by `SOC_DATABASE` / `SOC_SCHEMA` (default
   `SOC_HACKATHON_DB.SEA_OF_COLOURS`). Credentials come from
   `SF_CONFIG_FILE` (default `~/.ssh/sf_config`). Every season — whether
-  driven by `RED_HARVEST` or by a Cortex AI agent — persists here.
+  driven by `RED_HARVEST` or by an LLM agent — persists here.
 - `SOC_BACKEND=memory` — pure-Python `InMemorySocStore`. Used by tests
   and fully-offline dev sandboxes; the FastAPI proxy and the agent
   runtime use the same code path, so behaviour is identical.
@@ -2416,6 +2421,40 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.12 — 2026-08-25
+
+**Infrastructure — the storage backend is auto-detected (§5.3).** No rule
+or number changes; this is about who can reach the rules at all.
+
+`SOC_BACKEND` defaulted to `snowflake`, but `snowflake-snowpark-python`
+ships only in the optional `requirements-snowflake.txt`. A by-the-book
+`pip install -r requirements.txt && python run_web.py` therefore booted a
+server, rendered the homepage, and died with `ModuleNotFoundError` on the
+first game action — an install that looks successful right until it
+isn't, and the single worst first-run experience in the repo.
+
+Unset now means **auto**: `snowflake` when the Snowpark extras *and*
+key-pair auth are both present, otherwise the in-process `memory` store.
+Three properties are deliberate and worth preserving:
+
+- **Explicit is strict; auto is forgiving.** `SOC_BACKEND=snowflake`
+  makes the server exit rather than silently degrade, so a season never
+  lands somewhere the operator didn't intend. Only `auto` falls back,
+  and it prints why.
+- **A PAT-only `sf_config` never selects Snowflake.** That is the Cortex
+  setup for playing against V12 and implies nothing about wanting
+  persistence, so detection keys on `private_key_file=` instead.
+- **Auto never resolves to a live backend under pytest.** Detection keys
+  off a file present on any machine that has done the key-pair setup,
+  and `init_session` wipes the target schema — so without the guard,
+  running the suite on a developer laptop writes to their own account.
+
+The backend is now opened at boot rather than on first store access, so
+a bad key or an undeployed schema is reported next to the command that
+started the server instead of as a 500 on some later API call. The
+resolved backend, the reason and the fix are printed at startup, served
+from `GET /api/meta/backend`, and shown in the landing-page badge.
 
 ### v1.11 — 2026-08-23
 

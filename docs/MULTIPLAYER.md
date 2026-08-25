@@ -74,10 +74,12 @@ For phone-next-to-laptop with no tunnel:
 
 ## Hosting rules (don't break sync)
 
-- **`SOC_BACKEND=snowflake`** (the default) so every browser shares one
-  persisted session. `memory` is per-process and won't survive a restart or
-  share across machines. A server restart is safe with Snowflake — sessions
-  persist (Snowflake creds load from `SF_CONFIG_FILE` / `~/.ssh/sf_config`).
+- **Pin the backend explicitly** rather than relying on auto-detect, so
+  the host knows what it's running. All browsers hit the same process,
+  so `SOC_BACKEND=memory` is fine for one sitting and needs no setup —
+  it just won't survive a restart. For a match you can resume, use
+  `SOC_BACKEND=snowflake` (creds load from `SF_CONFIG_FILE` /
+  `~/.ssh/sf_config`).
 - **One uvicorn worker, no `--reload`.** The cross-player submit lock is a
   per-process `threading.Lock`.
 

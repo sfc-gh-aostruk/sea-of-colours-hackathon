@@ -17,17 +17,18 @@ Needs Python 3.10+. No Snowflake account, no config, no build step.
 
 ```bash
 pip install -r requirements.txt
-SOC_BACKEND=memory python run_web.py
+python run_web.py
 ```
 
 Open <http://127.0.0.1:8000>, hit **NEW GAME**, leave your seat as
 **HUMAN** and set a rival to **RED_HARVEST_LITE**, and play.
 
-> `SOC_BACKEND=memory` keeps the whole game in the server process — no
-> external services. It is required for now: the backend defaults to
-> `snowflake` and will fail on your first move without a deployed
-> schema. See [`docs/SNOWFLAKE_SETUP.md`](docs/SNOWFLAKE_SETUP.md) if
-> you want persistence or the LLM agent.
+> Where game state lives is auto-detected: with no Snowflake setup the
+> server uses the in-process `memory` store, which needs nothing and
+> runs the full game. It prints the backend it chose (and why) on the
+> second line of boot output. See
+> [`docs/SNOWFLAKE_SETUP.md`](docs/SNOWFLAKE_SETUP.md) if you want
+> persistence or the LLM agent.
 
 ### Where to go next
 
@@ -271,9 +272,11 @@ invalid one) shows a seat picker of the open human seats.
 
 Hosting notes for a shared game:
 
-- **Use the persistent backend.** Run with `SOC_BACKEND=snowflake` (the
-  default) so all browsers read/write the same session. `SOC_BACKEND=memory`
-  is per-process and won't survive a reload or share across machines.
+- **Pin the backend.** One process serves every browser, so `memory`
+  works for a single sitting; pin it (`SOC_BACKEND=memory`) so a host
+  who has Snowflake configured doesn't auto-detect into it mid-party.
+  For a game that survives a server restart, pin
+  `SOC_BACKEND=snowflake` instead.
 - **Run a single worker, no `--reload`.** The cross-player submit lock is a
   per-process `threading.Lock`, so keep one `uvicorn` worker:
   `PYTHONPATH=. uvicorn server.app:app --host 0.0.0.0 --port 8000`.
@@ -313,17 +316,24 @@ full table layout, view list, and procedure surface.
 BYO-trial-account walkthrough (getting a PAT for the V12 agent, and
 optionally deploying the schema for persistent sessions). You don't
 need any Snowflake account at all to play against `RED_HARVEST` /
-`RED_HARVEST_LITE` — `SOC_BACKEND=memory` covers that fully offline.
+`RED_HARVEST_LITE` — the auto-detected `memory` store covers that fully
+offline.
 
-Backend toggle (default `snowflake` — set `SOC_BACKEND=memory` for the
-fully offline, pure-Python in-process store used by tests and the
-zero-setup hackathon path):
+**Backend selection.** Unset means *auto*: `snowflake` when the Snowpark
+deps and key-pair auth are both present, otherwise the in-process
+`memory` store. `SOC_BACKEND` overrides it, and an explicit value is
+strict — the server exits rather than quietly falling back, so a
+persistent season never lands somewhere you didn't intend.
 
 ```bash
-python run_web.py                         # default: persists to Snowflake
-SOC_BACKEND=memory   python run_web.py    # fully offline, in-process only
-SOC_BACKEND=snowflake python run_web.py   # explicit Snowflake (same as default)
+python run_web.py                         # auto-detect; prints what it chose
+SOC_BACKEND=memory    python run_web.py   # fully offline, in-process only
+SOC_BACKEND=file      python run_web.py   # offline but durable, one JSON per season
+SOC_BACKEND=snowflake python run_web.py   # require Snowflake; fail loudly if unusable
 ```
+
+`GET /api/meta/backend` reports the resolved backend, the reason, and
+whether it persists; the landing-page badge shows the same thing.
 
 #### Season lifecycle: one season at a time, overwritten on NEW GAME
 

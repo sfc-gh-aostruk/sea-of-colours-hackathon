@@ -403,9 +403,19 @@
       state = "local"; text = "local";
     } else if (s && s.backend) {
       state = s.backend === "snowflake" ? "snowflake" : "local";
-      text = state;
+      // v1.12 — name the actual backend rather than the generic
+      // "local". Since the backend is now auto-detected, "local" left
+      // people unable to tell durable file storage from an in-RAM store
+      // that drops every season on restart.
+      text = s.backend;
     }
     badge.dataset.state = state;
+    // The reason is the part that answers "where did my game go?".
+    badge.title = (s && s.reason)
+      ? s.reason + (s.persists === false
+          ? " — sessions are lost when the server restarts"
+          : "")
+      : "Server status";
     var tunnelOn = s && s.tunnel && s.tunnel.running;
     label.innerHTML = text + (tunnelOn
       ? ' <span class="status-tunnel">&middot; public</span>'

@@ -1,16 +1,17 @@
 # BYO-Snowflake setup
 
-**TL;DR: you don't need any of this to play.** Start the server with
-`SOC_BACKEND=memory` and you get a full game against `RED_HARVEST` /
-`RED_HARVEST_LITE` with zero external services:
+**TL;DR: you don't need any of this to play.** Just start the server and
+you get a full game against `RED_HARVEST` / `RED_HARVEST_LITE` with zero
+external services:
 
 ```bash
-SOC_BACKEND=memory python run_web.py
+python run_web.py
 ```
 
-> ⚠️ The env var is required today: `SOC_BACKEND` currently **defaults
-> to `snowflake`**, so leaving it unset takes you down section 2's path
-> and fails on your first game action if the schema isn't deployed.
+> The storage backend is auto-detected. With no Snowflake setup you land
+> on the in-process `memory` store, and the server says so on boot.
+> Nothing below is required to reach that state — sections 1 and 2 are
+> each opt-in, and independent of one another.
 
 There are two — **independent** — reasons to bring a Snowflake account
 into it. You can do either without the other:
@@ -77,9 +78,10 @@ directly, same as the heuristic agents.
    `ready: True` and a response containing `pong` means you're set.
 7. **Play a game against V12** — seat P2 as `V12` in the New Game
    launcher, or run it headless with
-   `python scripts/run_matchup_v12.py --modes heur lite`. Keep
-   `SOC_BACKEND=memory`; V12 does **not** need the Snowflake backend —
-   that's section 2 and entirely separate.
+   `python scripts/run_matchup_v12.py --modes heur lite`. V12 does
+   **not** need the Snowflake backend — that's section 2 and entirely
+   separate. A PAT-only `sf_config` deliberately does not flip the
+   backend, so adding one here won't start writing to your account.
 
 ### Cost / rate-limit notes
 
@@ -148,5 +150,7 @@ and cost notes on this path.
 | `CortexChatInvoker(...).is_ready()` is `False` | `SNOWFLAKE_PAT` unset/empty, or `account=` missing/wrong in `sf_config`. |
 | `401`/`403` from the chat-completions call | Role on the PAT doesn't have `SNOWFLAKE.CORTEX_USER` granted, or the PAT expired. |
 | Cortex call times out / V12 falls back to a shorter plan | Normal under load — V12's wall-clock cap intentionally truncates and falls back rather than stalling the game; see the harness's timeout constants if you want to tune it. |
-| `ModuleNotFoundError: snowflake.snowpark` | You left `SOC_BACKEND` unset (it defaults to `snowflake`) without `pip install -r requirements-snowflake.txt`. To just play: `SOC_BACKEND=memory python run_web.py`. Not needed for V12 / the PAT path above. |
-| Server starts fine, then errors the moment you start a game | Same cause as the row above — the store backend is resolved lazily on first use, not at boot. |
+| `ModuleNotFoundError: snowflake.snowpark` | You set `SOC_BACKEND=snowflake` without `pip install -r requirements-snowflake.txt`. Unset it to auto-detect, or install the extras. Not needed for V12 / the PAT path above. |
+| `SOC_BACKEND=snowflake was requested but the store could not be opened` | Explicit requests are strict by design — the server exits rather than silently writing your season to the in-memory store. The next line names the fix. |
+| Boot says `store backend: memory` when you wanted Snowflake | Auto-detect needs *both* the Snowpark extras and `private_key_file=` in `sf_config`; the boot line says which one is missing. A PAT alone is section 1 and never selects this backend. |
+| Sessions disappear when you restart the server | You're on `memory`. Section 2 makes them durable; `GET /api/meta/backend` confirms which store is live. |

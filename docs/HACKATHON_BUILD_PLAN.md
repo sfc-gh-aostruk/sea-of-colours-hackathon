@@ -728,44 +728,68 @@ first move.
 
 ### The work
 
-- **Fix the broken default.** `SOC_BACKEND` defaults to `snowflake`,
-  but `snowflake-snowpark-python` lives only in the *optional*
-  `requirements-snowflake.txt`. So a by-the-book
-  `pip install -r requirements.txt && python run_web.py` boots a
-  server, renders the homepage, and then dies with
-  `ModuleNotFoundError: snowflake.snowpark` on the first game action.
-  It looks like the install worked right up until it doesn't — the
-  worst first-run bug in the repo. Auto-detect fixes this by
-  construction; also decide whether Snowpark now belongs in the base
-  `requirements.txt` (it makes the good path one install instead of
-  two, at the cost of a heavy dep for people who never use it).
-- **Resolve the backend at startup, not lazily.** Today the Snowpark
-  session is built on first store access, so failures surface on a
-  random API call rather than next to the command they just ran. Probe
-  once at boot, log the resolved backend plainly
-  (`store backend: snowflake (UMAN_SIM_DB.SEA_OF_COLOURS)` /
-  `store backend: memory — sessions will not persist`), and **show it
-  in the UI** so nobody wonders where their game went.
-- **Actionable messages for every half-configured state**, each naming
-  the next command: no `sf_config` → what file and keys to create;
-  config present but schema absent → *"run
-  `python scripts/deploy_soc_schema.py`"*; warehouse unreachable /
-  suspended / bad key-pair → distinguish from "not set up yet", since
-  the fixes differ. Never a raw traceback.
+- ✅ (DONE, v1.12) **Fix the broken default.** `SOC_BACKEND` defaulted
+  to `snowflake` while `snowflake-snowpark-python` lived only in the
+  *optional* `requirements-snowflake.txt`, so a by-the-book
+  `pip install -r requirements.txt && python run_web.py` booted a
+  server, rendered the homepage, and died with
+  `ModuleNotFoundError: snowflake.snowpark` on the first game action —
+  an install that looks fine right up until it doesn't. Unset now means
+  **auto**: `snowflake` only when the Snowpark extras *and* key-pair
+  auth are both present, else `memory`.
+  - **Explicit is strict, auto is forgiving.** `SOC_BACKEND=snowflake`
+    exits rather than silently degrading, so a season never lands
+    somewhere the operator didn't intend; only `auto` falls back.
+  - **A PAT-only `sf_config` does not select Snowflake.** That's the
+    docs §1 / V12 setup and says nothing about wanting persistence.
+    Keying detection on `private_key_file` keeps "I want to play
+    against V12" from turning into "I'm writing to your account".
+  - ⚠️ **Auto never resolves to a live backend under pytest.** Detection
+    keys off a config file present on any machine that has done the
+    key-pair setup, and `init_session` *wipes the target schema* — and
+    `tests/conftest.py` pins nothing (individual modules `setdefault`
+    ad hoc). Without the guard, a dev running the suite writes to their
+    own account. This is the same class of accident that destroyed dev
+    data during Phase 1.5. Pinned by
+    `tests/test_backend_autodetect.py`.
+  - Snowpark stays *out* of base `requirements.txt`: auto-detect
+    removes the reason to add it, and it's a heavy dep for the majority
+    who never persist.
+- ✅ (DONE, v1.12) **Resolve the backend at startup, not lazily.**
+  `probe_store()` opens the store in the boot banner, so a bad key or
+  an undeployed schema is reported next to the command that started the
+  server instead of as a 500 on whichever API call came first. Boot
+  prints the resolved backend, the reason, and the fix.
+- ✅ (DONE, v1.12) **Show it in the UI.** `/api/meta/backend` returns
+  `{backend, requested, reason, fix, persists, summary}`;
+  `/api/meta/status` gained `persists` + `reason`. The landing badge
+  names the real backend (`memory`, not the old ambiguous `local`) and
+  carries the reason as its tooltip.
+- ✅ (DONE, v1.12) **Actionable messages for every half-configured
+  state**, via `_fix_for()`: missing config → the keys to add; schema
+  absent → `python scripts/deploy_soc_schema.py`; bad key-pair / JWT →
+  check `user=` and the registered public key; warehouse trouble →
+  distinguished from "not set up yet", since the fixes differ. The
+  "for persistence:" hint is deliberately *not* labelled "fix" on the
+  auto→memory path — landing on memory is the supported outcome, and
+  calling it a fix tells a first-timer their working install is broken.
 - **`scripts/quickstart_check.py`** becomes load-bearing rather than a
   nice-to-have: Python version, deps importable, config found, Snowpark
   session opens, schema present, PAT reachable, `cloudflared` on PATH
   (see multiplayer below), `pytest` green — one pass/fail line each
   with the fix command beside any failure. This is what turns "it
   doesn't work" into a support-free hackathon.
-- **Fix the docs' story.** `docs/SNOWFLAKE_SETUP.md` opens with *"TL;DR:
-  you don't need any of this to play"* and calls memory "the default
-  for local dev" — the second half is wrong against the code. Reframe
-  it as a ladder that matches the guide: play immediately → PAT for
-  Cortex so you can meet V12 → key-pair + schema deploy so your seasons
-  persist on your own account. Fan-out: `README.md`, `AGENTS.md`,
-  `.env.canonical`, and the troubleshooting row that currently
-  documents the Snowpark `ModuleNotFoundError` as expected.
+- ✅ (DONE, v1.12) **Fix the docs' story.** Every surface that told
+  people to prefix `SOC_BACKEND=memory` now just says `python
+  run_web.py`: `README.md` (quickstart + backend table + hosting note),
+  `docs/SNOWFLAKE_SETUP.md` (TL;DR + four rewritten troubleshooting
+  rows), `AGENTS.md`, `docs/MULTIPLAYER.md`, `RULEBOOK.md` §5.3,
+  `guide/index.html` (02 First run, 05 Snowflake, 07 Multiplayer,
+  troubleshooting). There is no `.env.canonical` in this repo.
+  `scripts/run_season.py` no longer forces `snowflake` when unset —
+  that made the runner unusable offline; it auto-detects and warns that
+  a memory season is invisible to a separate watcher. Its `--backend`
+  help also had a dangling sentence fragment, now rewritten.
 - **Verify end-to-end against a genuinely fresh trial account and a
   fresh clone**, walking the doc literally as a first-time reader
   would — not from this already-configured machine. Re-verify after

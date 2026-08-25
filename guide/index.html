@@ -735,30 +735,33 @@
           </div>
           <div class="gd-term">
             <button class="gd-copy" type="button">[ COPY ]</button>
-<pre><span class="s">$</span> SOC_BACKEND=memory python run_web.py
-<span class="o">[soc] FastAPI starting · SOC_BACKEND='memory'</span>
+<pre><span class="s">$</span> python run_web.py
+<span class="o">[soc] FastAPI starting</span>
+<span class="o">[soc] store backend: memory — sessions will not persist</span>
+<span class="o">[soc]   auto-detected memory: no Snowflake config at ~/.ssh/sf_config</span>
 <span class="o">INFO:     Uvicorn running on http://127.0.0.1:8000</span></pre>
           </div>
           <p>
             Open <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>.
           </p>
-          <p class="dim">
-            On Windows <code>cmd</code>, set it first:
-            <code>set SOC_BACKEND=memory</code> then <code>python run_web.py</code>.
-            In PowerShell: <code>$env:SOC_BACKEND="memory"</code>.
-          </p>
         </div>
 
-        <div class="gd-note gd-note--warn">
-          <b class="tag">Why the env var</b>
+        <div class="gd-note">
+          <b class="tag">What that second line means</b>
           <p>
-            <code>SOC_BACKEND</code> chooses where game state lives, and it
-            currently <strong>defaults to <code>snowflake</code></strong>. Leave
-            it unset and the server boots fine, then fails on your first game
-            action because no schema is deployed.
-            <code>memory</code> keeps every session in the server process:
-            perfect for playing, and it costs nothing. The only thing you lose
-            is persistence across restarts.
+            The server picks where game state lives by looking at what you
+            actually have installed. With no Snowflake setup it uses
+            <code>memory</code> &mdash; every session lives in the server
+            process. That is the right answer for now: it costs nothing and
+            the whole game works, including both heuristics and the V12
+            agent. The only thing you give up is keeping seasons across a
+            restart, and <a href="#snowflake">section 05</a> fixes that if
+            you want it.
+          </p>
+          <p class="dim">
+            You can always force the choice with
+            <code>SOC_BACKEND=memory|file|snowflake</code>, and the badge in
+            the bottom-right corner of the page names the backend in use.
           </p>
         </div>
 
@@ -1029,9 +1032,13 @@ PY</pre>
             <span class="gd-frame-sub">skip unless you want durable seasons</span>
           </div>
           <p>
-            Everything above uses <code>SOC_BACKEND=memory</code>. If you want
-            every season written to real tables, this is a separate setup with
-            <a href="https://docs.snowflake.com/en/user-guide/key-pair-auth">key-pair auth</a>:
+            Everything above ran on the <code>memory</code> backend. If you
+            want every season written to real tables, this is a separate
+            setup with
+            <a href="https://docs.snowflake.com/en/user-guide/key-pair-auth">key-pair auth</a>
+            &mdash; note that the PAT from section 1 is <em>not</em> enough,
+            and deliberately so: wanting to play against V12 shouldn't
+            silently start writing to your account.
           </p>
           <div class="gd-term">
             <button class="gd-copy" type="button">[ COPY ]</button>
@@ -1043,8 +1050,16 @@ PY</pre>
 <span class="o">Target: SOC_HACKATHON_DB.SEA_OF_COLOURS (warehouse SOC_HACKATHON_WH)</span>
 
 <span class="s">$</span> python scripts/deploy_soc_schema.py
-<span class="s">$</span> SOC_BACKEND=snowflake python run_web.py</pre>
+<span class="s">$</span> python run_web.py
+<span class="o">[soc] store backend: snowflake (SOC_HACKATHON_DB.SEA_OF_COLOURS)</span></pre>
           </div>
+          <p class="dim">
+            Once key-pair auth is in <code>sf_config</code> the server picks
+            the Snowflake backend on its own &mdash; no env var. Set
+            <code>SOC_BACKEND=snowflake</code> explicitly if you'd rather the
+            server refuse to start than quietly fall back to
+            <code>memory</code> when something's wrong.
+          </p>
           <p class="dim">
             The database, schema and an XSMALL auto-suspending warehouse are
             created if absent, so this works on a brand-new account. Names are
@@ -1136,6 +1151,8 @@ PY</pre>
           <div class="gd-term">
             <button class="gd-copy" type="button">[ COPY ]</button>
 <pre><span class="c"># bind to all interfaces — one worker, no --reload</span>
+<span class="c"># backend pinned so a host who has done section 05 still keeps</span>
+<span class="c"># the whole match in a single process</span>
 <span class="s">$</span> PYTHONPATH=. SOC_BACKEND=memory uvicorn server.app:app --host 0.0.0.0 --port 8000
 
 <span class="c"># in a second terminal: a public URL anyone can open</span>
@@ -1276,17 +1293,29 @@ PY</pre>
             <tr>
               <td><code>ModuleNotFoundError: snowflake.snowpark</code></td>
               <td>
-                You are on the Snowflake backend without the optional deps.
-                Either prefix with <code>SOC_BACKEND=memory</code>, or
-                <code>pip install -r requirements-snowflake.txt</code>.
+                You set <code>SOC_BACKEND=snowflake</code> without the
+                optional deps: <code>pip install -r
+                requirements-snowflake.txt</code>, or unset the variable and
+                let the server auto-detect.
               </td>
             </tr>
             <tr>
-              <td>Server starts, first action errors</td>
               <td>
-                Same cause: <code>SOC_BACKEND</code> defaults to
-                <code>snowflake</code> and no schema is deployed. Set it to
-                <code>memory</code>.
+                <code>SOC_BACKEND=snowflake was requested but the store
+                could not be opened</code>
+              </td>
+              <td>
+                An explicit request is strict on purpose &mdash; better to
+                stop than to write your season somewhere you didn't mean.
+                The line under it names the fix.
+              </td>
+            </tr>
+            <tr>
+              <td>Game vanished after a restart</td>
+              <td>
+                You are on <code>memory</code>. Check the boot line or the
+                badge in the bottom-right; <a href="#snowflake">05</a> makes
+                seasons durable.
               </td>
             </tr>
             <tr>
