@@ -865,10 +865,15 @@ def test_orbit_playbook_falls_back_to_one_probe_on_tight_budget():
     assert probe_action.get("count") == 1
 
 
-def test_orbit_playbook_honours_three_action_slot_cap():
-    """Three damaged harvesters → all 3 slots go to repair; the
-    probe / harvester builds get deferred even when the seat has
-    cash. RULEBOOK §4 caps Orbit submissions at 3 actions."""
+def test_orbit_playbook_is_no_longer_capped_at_three_actions():
+    """v1.13 — the 3-slot cap is gone; credits are the only limit.
+
+    Three damaged harvesters and plenty of cash used to mean all three
+    slots went to repair and everything else was deferred. Now the seat
+    repairs all three AND tops the probe magazine up in the same orbit,
+    because there was never a reason "repair, repair, repair" should
+    forbid also buying a probe.
+    """
     from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
 
     view = _make_orbit_view(
@@ -878,20 +883,18 @@ def test_orbit_playbook_honours_three_action_slot_cap():
         healthy_ids=(),
     )
     actions, _ = plan_orbit_actions(view)
-    assert len(actions) == 3
-    assert all(a["a"] == "repair" for a in actions)
+    assert len(actions) > 3
+    assert [a["a"] for a in actions[:3]] == ["repair"] * 3
+    assert any(a["a"] == "build_probe" for a in actions)
 
 
-# ── v0.9.6 catapult + jettison playbook coverage ────────────────────
+def test_orbit_playbook_priority_repair_before_harvester_before_probes():
+    """Priority order: repair → build_harvester → weapons → probes.
 
-
-def test_orbit_playbook_v096_priority_repair_before_harvester_before_probes():
-    """v0.9.6 priority: repair → build_harvester → 2 probes → ship →
-    jettison. With 2000c + 1 damaged unit + 2/3 fleet, the seat
-    spends the full budget before the slot cap bites:
-      slot 0: repair (500c left 1500)
-      slot 1: build_harvester (1500c left 0) → defer probes since
-              we hit the slot cap on the next pickup
+    With 2000c, one damaged unit and 2/3 fleet: repair (500c, 1500
+    left) then the harvester (1500c, 0 left), leaving nothing for
+    probes. The ordering is the assertion — a dead rig and an
+    undersized fleet both out-earn another probe.
     """
     from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
 
@@ -903,146 +906,20 @@ def test_orbit_playbook_v096_priority_repair_before_harvester_before_probes():
     )
     actions, _ = plan_orbit_actions(view)
     assert actions[0] == {"a": "repair", "unit": "harvester_p1_2"}
-    # v0.9.6 — harvester comes BEFORE probes in priority order.
     assert actions[1] == {"a": "build_harvester"}
 
 
-def test_orbit_playbook_emits_ship_catapult_when_hoard_has_red():
-    """With RED in the hoard, the playbook queues a ``ship_catapult``
-    bid naming the highest-purity parcels with a flat credit bid each
-    (RULEBOOK §4.4)."""
+def test_orbit_playbook_banks_credits_on_the_final_orbit():
+    """v1.13 — settlement is automatic, so nothing bought on the final
+    orbit is ever used. The playbook spends nothing rather than burning
+    the balance on a harvester that will never fly."""
     from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
 
-    view = _make_orbit_view(
-        credits=300,  # too low for harvester, builds 1 probe (250)
-        cap_used=1,
-        red_parcels=(("red-a", 200), ("red-b", 100), ("red-c", 80)),
-    )
-    actions, _ = plan_orbit_actions(view)
-    tags = [a["a"] for a in actions]
-    assert "ship_catapult" in tags
-    bid = next(a for a in actions if a["a"] == "ship_catapult")
-    # 3 RED parcels named; bid_each = min(25, remaining(50)//3) = 16.
-    assert len(bid["bids"]) == 3
-    assert {b["id"] for b in bid["bids"]} == {"red-a", "red-b", "red-c"}
-    assert all(b["credits"] == 16 for b in bid["bids"])
-
-
-def test_orbit_playbook_emits_solar_jettison_when_hoard_has_green():
-    """GREEN parcels trigger the green-catapult flush, bidding a
-    RIGHT-SIZED RED fuel commitment (solo-flush floor + one slot-step of
-    rank headroom), capped at the toxic-legacy penalty it avoids."""
-    from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
-
-    view = _make_orbit_view(
-        credits=300,
-        cap_used=1,
-        green_parcels=3,
-    )
-    actions, _ = plan_orbit_actions(view)
-    tags = [a["a"] for a in actions]
-    assert "solar_jettison" in tags
-    jett = next(a for a in actions if a["a"] == "solar_jettison")
-    # Solo-flush floor for 3 parcels = 50 + 45 + 40 = 135; + one
-    # slot-step (5) of rank headroom = 140. Penalty avoided is
-    # 3 × 100 = 300, so the 140 bid is well under the cap.
-    assert jett["red_fuel"] == 140
-    assert jett["green_parcels"] == 3
-
-
-def test_orbit_playbook_green_bid_is_right_sized_not_escalated():
-    """The flush bid is RIGHT-SIZED, not desperate: it does NOT ramp up
-    near the endgame (over-bidding burns shippable RED, since the
-    resolver forfeits the whole commitment), and it is hard-capped at
-    the toxic-legacy penalty it avoids."""
-    from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
-
-    def _bid(day, cap, green):
-        view = _make_orbit_view(credits=300, cap_used=1, green_parcels=green)
-        view["hud"]["day"] = day
-        view["hud"]["season_day_cap"] = cap
-        actions, _ = plan_orbit_actions(view)
-        return next(a for a in actions if a["a"] == "solar_jettison")["red_fuel"]
-
-    # Same green count → same bid regardless of nights left (flat).
-    early = _bid(1, 10, 2)
-    mid = _bid(7, 10, 2)
-    final = _bid(9, 10, 2)
-    assert early == mid == final
-    # Floor for 2 parcels = 50 + 45 = 95; + one slot-step (5) = 100,
-    # which also equals the 2 × 100 penalty cap.
-    assert early == 100
-
-    # A single green parcel: floor 50 + step 5 = 55, under the 100 cap.
-    assert _bid(1, 10, 1) == 55
-
-
-def test_orbit_playbook_skips_catapult_when_hoard_empty():
-    """No RED in the hoard → no ship_catapult bid (RULEBOOK §4.4)."""
-    from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
-
-    view = _make_orbit_view(credits=300, cap_used=1, red_parcels=())
-    actions, _ = plan_orbit_actions(view)
-    tags = [a["a"] for a in actions]
-    assert "ship_catapult" not in tags
-
-
-def test_orbit_playbook_ships_vein_even_when_broke():
-    """v1.x — SHIPPING IS THE GAME: a VEIN+ parcel launches even with 0
-    credits (a 0-credit bid is legal, RULEBOOK §4.4). Refusing to ship
-    when broke was the "hoard RED → settle at 0" bug."""
-    from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
-
-    # 0 credits, but a shippable VEIN parcel in the hoard.
-    view = _make_orbit_view(
-        credits=0,
-        cap_used=3,  # fleet full → no harvester build competing for slots
-        red_parcels=(("red-vein", 150),),
-        blue_purity_total=0,
-    )
-    actions, _ = plan_orbit_actions(view)
-    ship = next((a for a in actions if a["a"] == "ship_catapult"), None)
-    assert ship is not None, "must ship its VEIN parcel even at 0 credits"
-    assert {b["id"] for b in ship["bids"]} == {"red-vein"}
-    assert all(int(b["credits"]) == 0 for b in ship["bids"])
-
-
-def test_orbit_playbook_only_ships_vein_or_above():
-    """v0.9.9 — sub-VEIN (purity ≤ 50) RED is NOT catapulted; only
-    VEIN-or-above parcels make the ship list."""
-    from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
-
-    view = _make_orbit_view(
-        credits=300,
-        cap_used=1,
-        # one VEIN (120), one TRACE (30): only the VEIN ships.
-        red_parcels=(("red-vein", 120), ("red-trace", 30)),
-        blue_purity_total=80,
-    )
-    actions, _ = plan_orbit_actions(view)
-    ship = next((a for a in actions if a["a"] == "ship_catapult"), None)
-    assert ship is not None
-    shipped_ids = {b["id"] for b in ship["bids"]}
-    assert shipped_ids == {"red-vein"}, "TRACE parcel must not ship"
-
-
-def test_orbit_playbook_refines_trace_parcels():
-    """v0.9.9 — TRACE parcels trigger a refine toward VEIN when the
-    seat has blue to pay for it."""
-    from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
-
-    view = _make_orbit_view(
-        credits=300,
-        cap_used=1,
-        red_parcels=(("red-trace-a", 20), ("red-trace-b", 40)),
-        blue_purity_total=120,
-    )
-    actions, _ = plan_orbit_actions(view)
-    refine = next((a for a in actions if a["a"] == "refine"), None)
-    assert refine is not None
-    assert refine["source_tier"] == "trace"
-    # All-trace hoard → nothing ships.
-    assert all(a["a"] != "ship_catapult" for a in actions)
+    view = _make_orbit_view(credits=5000, cap_used=1)
+    view["orbit"]["final_orbit"] = True
+    actions, rationale = plan_orbit_actions(view)
+    assert actions == []
+    assert "final settlement orbit" in rationale
 
 
 def test_orbit_playbook_builds_emp_when_blue_surplus_and_roll_hits():
@@ -1105,20 +982,6 @@ def test_orbit_playbook_builds_emp_when_flush_and_chaff_stocked():
     actions, _ = plan_orbit_actions(view)
     assert any(a["a"] == "build_emp" for a in actions)
     assert all(a["a"] != "build_chaff" for a in actions)
-
-
-def test_orbit_playbook_green_flush_jumps_queue_when_pile_of_green():
-    """v0.9.9 — a big green pile flushes right after repairs, ahead of
-    builds (priority scales with green count)."""
-    from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
-
-    view = _make_orbit_view(credits=2000, cap_used=1, green_parcels=4)
-    actions, _ = plan_orbit_actions(view)
-    tags = [a["a"] for a in actions]
-    assert "solar_jettison" in tags
-    # With 4 green parcels the flush precedes the harvester build.
-    if "build_harvester" in tags:
-        assert tags.index("solar_jettison") < tags.index("build_harvester")
 
 
 def test_night_emp_falls_back_to_enemy_harvester_when_no_beacon():

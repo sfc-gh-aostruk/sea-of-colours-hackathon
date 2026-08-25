@@ -29,7 +29,6 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence
 
 from sea_of_colours.game.policy import (
     MAX_MOVES,
-    MAX_ORBIT_ACTIONS,
     MAX_QUEUE_LEN,
     moves_to_wire,
     orbit_actions_to_wire,
@@ -1249,7 +1248,9 @@ def submit_orbit_actions(
         "day": sess.day,
         "pending_orbit": pending_orbit_pack,
         "orbit_resolved": resolved,
-        "max_orbit_actions": MAX_ORBIT_ACTIONS,
+        # v1.13 — no cap. Kept in the payload (as null) rather than
+        # dropped, so a stale client reads "no limit" instead of KeyError.
+        "max_orbit_actions": None,
         "credits": dict(sess.credits),
         "probe_stock": dict(sess.probe_stock),
         # v0.9.3 — surface the built-weapons stockpile so the
@@ -1465,8 +1466,8 @@ def get_replay(
         )
     # v0.9.1 — bucket the orbit-stamped log entries by day so the
     # LOG tab's "ORBIT" filter chip can show a per-day feed of build /
-    # refine / repair / catapult chatter without re-parsing the
-    # session log on every scrub tick.
+    # repair / settlement chatter without re-parsing the session log on
+    # every scrub tick.
     #
     # v0.9.8 — ALSO bucket EVERY log entry by day (not just orbit)
     # so the LOG drawer can refocus on the replay cursor day without
@@ -1616,9 +1617,9 @@ def get_replay(
         ),
         # v1.x — authoritative POST-settlement hoard snapshot per seat
         # ({seat: {count, sites:[...]}}, same shape as per-frame ``hoard``).
-        # The terminal SETTLEMENT orbit (final refinery + ship) resolves in
-        # the ORBIT phase with NO night frames, so the last night frame's
-        # hoard is stale (pre-ship, still full of RED). The replay vault
+        # The terminal SETTLEMENT orbit resolves in the ORBIT phase with
+        # NO night frames, so the last night frame's hoard is stale
+        # (pre-settlement, still full of RED). The replay vault
         # reconstructor uses this for the closing RESOLVE tick so the vault
         # matches the settled score instead of showing shipped RED.
         "final_hoard": (
@@ -2105,9 +2106,10 @@ def get_session_status(
         "session_id": session_id,
         "day": sess.day,
         "phase": sess.phase.value,
-        # v1.0 — True during the post-final-night settlement orbit so the
-        # UI can show the "FINAL SETTLEMENT" banner and grey out every
-        # orbit action except refine / ship / green-flush.
+        # True during the post-final-night settlement orbit so the UI can
+        # show the "FINAL SETTLEMENT" banner. v1.13 — it no longer gates
+        # which actions are legal; buying on the last orbit is allowed,
+        # it just buys you nothing.
         "final_orbit": bool(getattr(sess, "final_orbit", False)),
         "is_season_complete": sess.is_season_complete(),
         "player_names": dict(sess.player_names),

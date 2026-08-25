@@ -6,8 +6,8 @@ agent-turn callable to point at
 assertions, fixture builders, and the markdown report renderer come
 from the v1 evals package unchanged.
 
-This module also registers a ``pilot_v2`` :class:`EvalConfig` so the
-existing eval CLI ergonomics (``--config pilot_v2``) continue to work
+This module also registers a ``tabula_v12`` :class:`EvalConfig`, and
+resolves any registered agent label as a config, so the eval CLI works
 through the new orchestrator path.
 """
 
@@ -34,49 +34,74 @@ from sea_of_colours.snowpark import engine as soc_engine
 from sea_of_colours.orchestrator_2.runtime import run_agent_turn
 
 
-# orchestrator_2-specific eval configs. The v1 runner has its own
-# CONFIGS dict that we don't pollute — pilot_v2 lives here exclusively.
+# orchestrator_2-specific eval configs, on top of the v1 runner's.
+#
+# v1.12 — the `pilot_v2` / `pilot_v4` configs were removed. They set
+# `SOC_CORTEX_AGENT` to agent names no longer in `KNOWN_AGENT_BINDINGS`,
+# so resolution fell through to the heuristic: you asked to benchmark an
+# LLM, the run completed, and the numbers you got back were RED_HARVEST's.
+# A silently-wrong eval is worse than a missing one, hence deletion
+# rather than a rename.
 CONFIGS = {
     **{k: v for k, v in _LEGACY_CONFIGS.items()},  # inherit all v1 configs
-    "pilot_v2": EvalConfig(
-        label="pilot_v2",
+    "tabula_v12": EvalConfig(
+        label="tabula_v12",
         world_view="grid",
-        cortex_agent="SOC_RED_REAPER_PILOT_V2",
+        cortex_agent="SOC_RED_REAPER_TABULA_V12",
         description=(
-            "Master-harvester pilot reading a pre-compiled candidate menu. "
-            "Runs through orchestrator_2's binding-driven dispatcher: "
-            "the SOC_CORTEX_AGENT env var resolves to the in-process "
-            "harness `harnesses/pilot_v2/harness:run`, which augments the "
-            "universal STATE envelope with candidates/threat/memory_summary "
-            "and invokes claude-haiku-4-5 with a 35s wall-clock cap. "
-            "Drop-in challenger to the v1 `pilot` config."
-        ),
-    ),
-    "pilot_v4": EvalConfig(
-        label="pilot_v4",
-        world_view="grid",
-        cortex_agent="SOC_RED_REAPER_PILOT_V4",
-        description=(
-            "Two-phase agentic pilot (strategist + tactician), haiku-4.5. "
-            "Routes through orchestrator_2 binding `pilot_v4/harness:run` "
-            "which stages the strategist brief, compiles a candidate "
-            "menu, runs the tactician selection, and materialises the "
-            "policy queue. Populates `plan_label`, `selections`, and "
-            "`materialized_count` on the agent envelope so the "
-            "coherence assertions (Rationale*, PlanLabelIn, "
-            "PlanMatchesMaterialisedVerb, NoSilentSelectionDrops) can "
-            "verify the agent's reasoning grounds the moves."
+            "V12 — the shipped LLM agent, and the baseline a hackathon "
+            "fork has to beat. Routes through orchestrator_2's dispatcher "
+            "to the in-process harness "
+            "`harnesses/tabula_v12/harness:run`, which precomputes a "
+            "deterministic option menu, runs a THINK/PLAN split over "
+            "Cortex inference, then compiles the selected option ids into "
+            "a move queue. Needs a Snowflake PAT."
         ),
     ),
 }
 
 
+def config_for_agent_label(label: str) -> EvalConfig:
+    """Build a config for any registered harness, including your fork.
+
+    Forks don't need a hand-written entry in :data:`CONFIGS`: registering
+    in ``binding_registry.AGENT_LABEL_BINDINGS`` is enough, and the eval
+    CLI resolves the label through here. Keeps "it plays in the browser"
+    and "it can be benchmarked" from being two separate registrations.
+    """
+    from sea_of_colours.orchestrator_2 import binding_registry as _reg
+
+    binding = _reg.AGENT_LABEL_BINDINGS.get(label.strip().lower())
+    if binding is None:
+        known = ", ".join(sorted(_reg.AGENT_LABEL_BINDINGS))
+        raise KeyError(f"unknown agent label {label!r}. Registered: {known}")
+    cortex_agent = next(
+        (k for k, v in _reg.KNOWN_AGENT_BINDINGS.items() if v is binding),
+        binding.agent_label or label,
+    )
+    return EvalConfig(
+        label=label,
+        world_view="grid",
+        cortex_agent=cortex_agent,
+        description=f"Registered agent {binding.agent_label or label} "
+                    f"({binding.kind}: {binding.locator}).",
+    )
+
+
 def get_config(label: str) -> EvalConfig:
-    """Same contract as the v1 ``get_config`` — KeyError on miss."""
+    """Same contract as the v1 ``get_config`` — KeyError on miss.
+
+    Falls back to :func:`config_for_agent_label` so a registered fork can
+    be evaluated by its menu label without writing an eval config.
+    """
     if label in CONFIGS:
         return CONFIGS[label]
+    try:
+        return config_for_agent_label(label)
+    except KeyError:
+        pass
     known = ", ".join(sorted(CONFIGS.keys()))
-    raise KeyError(f"unknown eval config {label!r}. Known: {known}")
+    raise KeyError(f"unknown eval config {label!r}. Known configs: {known}")
 
 
 def run_scenario(

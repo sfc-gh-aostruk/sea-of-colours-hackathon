@@ -4,14 +4,14 @@ The orchestrator's contract with every agent (bare Cortex or harnessed):
 "here is the same envelope, regardless of who you are."
 
 This module produces ONE shape. No adapter hooks, no agent-specific
-keys. PILOT_V2's candidate menu lives INSIDE its harness — not here.
+keys. V12's option menu lives INSIDE its harness — not here.
 
 Identical to the legacy slim builder in
 :mod:`sea_of_colours.agent.runtime._build_cortex_prompt_slim` except:
 
 * No ``agent_name`` parameter (the envelope is agent-agnostic).
 * No adapter dispatch (harnesses do their own preprocessing).
-* No PILOT_V2 envelope branch.
+* No per-agent envelope branch.
 """
 
 from __future__ import annotations

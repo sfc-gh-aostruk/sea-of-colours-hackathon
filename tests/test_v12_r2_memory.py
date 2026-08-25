@@ -4,7 +4,7 @@ Anchored on `V12_HEUR3_GO_s69` day 4 (session `4d63cf63…`): the seat dropped o
 visible pure at (16,6), auto-harvested it, and was hit by a rival harvester
 stepping onto the same cell in the same hour. Engine truth was
 ``banked 0 parcel(s) (DAMAGED)`` and ``hoard still 1/15``; the journal recorded
-``banked red +735 (1 parcel(s))`` and the next night's reflection opened "executed
+``banked red +765 (1 parcel(s))`` and the next night's reflection opened "executed
 perfectly … no failures; clean execution".
 
 The cause was a guard that inverted: an empty hoard delta was read as "no data"
@@ -57,7 +57,7 @@ def test_the_loss_is_named_rather_than_silently_dropped() -> None:
     frames = _frames(dawn_ids=[])
     lost = ln.lost_in_transit(_view_with_harvest(), frames, "p1")
     assert lost["parcels"] == 1
-    assert lost["red_pts"] == 735          # (255 - 10 transit) x 3.0 pure multiplier
+    assert lost["red_pts"] == 765          # v1.13: 255 x 3.0, no transit charge
 
 
 def test_the_rendered_block_refuses_to_call_lost_cargo_yield() -> None:
@@ -67,12 +67,12 @@ def test_the_rendered_block_refuses_to_call_lost_cargo_yield() -> None:
         "execution_log": [],
         "actual": ln.actual_yield(_view_with_harvest(), _frames(dawn_ids=[]), "p1"),
         "lost": ln.lost_in_transit(_view_with_harvest(), _frames(dawn_ids=[]), "p1"),
-        "expected": {"red_pts": 735},
+        "expected": {"red_pts": 765},
     }
     block = ln.format_block(memory)
     assert "red +0" in block
     assert "LOST IN TRANSIT" in block
-    assert "735" in block
+    assert "765" in block
 
 
 # ── the thing the old guard was protecting, which must still work ───────────
@@ -90,7 +90,7 @@ def test_missing_frames_still_fall_back_to_the_view() -> None:
     """
     act = ln.actual_yield(_view_with_harvest(), [], "p1")
     assert act["parcels"] == 1
-    assert act["red_pts"] == 735
+    assert act["red_pts"] == 765
 
 
 def test_frames_without_a_hoard_readout_are_treated_as_missing() -> None:

@@ -38,29 +38,16 @@ import os
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from sea_of_colours.game.policy import MAX_MOVES, MAX_ORBIT_ACTIONS
+from sea_of_colours.game.policy import MAX_MOVES
 from sea_of_colours.game.session import (
-    CATAPULT_ROW_COUNT,
-    CATAPULT_ROW_THRESHOLDS,
-    CATAPULT_ROW_TRANSIT,
-    CATAPULT_SLOTS_PER_ROW,
-    GREEN_CATAPULT_SLOTS,
     GREEN_ENDGAME_PENALTY,
-    GREEN_SLOT_COST_BASE,
-    GREEN_SLOT_COST_STEP,
     GameSession,
     HARVESTER_BUILD_COST,
     HARVESTER_MAX_PER_PLAYER,
     HOARD_CAPACITY,
-    JETTISON_FUEL_DENOMINATOR,
-    JETTISON_PRICE_BASE,
-    JETTISON_PRICE_MIN,
     PROBE_BUILD_COST,
     PlayerId,
     RED_QUALITY_MULTIPLIER,
-    REFINE_BLUE_COST,
-    REFINE_MAX_FOR_TIER,
-    REFINE_MAX_SLOTS,
     REPAIR_COST,
     SHIPPED_CAPACITY,
     _xy_key,
@@ -908,38 +895,15 @@ def build_agent_view(
             "score": score,
         })
 
-    # v1.7 — the terminal settlement orbit runs an uncapped "Final Refinery"
-    # (RULEBOOK §4.3.1): no 3-action cap, no 5-parcel refine cap, same-turn
-    # cascade, and refined parcels can ship the same turn via an AUTO bid.
-    # Surface the flag + effective (lifted) caps + the two terminal-only wire
-    # shapes so agents and the human composer can branch without hard-coding.
     final_orbit_flag = bool(getattr(sess, "final_orbit", False))
-    _EFFECTIVE_ORBIT_ACTIONS = 20 if final_orbit_flag else MAX_ORBIT_ACTIONS
-    _EFFECTIVE_REFINE_SLOTS = (
-        int(HOARD_CAPACITY) if final_orbit_flag else int(REFINE_MAX_SLOTS)
-    )
 
     orbit_block = {
         "phase_active": sess.phase.value == "orbit",
-        # v1.7 — terminal settlement orbit marker (RULEBOOK §4.3.1).
+        # Terminal settlement orbit marker. v1.13 — this no longer changes
+        # what a seat may do (the refinery run it used to unlock is gone);
+        # it only tells a consumer the season ends after this settlement,
+        # so buying now is throwing credits away.
         "final_orbit": final_orbit_flag,
-        "final_refinery": (
-            {
-                "active": True,
-                "note": (
-                    "Terminal settlement orbit: refine caps lifted, same-turn "
-                    "trace→vein→mass cascade allowed, and refined parcels can "
-                    "ship THIS turn. BLUE is the only limiter. Use "
-                    "refine_cascade then an auto ship. RULEBOOK §4.3.1."
-                ),
-                "refine_cascade": {"a": "refine_cascade", "target_tier": "mass"},
-                "auto_ship": {
-                    "a": "ship_catapult", "auto": True, "credits": 25, "count": 0,
-                },
-            }
-            if final_orbit_flag
-            else {"active": False}
-        ),
         "credits": int(sess.credits.get(pid, 0)),
         "credits_all": dict(sess.credits),
         "probe_stock": int(sess.probe_stock.get(pid, 0)),
@@ -953,7 +917,10 @@ def build_agent_view(
         "harvester_cap_max": HARVESTER_MAX_PER_PLAYER,
         "green_owned_count": len(green_owned),
         "green_owned_purity_total": int(green_owned_purity_total),
-        "actions_max": _EFFECTIVE_ORBIT_ACTIONS,
+        # v1.13 — no per-orbit action cap. ``None`` rather than a big
+        # number so a consumer can't render a bogus "0/20 slots" counter;
+        # credits and blue are the only limit worth showing.
+        "actions_max": None,
         "tier_counts": tier_counts,
         # v0.9.5 — BLUE economy readout. Mirrors tier_counts shape
         # so the panel can render both with the same template, plus
@@ -967,57 +934,31 @@ def build_agent_view(
         # "damaged" flag so the repair affordance can show
         # "[+ repair (500c) · 2 damaged]" instead of a bare button.
         "assets": sess.unit_summary_for_owner(pid),
-        # v0.9.6 — full parcel list (own hoard) so the catapult
-        # composer can preview which parcels will auto-ship and the
-        # vault tooltip can render per-parcel score = purity × mult.
+        # Full parcel list (own hoard) so the vault tooltip can render
+        # per-parcel score = purity × mult, and a planner can see exactly
+        # what will ship at the next settlement.
         "hoard_parcels": hoard_parcels,
-        # v0.9.x — RED shipping catapult (RULEBOOK §4.4): per-parcel
-        # CREDIT bids drafted into 20 slots; each row applies a flat
-        # RED-purity TRANSIT charge out of the parcel's own purity.
-        # ``row_thresholds`` retained for back-compat with older
-        # frontends but the live economy uses ``row_transit``.
+        # v1.13 — purchase prices. The catapult row/transit/threshold
+        # fields are gone with the draft that used them; RED now ships
+        # whole, so ``quality_mult`` is the entire scoring story.
         "ship_prices": {
             "harvester_build": HARVESTER_BUILD_COST,
             "probe_build": PROBE_BUILD_COST,
             "repair": REPAIR_COST,
-            "row_count": int(CATAPULT_ROW_COUNT),
-            "slots_per_row": int(CATAPULT_SLOTS_PER_ROW),
-            "row_transit": [int(t) for t in CATAPULT_ROW_TRANSIT],
-            "row_thresholds": [int(t) for t in CATAPULT_ROW_THRESHOLDS],
             "quality_mult": {k: float(v) for k, v in RED_QUALITY_MULTIPLIER.items()},
         },
-        # v0.9.x — GREEN disposal catapult (RULEBOOK §4.5): 12 shared
-        # slots dealt round-robin by RED-fuel offer; per-slot cost
-        # diminishes by global slot index. Undisposed vault green
-        # bleeds ``endgame_penalty`` from the final score.
-        "green_catapult": {
-            "slots": int(GREEN_CATAPULT_SLOTS),
-            "cost_base": int(GREEN_SLOT_COST_BASE),
-            "cost_step": int(GREEN_SLOT_COST_STEP),
-            "endgame_penalty": int(GREEN_ENDGAME_PENALTY),
-        },
-        # v0.9.x — REFINE economy (RULEBOOK §4.3): blue cost per input
-        # parcel, the per-grade target-tier max purity ``M`` used by the
-        # output formula (out = ΣP // M target parcels + residual), and
-        # the input cap. Surfaced so the frontend refine dialog can
-        # preview outputs/cost without hard-coding the constants.
-        "refine": {
-            "max_slots": _EFFECTIVE_REFINE_SLOTS,
-            # v1.7 — true when the final-orbit refinery has lifted the cap so
-            # consumers can label the composer ("fold the whole vault").
-            "uncapped": final_orbit_flag,
-            "blue_cost": {k: int(v) for k, v in REFINE_BLUE_COST.items()},
-            "max_for_tier": {
-                "trace_to_vein": int(REFINE_MAX_FOR_TIER["TRACE_TO_VEIN"]),
-                "vein_to_mass": int(REFINE_MAX_FOR_TIER["VEIN_TO_MASS"]),
-            },
-        },
-        # Legacy alias (pre-redesign solar-jettison pricing); kept so
-        # stale clients don't KeyError.
-        "jettison_pricing": {
-            "base": JETTISON_PRICE_BASE,
-            "min": JETTISON_PRICE_MIN,
-            "fuel_denominator": JETTISON_FUEL_DENOMINATOR,
+        # v1.13 — settlement is automatic in both directions and needs no
+        # action from the seat. Stated explicitly rather than left as an
+        # absence, because "do I have to ship?" is the first thing both a
+        # human and an agent prompt will ask.
+        "settlement": {
+            "auto": True,
+            "red": "every RED parcel ships at settlement; score = purity × tier multiplier",
+            "green": (
+                f"every GREEN parcel is disposed of at settlement for "
+                f"-{int(GREEN_ENDGAME_PENALTY)} each"
+            ),
+            "green_penalty": int(GREEN_ENDGAME_PENALTY),
         },
         "last_catapult_results": last_catapult,
     }

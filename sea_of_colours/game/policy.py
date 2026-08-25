@@ -24,7 +24,7 @@ orblift is looked up at execution time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, Union
 
 
 MAX_MOVES: int = 21
@@ -347,22 +347,21 @@ def moves_to_wire(moves: Iterable[Move]) -> List[dict]:
     return [move_to_wire(m) for m in moves]
 
 
-# ── Orbit actions (v0.8.0) ───────────────────────────────────────────
+# ── Orbit actions (v0.8.0; simplified v1.13) ─────────────────────────
 #
 # The Orbit phase runs once per game-day before PRAXIS (RULEBOOK §4).
-# Each seat may declare up to :data:`MAX_ORBIT_ACTIONS` actions in any
-# combination of build / repair / refine / ship-auction / ship-tithe /
-# solar-jettison. The orchestrator parses the seat's submission into
-# this discriminated union; the resolver (sea_of_colours.game.
-# orbit_resolver.OrbitResolver) walks the validated list and applies
-# them in a fixed order (builds/repair/refine first, then catapult
-# settlement).
-
-
-MAX_ORBIT_ACTIONS: int = 3
-"""Per-seat per-turn cap on Orbit phase actions (parser drops the
-rest). Re-exported from :mod:`sea_of_colours.game.session` for
-back-compat with callers that import it from here."""
+# A seat declares purchases (harvester / probe / repair) and weapons
+# buys (EMP / mine / chaff) — nothing else. The orchestrator parses the
+# submission into this discriminated union and the resolver
+# (sea_of_colours.game.orbit_resolver.OrbitResolver) walks the validated
+# list, then settles RED and GREEN automatically.
+#
+# v1.13 — there is **no action cap**. Credits and blue are the only
+# constraint. The old MAX_ORBIT_ACTIONS=3 limited how many *kinds* of
+# thing a seat did per orbit, never the volume of any one of them (every
+# build action already carries a ``count``), so it only ever produced
+# the "one thing too many" refusal. Refine, ship_catapult and
+# solar_jettison were removed in the same pass — see _RETIRED_ORBIT_TAGS.
 
 
 OrbitTag = Literal[
@@ -372,19 +371,20 @@ OrbitTag = Literal[
     "build_mine",
     "build_chaff",
     "repair",
-    "refine",
-    # v1.x — final-orbit "refinery run": one action cascades every RED
-    # parcel up as far as the seat's BLUE allows (trace→vein→mass).
-    # Only honoured on the terminal settlement orbit (RULEBOOK §4.3.1).
-    "refine_cascade",
-    # v0.9.6 — ``ship_auction`` and ``ship_tithe`` are gone; one
-    # ``ship_catapult`` lane replaces both (RULEBOOK §4.4). Old
-    # replay frames carrying the legacy tags now parse as
-    # OrbitWasteAction (the catch-all "unknown orbit action" branch).
-    "ship_catapult",
-    "solar_jettison",
     "orbit_waste",
 ]
+
+
+# v1.13 — tags the engine used to accept. Persisted pre-1.13 sessions and
+# archived replay frames still carry them, so they get a named refusal
+# rather than falling through to the generic "unknown orbit action"
+# branch: a stale client deserves a diagnosis, not a shrug.
+_RETIRED_ORBIT_TAGS: Dict[str, str] = {
+    "refine": "refining was removed in v1.13 — parcels ship at the tier they were mined",
+    "refine_cascade": "the final refinery run was removed in v1.13",
+    "ship_catapult": "RED now ships automatically at settlement (v1.13) — no bid needed",
+    "solar_jettison": "GREEN is now auto-settled at a flat -100/parcel (v1.13)",
+}
 
 
 @dataclass(frozen=True)
@@ -465,113 +465,12 @@ class RepairAction:
 
 
 @dataclass(frozen=True)
-class RefineAction:
-    """Promote parcels of one source tier into the next tier up.
-
-    Two input modes (v0.9.1):
-
-    - ``source_tier="trace"`` / ``"vein"`` — refine EVERY RED parcel of
-      that tier in the seat's hoard in one click. The preferred path.
-    - ``inputs=("sq-1","sq-2",...)`` — legacy v0.8 path that takes
-      explicit square-ids. Kept for back-compat with persisted v0.8
-      sessions and the JSON expert pane; the resolver still honours
-      it identically.
-
-    Purity is always conserved exactly: the sum of input purities is
-    partitioned into N output parcels at target-tier max purity plus
-    an optional residual at ``S mod M`` in the source tier.
-    """
-
-    inputs: Tuple[str, ...] = ()
-    source_tier: Optional[str] = None
-    tag: OrbitTag = "refine"
-
-
-@dataclass(frozen=True)
-class RefineCascadeAction:
-    """v1.x — one-click terminal "refinery run" (RULEBOOK §4.3.1).
-
-    Cascades EVERY eligible RED parcel up the tier ladder as far as the
-    seat's BLUE reserve allows: all trace → vein, then all vein
-    (including the just-minted ones) → mass, stopping at ``target_tier``
-    or when the blue runs out. Purity is conserved at each step; the
-    result is the fewest, highest-tier parcels the seat can afford —
-    ideal fuel for the final ship draft.
-
-    Honoured **only on the final settlement orbit**; on any earlier
-    orbit the resolver drops it (the normal capped, next-turn
-    :class:`RefineAction` still applies). ``target_tier`` is ``"vein"``
-    or ``"mass"`` (default ``"mass"`` = refine all the way up).
-    """
-
-    target_tier: str = "mass"
-    tag: OrbitTag = "refine_cascade"
-
-
-@dataclass(frozen=True)
-class ShipCatapultBid:
-    """v0.9.x per-parcel credit-bid catapult declaration (RULEBOOK §4.4).
-
-    The seat names SPECIFIC RED parcels to ship and the CREDIT bid it
-    offers for each one. ``bids`` is an ordered tuple of
-    ``(parcel_id, credits)``. Credits are debited (forfeit) the
-    instant the action is programmed — bidding locks both the parcel
-    and the credits so they can't be reused by a later action this
-    turn.
-
-    The resolver pools every seat's per-parcel bid into one global
-    queue ranked by credits DESC and fills 20 slots (4 rows x 5).
-    Each row applies a flat RED-purity TRANSIT CHARGE
-    (:data:`CATAPULT_ROW_TRANSIT`) taken out of the parcel's own
-    purity. Score = (purity - transit) x tier-multiplier of the
-    ORIGINAL purity. Parcels that miss all 20 slots do not ship and
-    their credit bid is forfeit.
-    """
-
-    bids: Tuple[Tuple[str, int], ...] = ()
-    # v1.x — final-orbit AUTO ship. Because refined parcels get their
-    # ids minted at settlement time, a seat can't pre-name them; an
-    # auto bid says "bid ``auto_credits`` on my best ``auto_count`` RED
-    # parcels (0 = all), chosen by tier-weighted value AFTER the
-    # refinery run resolves". Honoured only on the terminal orbit; the
-    # explicit ``bids`` path is unchanged everywhere else.
-    auto: bool = False
-    auto_credits: int = 0
-    auto_count: int = 0
-    tag: OrbitTag = "ship_catapult"
-
-
-@dataclass(frozen=True)
-class SolarJettisonBid:
-    """Green-catapult flush declaration (RULEBOOK §4.5).
-
-    The seat commits ``red_fuel`` RED-purity (forfeit whether or not
-    every slot is used) and nominates up to ``green_parcels`` GREEN
-    parcels to dispose of. The resolver ranks houses by total
-    ``red_fuel`` offered, deals 12 shared slots round-robin in that
-    order, and each house flushes one green per slot it can still
-    afford from its committed fuel (per-slot cost diminishes by
-    global slot index, :data:`GREEN_SLOT_COST_BASE` /
-    :data:`GREEN_SLOT_COST_STEP`). More houses flushing together makes
-    each parcel cheaper.
-
-    Tag kept as ``solar_jettison`` for wire/back-compat; the old
-    ``max_red_burn`` / ``max_parcels`` keys map onto ``red_fuel`` /
-    ``green_parcels``.
-    """
-
-    green_parcels: int = 0
-    red_fuel: int = 0
-    tag: OrbitTag = "solar_jettison"
-
-
-@dataclass(frozen=True)
 class OrbitWasteAction:
     """A queue slot the parser kept because it was structurally bad.
 
     Mirrors :class:`WasteMove` for Orbit submissions — surfaced as a
-    yellow log line by the resolver but does not consume any of the
-    seat's 3 action slots.
+    yellow log line by the resolver so a seat can see *why* something it
+    submitted did nothing.
     """
 
     reason: str = ""
@@ -586,10 +485,6 @@ OrbitAction = Union[
     BuildMineAction,
     BuildChaffAction,
     RepairAction,
-    RefineAction,
-    RefineCascadeAction,
-    ShipCatapultBid,
-    SolarJettisonBid,
     OrbitWasteAction,
 ]
 
@@ -646,137 +541,17 @@ def _parse_orbit_one(raw: Any) -> OrbitAction:
             return OrbitWasteAction(reason="repair.unit missing", raw=raw)
         return RepairAction(unit=unit)
 
-    if a == "refine":
-        # v0.9.1 — accept the new ``source_tier`` shape first; fall back
-        # to the legacy ``inputs`` list. ``source_tier`` is preferred:
-        # it lets the resolver refine every RED parcel of that tier in
-        # one click without the seat hand-picking ids.
-        tier_raw = raw.get("source_tier") or raw.get("tier")
-        if isinstance(tier_raw, str) and tier_raw.strip():
-            tier = tier_raw.strip().lower()
-            if tier in ("trace", "vein"):
-                return RefineAction(source_tier=tier)
-            return OrbitWasteAction(
-                reason=f"refine.source_tier must be 'trace' or 'vein' (got '{tier_raw}')",
-                raw=raw,
-            )
-        inputs = raw.get("inputs")
-        if not isinstance(inputs, list) or not inputs:
-            return OrbitWasteAction(
-                reason="refine needs source_tier='trace'|'vein' OR inputs=[...]",
-                raw=raw,
-            )
-        ids = tuple(str(x) for x in inputs if isinstance(x, (str, int)) and str(x))
-        if not ids:
-            return OrbitWasteAction(reason="refine.inputs had no usable ids", raw=raw)
-        return RefineAction(inputs=ids)
-
-    if a in ("refine_cascade", "refine-cascade", "refinery", "refine_all_up"):
-        # v1.x — terminal refinery run. Optional ``target_tier`` caps how
-        # far up the ladder to push (default 'mass' = all the way).
-        tier_raw = raw.get("target_tier") or raw.get("target") or "mass"
-        tier = str(tier_raw).strip().lower() if isinstance(tier_raw, str) else "mass"
-        if tier not in ("vein", "mass"):
-            tier = "mass"
-        return RefineCascadeAction(target_tier=tier)
-
-    if a in ("ship_catapult", "ship-catapult", "shipcatapult"):
-        # v0.9.x per-parcel credit-bid shipping (RULEBOOK §4.4). Bid
-        # shape (preferred)::
-        #
-        #     {"a": "ship_catapult",
-        #      "bids": [{"id": "sq_..", "credits": 25}, ...]}
-        #
-        # Convenience uniform shape (one credit value for a list of
-        # ids)::
-        #
-        #     {"a": "ship_catapult", "parcels": ["sq_..", ..],
-        #      "credits": 25}
-        from sea_of_colours.game.session import (
-            CATAPULT_ROW_COUNT,
-            CATAPULT_SLOTS_PER_ROW,
-        )
-
-        cap = int(CATAPULT_ROW_COUNT) * int(CATAPULT_SLOTS_PER_ROW)
-
-        # v1.x — AUTO ship (final orbit): "bid C credits on my best N RED
-        # parcels (0 = all), picked after the refinery run". Lets a seat
-        # ship freshly-refined parcels whose ids don't exist until
-        # settlement. Shape: {"a":"ship_catapult","auto":true,
-        # "credits":C,"count":N} or {"parcels":"all","credits":C}.
-        _parcels_raw = raw.get("parcels")
-        _auto_flag = bool(raw.get("auto")) or (
-            isinstance(_parcels_raw, str)
-            and _parcels_raw.strip().lower() in ("all", "best", "auto")
-        )
-        if _auto_flag:
-            uni = raw.get("credits", raw.get("credits_per_parcel", raw.get("bid")))
-            try:
-                uni_i = int(uni) if uni is not None else 0
-            except (TypeError, ValueError):
-                uni_i = 0
-            cnt = raw.get("count", raw.get("n"))
-            try:
-                cnt_i = int(cnt) if cnt is not None else 0
-            except (TypeError, ValueError):
-                cnt_i = 0
-            return ShipCatapultBid(
-                auto=True, auto_credits=max(0, uni_i), auto_count=max(0, cnt_i),
-            )
-
-        pairs: list = []
-        raw_bids = raw.get("bids")
-        if isinstance(raw_bids, list):
-            for item in raw_bids:
-                if not isinstance(item, dict):
-                    continue
-                pid = item.get("id") or item.get("parcel_id") or item.get("square_id")
-                cr = item.get("credits", item.get("bid", item.get("credit")))
-                if pid is None:
-                    continue
-                try:
-                    cr_i = int(cr) if cr is not None else 0
-                except (TypeError, ValueError):
-                    cr_i = 0
-                pairs.append((str(pid), max(0, cr_i)))
-        else:
-            ids = raw.get("parcels", raw.get("ids"))
-            uni = raw.get("credits", raw.get("credits_per_parcel", raw.get("bid")))
-            try:
-                uni_i = int(uni) if uni is not None else 0
-            except (TypeError, ValueError):
-                uni_i = 0
-            if isinstance(ids, list):
-                for pid in ids:
-                    if pid is None:
-                        continue
-                    pairs.append((str(pid), max(0, uni_i)))
-        if not pairs:
-            return OrbitWasteAction(
-                reason="ship_catapult had no usable (id, credits) bids",
-                raw=raw,
-            )
-        return ShipCatapultBid(bids=tuple(pairs[:cap]))
-
-    if a in ("solar_jettison", "solar-jettison", "jettison", "green_catapult"):
-        # v0.9.x green-catapult flush. Preferred keys ``green_parcels``
-        # / ``red_fuel``; legacy ``max_parcels`` / ``max_red_burn`` map
-        # onto them for back-compat.
-        gp = raw.get("green_parcels", raw.get("max_parcels", raw.get("green")))
-        try:
-            gp_i = int(gp) if gp is not None else 0
-        except (TypeError, ValueError):
-            gp_i = 0
-        rf = raw.get("red_fuel", raw.get("max_red_burn", raw.get("fuel", raw.get("max"))))
-        try:
-            rf_i = int(rf) if rf is not None else 0
-        except (TypeError, ValueError):
-            return OrbitWasteAction(
-                reason="green_catapult.red_fuel not an int", raw=raw,
-            )
-        return SolarJettisonBid(
-            green_parcels=max(0, gp_i), red_fuel=max(0, rf_i),
-        )
+    # v1.13 — retired mechanics. Normalise the punctuation variants the
+    # old parser accepted so a stale client gets the real reason back.
+    _canon = a.replace("-", "_")
+    if _canon in ("refinery", "refine_all_up"):
+        _canon = "refine_cascade"
+    if _canon in ("shipcatapult",):
+        _canon = "ship_catapult"
+    if _canon in ("jettison", "green_catapult"):
+        _canon = "solar_jettison"
+    if _canon in _RETIRED_ORBIT_TAGS:
+        return OrbitWasteAction(reason=_RETIRED_ORBIT_TAGS[_canon], raw=raw)
 
     return OrbitWasteAction(reason=f"unknown orbit action '{action}'", raw=raw)
 
@@ -784,19 +559,17 @@ def _parse_orbit_one(raw: Any) -> OrbitAction:
 def parse_orbit_actions(
     payload: Any,
     *,
-    max_actions: Optional[int] = MAX_ORBIT_ACTIONS,
+    max_actions: Optional[int] = None,
 ) -> Tuple[List[OrbitAction], List[str]]:
     """Return ``(actions, hard_errors)`` from a raw Orbit submission.
 
-    Accepts either ``{"actions": [...]}`` or a bare list. Items past
-    ``max_actions`` are silently dropped. Per-item parse failures become
-    :class:`OrbitWasteAction` markers and are surfaced by the resolver
-    as yellow log lines (they do NOT consume a slot).
+    Accepts either ``{"actions": [...]}`` or a bare list. Per-item parse
+    failures become :class:`OrbitWasteAction` markers and are surfaced by
+    the resolver as yellow log lines rather than failing the submission.
 
-    ``max_actions=None`` disables truncation — the caller
-    (``GameSession.submit_orbit``) passes this on the **final settlement
-    orbit** so the terminal refinery run isn't capped at 3 actions
-    (RULEBOOK §4.3.1).
+    v1.13 — there is no action cap; ``max_actions`` defaults to ``None``
+    (no truncation) and is kept only so persisted callers that still pass
+    it keep working. Credits and blue are the only constraint now.
     """
     if payload is None:
         return [], []
@@ -845,32 +618,6 @@ def orbit_action_to_wire(a: OrbitAction) -> dict:
         return out
     if isinstance(a, RepairAction):
         return {"a": "repair", "unit": a.unit}
-    if isinstance(a, RefineAction):
-        if a.source_tier:
-            return {"a": "refine", "source_tier": str(a.source_tier)}
-        return {"a": "refine", "inputs": list(a.inputs)}
-    if isinstance(a, RefineCascadeAction):
-        return {"a": "refine_cascade", "target_tier": str(a.target_tier)}
-    if isinstance(a, ShipCatapultBid):
-        if getattr(a, "auto", False):
-            return {
-                "a": "ship_catapult",
-                "auto": True,
-                "credits": int(a.auto_credits),
-                "count": int(a.auto_count),
-            }
-        return {
-            "a": "ship_catapult",
-            "bids": [
-                {"id": str(pid), "credits": int(cr)} for pid, cr in a.bids
-            ],
-        }
-    if isinstance(a, SolarJettisonBid):
-        return {
-            "a": "solar_jettison",
-            "green_parcels": int(a.green_parcels),
-            "red_fuel": int(a.red_fuel),
-        }
     return {"a": "orbit_waste", "reason": getattr(a, "reason", "")}
 
 

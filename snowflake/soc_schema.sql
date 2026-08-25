@@ -330,7 +330,7 @@ CREATE TABLE IF NOT EXISTS SOC_ORCHESTRATOR_LOG (
 
 -- --------------------------------------------------------------------------
 -- 13) Agent memory — moved to sea_of_colours/orchestrator_2/snowflake/.
---     This table is harness-specific (PILOT_V2 only) and no longer lives
+--     This table is harness-specific and no longer lives
 --     in the universal orchestrator schema. See:
 --       sea_of_colours/orchestrator_2/snowflake/orchestrator_v2_schema.sql
 -- --------------------------------------------------------------------------

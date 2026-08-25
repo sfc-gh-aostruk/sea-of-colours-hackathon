@@ -90,7 +90,8 @@ weapons decision for the attendee to make.
 | 1.5 | Re-sync from the dev repo (engine/rulebook/manual/UI), bring V12 across, delete V11 | ✅ done (2026-08-25) — see audit below; **amended** later the same day to pick up dev `5bf8f63`, which landed 10s before the port commit and was missed (agent & harness manual page) |
 | 2 | Trim the agent roster to exactly `RED_HARVEST` / `RED_HARVEST_LITE` / `V12` | ✅ done (2026-08-25) — legacy Cortex Agents-API path removed, all retired harnesses deleted, V12 flattened off `tabula_v7` and now self-contained |
 | 3 | Easy install & first-run verification pass — **the north-star phase**; untangle the two Snowflake dependencies, preserve the multiplayer/tunnel suite. Treat it as a product goal, not a checkbox | 🟢 substantially done (2026-08-25, v1.12) — backend auto-detects, boot probe + actionable errors, `quickstart_check.py`, one-click Quick game, docs reconciled; verified from a fresh venv on base requirements. Remaining: a walk-through against a genuinely fresh **trial account** (all Snowflake checks so far were offline or against an existing account) |
-| 4 | Simplify the Orbital phase down to purchasing + weapons buying (drop refine/catapult/jettison); re-teach all three agents the new orbit | pending — shape agreed, **confirm the open questions with the user before any implementation** |
+| 4 | Simplify the Orbital phase down to purchasing + weapons buying (drop refine/catapult/jettison); re-teach all three agents the new orbit | ✅ done (2026-08-25, **v1.13**) — engine, view, both agents, UI, RULEBOOK §4 and the attendee docs all reconciled; 916 tests green. Catapult graphics **kept** and resized to the settlement manifest. Follow-up below: the orbit eval scenarios still name retired verbs |
+| 4.5 | **Multiplayer audit** — the suite is a hackathon requirement and is partly broken; needs its own pass | pending — see below |
 | 5 | Finish/polish the interactive manual (`manual/`) | pending |
 | 6 | Hackathon Guide (onboarding, sibling to `manual/`) | 🟡 first cut landed (2026-08-25) — `guide/index.html`; revisit after Phases 3/4 change the install story and the orbit |
 | 7 | In-game read-only agent advisor — invoke V12/RED_HARVEST mid-turn from the UI: reasoning card (readable + txt dump), magenta board overlay, adopt-into-your-policy | pending — V12 dispatch path now verified (Phase 2 notes), so the advisor can reuse it |
@@ -679,13 +680,24 @@ are gone; nothing will reference them):
   both are `harness_in_process` and never register a Snowflake Agent
   object.
 
-**Rewrite:** `sea_of_colours/orchestrator_2/harnesses/PILOT_VERSIONING_GUIDE.md`
-around minting a new agent **from V12** (the harness attendees fork)
-instead of from a `pilot_v2` that will no longer exist in this repo.
-Read it first — it's currently written as a full version-history
-narrative across all the removed harnesses. This doc is load-bearing
-for Phase 6 tab 8 and Phase 8's submission flow, so it needs to read as
-a how-to, not a history.
+**Rewrite:** `PILOT_VERSIONING_GUIDE.md`, around minting a new agent
+**from V12** rather than from a `pilot_v2` that no longer exists.
+
+✅ **Done differently (v1.12).** The guide was deleted rather than
+rewritten, along with `MIGRATION.md`. Both were version-history
+narratives about harnesses that don't exist; a rewrite would have been
+a new document wearing an old name. Replaced by two purpose-built docs
+plus a tool:
+- `orchestrator_2/README.md` — the plug-in contract and how to register.
+- `harnesses/tabula_v12/README.md` — the fork guide: the turn pipeline,
+  what a card is, where plays come from, and both deliberate gaps with
+  exact file/constant references.
+- `scripts/new_agent.py` — forks V12 to `<team>_<agent>`, renames its
+  identity so audit rows attribute correctly, and registers the binding.
+
+Registration is now one edit, not two: the New Game dropdown is built
+from `/api/meta/agents` (served off `binding_registry.selectable_agents`),
+so a registered fork is selectable without a frontend change.
 
 **Sweep for stragglers** (found so far via `grep -rl` for
 `pilot_v[234]|GRID_FAST|SOC_RED_REAPER_PILOT|SOC_RED_REAPER_GRID|tabula_v([1-9]|10)\b`,
@@ -951,10 +963,14 @@ verify:**
 
 ## Phase 4 — Simplified Orbit: purchasing + weapons buying only
 
-**Plan only — still confirm the details with the user before writing
-code.** The *shape* is now agreed, though: the Orbit phase collapses to
-the two decisions a player actually finds interesting — **what to buy**
-and **what weapons to build**. Everything else settles automatically.
+> ✅ **Shipped 2026-08-25 as RULEBOOK v1.13.** Everything below is the
+> plan as agreed; it was implemented as written. What actually landed,
+> and the one follow-up it left behind, is recorded in *Phase 4 — as
+> built* at the end of this section.
+
+The Orbit phase collapses to the two decisions a player actually finds
+interesting — **what to buy** and **what weapons to build**. Everything
+else settles automatically.
 
 ### The new Orbit
 
@@ -999,22 +1015,38 @@ the player's hands, because they're the decisions worth making.
   scores more, so where you send harvesters at night stays the decision
   that matters.
 
-**Still open:**
+**✅ Settled (2026-08-25) — the four remaining questions, resolved
+against the code rather than by guesswork:**
 
-- **Credits** currently do double duty: they buy things *and* are the
-  bid currency for catapult slots (§4.1). With bidding gone they only
-  buy — so is `ORBIT_CREDITS_PER_TURN = 1000` still calibrated against
-  harvester `1500c` / probe `250c` / repair `500c`?
-- **BLUE** currently funds refining *and* weapons. With refining gone
-  it funds weapons only, so `STARTING_BLUE_PURITY = 250` against
-  chaff `255` / EMP `200` / mine `100` blue needs a fresh look — blue
-  becomes a pure weapons budget and the starting bank is roughly one
-  flare.
-- Does RED-purity-as-fuel survive at all? The transit charge and the
-  GREEN commitment were its only consumers, and both are now automatic.
-- The locking model (§4.2) exists mostly to stop double-spending
-  parcels across refine/ship/jettison. With those gone, does anything
-  still need locking beyond plain credit/blue balances?
+- **No economy retune. `ORBIT_CREDITS_PER_TURN = 1000`,
+  `PROBE_BUILD_COST = 250` and `STARTING_BLUE_PURITY = 250` all stand.**
+  The worry was that dropping `MAX_ORBIT_ACTIONS` would unleash probe
+  spam and dissolve the fog. It doesn't: **orbit actions already carry a
+  `count`** (`count=int(getattr(act, "count", 1) or 1)` in
+  `orbit_resolver.py`), so one `build_probe` action always bought as
+  many probes as you could afford. The cap limited *how many kinds of
+  thing* you did per orbit, never the volume of any one of them.
+  Removing it therefore changes no throughput — it only stops the UI
+  telling you that repairing a rig and buying a probe and building an
+  EMP is one thing too many.
+- **BLUE needs no rework, and refining was never its source.** The
+  concern was that dropping `refine` would break the blue economy.
+  Backwards: `n_available` reads `blue_bank + sum(blue parcels)`, so
+  blue arrives by **harvesting it**, and `REFINE_BLUE_COST` made
+  refining a *competing consumer*. Removing refine leaves blue as a pure
+  weapons budget — exactly the intent — and slightly loosens it, which
+  is the right direction when the flagship exercise is teaching an agent
+  to actually spend it. Starting bank stays one EMP.
+- **RED-purity-as-fuel dies.** Confirmed in `orbit_resolver.py`: its
+  only consumers are the catapult bid (`red_fuel` on the bid, §4.5) and
+  the green-flush commitment (`_burn_fuel_avoiding`). Phase 4 removes
+  both, so nothing reads it. Delete the concept rather than leaving an
+  unreferenced field.
+- **The locking model dies with it.** Locks exist to stop double-spending
+  **parcels** across refine/ship/jettison — see the per-parcel bid /
+  green-flush locking block. Those three are gone; credits and blue are
+  plain scalar balances, so debiting at submit is sufficient. Keep the
+  phase-flip and lock-clear, drop per-parcel reservation.
 
 ### Surfaces this touches (full fan-out — use the `AGENTS.md` checklist)
 
@@ -1075,6 +1107,90 @@ currently sidesteps orbit turns entirely. Both get easier if this lands
 first — but this is also the riskiest change in the plan, so it stays
 unscheduled until the user calls it.
 
+### Phase 4 — as built (2026-08-25, RULEBOOK v1.13)
+
+Landed as planned. `MAX_ORBIT_ACTIONS`, refining, the Final Refinery,
+the RED credit-bid draft and the GREEN flush are all gone from the
+engine, the view, both agents, the UI and the rulebook. RED and GREEN
+settle automatically every orbit; BLUE is never settled. 916 tests
+green (the one failure, `two_seams_choose_one`, pre-dates this work).
+
+Three decisions worth recording because they aren't obvious from the
+plan above:
+
+- **The catapult graphics stayed.** The user's call, and the right one:
+  the bidding *mechanic* was the problem, not the launch animation. Both
+  lattices now size themselves to the settlement manifest — RED resting
+  at 20 cells, GREEN at 12, growing past that on a heavy night — so the
+  catapult always fills and fires instead of showing a half-empty draft
+  board. The per-parcel launch stagger is compressed for large manifests
+  so the wave lands in roughly constant wall-clock time.
+- **Retired verbs fail loudly, not silently.** `_RETIRED_ORBIT_TAGS` in
+  `policy.py` maps each removed tag to a reason naming v1.13, so a stale
+  client, an old replay or a forked harness gets a waste line explaining
+  itself rather than an unexplained no-op.
+- **`tests/conftest.py` grew a `banked_parcels()` helper.** Auto-settlement
+  empties the vault each orbit, which broke ~13 legacy assertions that
+  read `hoard_squares` after a night. The helper unions hoard + shipped
+  so those tests assert "what the night produced" rather than "what is
+  still sitting in the vault".
+
+**Outstanding follow-up (small, not blocking):** the orbit **eval
+scenarios** in `sea_of_colours/evals/scenarios.py` still assert on
+`ship_catapult` / `refine` / `solar_jettison`
+(e.g. `PolicyContainsAction(action="ship_catapult")`). They are **not**
+wired into `pytest` — `tests/test_eval_scenarios.py` only runs the night
+scenarios, which is why the suite is green — but anyone running the full
+eval battery will see them fail. Either retarget them at the new
+purchase verbs or retire them; fold this into Phase 7.5, which is
+already about making the eval/replay loop usable by attendees.
+
+## Phase 4.5 — Multiplayer audit
+
+Raised by the user on 2026-08-25: "the multiplayer offers a mobile
+version of the game that no longer works. I am also having some problems
+with it right now." Preserving the multiplayer/tunnel suite is an
+explicit hackathon requirement, so this needs a dedicated pass rather
+than opportunistic patching. Two things were fixed immediately because
+they were breaking the documented happy path; the rest is open.
+
+### Fixed already (v1.12)
+
+- **Seat links pointed at the wrong page.** `buildSeatUrl()` inherited
+  the path from whatever URL it was handed. That was fine for
+  same-origin links (you're already on `/play`) but wrong for LAN links:
+  `fetchLanOrigin()` returns a bare origin like `http://192.168.1.42:8000`,
+  whose path is `/` — the landing page, which has no session-loading
+  code. **Every LAN invite QR opened the title screen.** `buildSeatUrl`
+  now pins `/play`, and `GET /` redirects (307) when it sees a
+  `?session=`, so links already shared or printed still work.
+- **The README documented the broken URL** (`http://<host>/?session=…`),
+  as did `index()`'s docstring, which claimed deep links were
+  "path-agnostic". Both corrected.
+
+### Open — needs its own pass
+
+- **`/mobile` is a frozen fork.** `server/static/mobile.html` is 953
+  self-contained lines with 51 inline functions and no shared code with
+  `app.js`; untouched since the initial commit while `app.js` (19k
+  lines) kept moving. The main SPA already implements the exact mobile
+  UX `docs/MULTIPLAYER.md` describes — the `cc-mobile-orders` bottom bar
+  ("▤ ORDERS · n" / "» TRANSMIT"), the orders sheet, 14 phone media
+  queries in `styles.css`. **Recommendation: retire `/mobile`**, drop
+  the second QR from the invite modal (`app.js` ~17285 and ~17339), and
+  let phones use `/play`. Cheaper than resurrecting a duplicate, and
+  kills a whole class of future drift. Confirm with the user first —
+  it's a visible removal.
+- **The user's live problems are undiagnosed.** The URL bug plausibly
+  explains "phone lands somewhere useless", but not necessarily all of
+  it. Reproduce a real two-device game (laptop + phone over tunnel)
+  before declaring anything fixed: seat picker, the 2.5s poll, the
+  waiting-for strip, and night resolution with two humans.
+- **No multiplayer regression test exists.** `tests/` covers the engine
+  and the docs routes but nothing asserts that a seat link resolves to a
+  playable seat. A cheap `TestClient` test over `/` → `/play` redirect
+  and seat binding would have caught the QR bug.
+
 ## Phase 5 — Manual pass
 
 Finish/polish the existing interactive manual (`manual/index.html`,
@@ -1111,9 +1227,9 @@ demos. The tab ladder **is** the north-star arc, one rung at a time:
    anatomy: `prompt.py` / `doctrine.py` / `agency.py` / `packager.py`),
    and **explicitly, up front: it doesn't use weapons yet**. This tab
    is where the deliberate gap gets named.
-8. **Build Your Own Agent** — the mint-a-new-version workflow, adapted
-   from `PILOT_VERSIONING_GUIDE.md` (which Phase 2 rewrites around
-   forking V12).
+8. **Build Your Own Agent** — the mint-a-new-version workflow. Now
+   mostly written: point at `scripts/new_agent.py` and
+   `harnesses/tabula_v12/README.md` rather than restating them.
 9. **Improve Your Agent** — the concrete levers: doctrine knobs, prompt
    sections, the option menu; plus how to use the invoker (Phase 7),
    the headless runner and the replay viewer to watch your agent think
@@ -1343,9 +1459,10 @@ The work:
   `TokenBudget` (verify/add token-usage capture in `cortex_chat.py`
   first — check whether the chat/completions response envelope already
   surfaces token counts before assuming you need to add capture).
-- `docs/HACKATHON_SUBMISSION.md`: fork a harness folder (from V12, per
-  the rewritten `PILOT_VERSIONING_GUIDE.md`), register a binding, run
-  the drift checklist, open a PR with harness + binding entry.
+- `docs/HACKATHON_SUBMISSION.md`: fork a harness folder (`python
+  scripts/new_agent.py --team X --name Y`, which also registers the
+  binding), run the drift checklist, open a PR with the harness plus its
+  registry entry.
 - **The flagship worked example: "give V12 weapons."** Write it as a
   full walkthrough, since it's the exercise the whole guide funnels
   into and it exercises every part of the submission path:

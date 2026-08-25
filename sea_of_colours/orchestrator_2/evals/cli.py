@@ -1,21 +1,35 @@
 """CLI for running orchestrator_2 evals.
 
-Usage:
-    python -m sea_of_colours.orchestrator_2.evals.cli \\
-        --config pilot_v2 --runtime cortex --backend snowflake
+Scenario suite for a single agent: fixed board states with assertions
+about what a competent agent should do. Use it to check a fork didn't
+regress before you queue it for a match.
 
-    python -m sea_of_colours.orchestrator_2.evals.cli \\
-        --config pilot_v2 --runtime cortex --backend snowflake \\
-        --scenario solo_drop_orbit
+Usage:
+    # Baseline — the heuristic, no credentials needed:
+    PYTHONPATH=. python -m sea_of_colours.orchestrator_2.evals.cli \\
+        --config grid_v1 --runtime heuristic --backend memory
+
+    # V12, the agent your fork has to beat (needs a Snowflake PAT):
+    PYTHONPATH=. python -m sea_of_colours.orchestrator_2.evals.cli \\
+        --config tabula_v12 --runtime cortex --backend memory
+
+    # Your fork — any label registered in binding_registry works,
+    # no eval config to write:
+    PYTHONPATH=. python -m sea_of_colours.orchestrator_2.evals.cli \\
+        --config redwatch_reaper --runtime cortex --backend memory
+
+    # One scenario, for a tight edit loop:
+    PYTHONPATH=. python -m sea_of_colours.orchestrator_2.evals.cli \\
+        --config tabula_v12 --runtime cortex --scenario solo_drop_orbit
 
     # All scenarios, write a markdown report:
-    python -m sea_of_colours.orchestrator_2.evals.cli \\
-        --config pilot_v2 --runtime cortex --backend snowflake \\
-        --out reports/orchestrator_2_pilot_v2.md
+    PYTHONPATH=. python -m sea_of_colours.orchestrator_2.evals.cli \\
+        --config tabula_v12 --runtime cortex \\
+        --out reports/orchestrator_2_tabula_v12.md
 
     # Record replayable eval sessions (visible at /evals):
-    python -m sea_of_colours.orchestrator_2.evals.cli \\
-        --config pilot_v2 --runtime cortex --backend snowflake --replay
+    PYTHONPATH=. python -m sea_of_colours.orchestrator_2.evals.cli \\
+        --config tabula_v12 --runtime cortex --replay
 """
 
 from __future__ import annotations
@@ -57,7 +71,7 @@ ALL_SCENARIO_NAMES = [
     "two_seams_choose_one",
     "solo_drop_orbit",
     "solo_drop_surface",
-    # v0.9.23 — regression scenarios for bugs fixed during PILOT_V2 dev.
+    # v0.9.23 — regression scenarios for bugs fixed during agent dev.
     "pure_cluster_priority",
     "two_harvesters_distinct_targets",
     "echo_only_no_blind_drop",
@@ -72,9 +86,10 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="orchestrator_2.evals",
         description="Run eval scenarios through orchestrator_2.",
     )
-    p.add_argument("--config", default="pilot_v2",
-                   help=f"Eval config (default: pilot_v2). "
-                        f"Known: {', '.join(sorted(CONFIGS.keys()))}.")
+    p.add_argument("--config", default="tabula_v12",
+                   help=f"Eval config, or any agent label registered in "
+                        f"binding_registry (default: tabula_v12). "
+                        f"Known configs: {', '.join(sorted(CONFIGS.keys()))}.")
     p.add_argument("--runtime", choices=("heuristic", "cortex"),
                    default="cortex",
                    help="Agent runtime (default: cortex).")

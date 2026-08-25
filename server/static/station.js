@@ -117,7 +117,12 @@
     abandoned: "✖", damaged: "⚠",
   };
 
-  // Green (solar) lane geometry + fill.
+  // Catapult lane geometry + fill. v1.13 — these are now the RESTING
+  // size of each lattice, not a capacity: settlement is automatic and
+  // uncapped, so a heavy night grows the grid past them (see
+  // _osEnsureCatSlots). They keep an idle catapult looking like a
+  // catapult on a night with nothing to ship.
+  const OS_CAT_SLOTS   = 20;
   const OS_GREEN_SLOTS = 12;
   const OS_GREEN_FILL  = "#44cc44";
 
@@ -1187,7 +1192,7 @@
     const grid = document.createElement("div");
     grid.className = "os-catapult-grid";
     grid.id = "os-catapult-grid";
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < OS_CAT_SLOTS; i++) {
       const sq = document.createElement("span");
       sq.className = "os-cat-slot";
       sq.dataset.osCatSlot = String(i);
@@ -1200,6 +1205,35 @@
   // Alias kept for the briefing hook (osOnOrbitalReportDay).
   function _osRenderCatPips() { _osRenderCatSlots(); }
 
+  /* v1.13 — grow (or shrink back) a catapult grid to hold the whole
+   * manifest.
+   *
+   * Both lattices used to be fixed: 20 RED slots and 12 GREEN, because
+   * slots were the scarce thing seats bid over. Settlement is automatic
+   * now — every parcel in every vault ships or is dumped — so a night's
+   * load can exceed the old lattice (two full 15-parcel vaults is 30).
+   * The grid is `repeat(5, 21px)` with implicit rows, so it just needs
+   * the right number of cells; we round up to a whole row and never go
+   * below ``floor`` so an idle catapult still reads as the same object
+   * rather than collapsing to nothing between settlements. */
+  function _osEnsureCatSlots(grid, want, floor) {
+    if (!grid) return [];
+    const need = Math.max(floor, Math.ceil(Math.max(0, want) / 5) * 5);
+    let have = grid.childElementCount;
+    while (have < need) {
+      const sq = document.createElement("span");
+      sq.className = "os-cat-slot";
+      sq.dataset.osCatSlot = String(have);
+      grid.appendChild(sq);
+      have += 1;
+    }
+    while (have > need) {
+      grid.lastElementChild?.remove();
+      have -= 1;
+    }
+    return grid.querySelectorAll("[data-os-cat-slot]");
+  }
+
   function _osClearCatFiring() {
     document
       .querySelectorAll(".os-catapult [data-os-cat-slot]")
@@ -1209,7 +1243,9 @@
   function _osRenderCatSlots() {
     const grid = document.getElementById("os-catapult-grid");
     if (!grid) return;
-    const slots = grid.querySelectorAll("[data-os-cat-slot]");
+    const slots = _osEnsureCatSlots(
+      grid, (_catData || []).length, OS_CAT_SLOTS,
+    );
     slots.forEach((sq, i) => {
       const entry = _catData ? _catData[i] : null;
       if (entry && entry.seat) {
@@ -1227,12 +1263,22 @@
     });
   }
 
+  /* v1.13 — per-parcel stagger, compressed so the wave lands in about
+   * the same wall-clock time no matter how big the load is. With the
+   * bid draft gone a night can ship every parcel in both vaults, and a
+   * flat per-slot delay would stretch a 30-parcel haul into a five
+   * second crawl. Small loads keep the original spacing. */
+  function _osCatStagger(n, spacing, budget) {
+    return n > 1 ? Math.min(spacing, budget / n) : spacing;
+  }
+
   // Animate parcels flying from each station's vault to the catapult (at DUSK).
   function _osCatLoadAnim() {
     if (!_catData) return;
     const grid = document.getElementById("os-catapult-grid");
     if (!grid) return;
-    const slots = grid.querySelectorAll("[data-os-cat-slot]");
+    const slots = _osEnsureCatSlots(grid, _catData.length, OS_CAT_SLOTS);
+    const lag = _osCatStagger(_catData.length, 160, 3200);
     for (let i = 0; i < _catData.length && i < slots.length; i++) {
       const entry = _catData[i];
       if (!entry?.seat) continue;
@@ -1244,7 +1290,7 @@
       const x1 = sr.left + sr.width  * 0.5;
       const y1 = sr.top  + sr.height * 0.5;
       _osQueuePtAnim(x0, y0, x1, y1, _osTierGlyph2(entry.tier),
-        _seatColor(entry.seat), { dur: 1000, ease: "inout", size: 15, delay: i * 160 });
+        _seatColor(entry.seat), { dur: 1000, ease: "inout", size: 15, delay: i * lag });
     }
   }
 
@@ -1253,14 +1299,14 @@
     if (!_catData) return;
     const grid = document.getElementById("os-catapult-grid");
     if (!grid) return;
-    const slots = grid.querySelectorAll("[data-os-cat-slot]");
+    const slots = _osEnsureCatSlots(grid, _catData.length, OS_CAT_SLOTS);
 
     // Mark fired NOW so an early dwell cut still ghosts on the next tick.
     _catFired = true;
 
     const SEQ   = ["▓▓", "▒▒", "░░", "··", ""];
     const FRAME = 90;
-    const LAG   = 60;
+    const LAG   = _osCatStagger(_catData.length, 60, 1200);
 
     let maxEnd = 0;
     for (let i = 0; i < _catData.length && i < slots.length; i++) {
@@ -1332,7 +1378,9 @@
   function _osRenderGreenCatSlots() {
     const grid = document.getElementById("os-catapult-green-grid");
     if (!grid) return;
-    const slots = grid.querySelectorAll("[data-os-cat-slot]");
+    const slots = _osEnsureCatSlots(
+      grid, (_greenData || []).length, OS_GREEN_SLOTS,
+    );
     slots.forEach((sq, i) => {
       const entry = _greenData ? _greenData[i] : null;
       if (entry && entry.flushed && entry.seat) {
@@ -1358,7 +1406,8 @@
     if (!_greenData) return;
     const grid = document.getElementById("os-catapult-green-grid");
     if (!grid) return;
-    const slots = grid.querySelectorAll("[data-os-cat-slot]");
+    const slots = _osEnsureCatSlots(grid, _greenData.length, OS_GREEN_SLOTS);
+    const lag = _osCatStagger(_greenData.length, 160, 3200);
     for (let i = 0; i < _greenData.length && i < slots.length; i++) {
       const entry = _greenData[i];
       if (!entry?.flushed || !entry?.seat) continue;
@@ -1370,7 +1419,7 @@
       const x1 = sr.left + sr.width  * 0.5;
       const y1 = sr.top  + sr.height * 0.5;
       _osQueuePtAnim(x0, y0, x1, y1, "\u2588\u2588", OS_GREEN_FILL,
-        { dur: 1000, ease: "inout", size: 15, delay: i * 160 });
+        { dur: 1000, ease: "inout", size: 15, delay: i * lag });
     }
   }
 
@@ -1379,13 +1428,13 @@
     if (!_greenData) return;
     const grid = document.getElementById("os-catapult-green-grid");
     if (!grid) return;
-    const slots = grid.querySelectorAll("[data-os-cat-slot]");
+    const slots = _osEnsureCatSlots(grid, _greenData.length, OS_GREEN_SLOTS);
 
     _greenFired = true;  // ghost survives an early dwell cut (see red lane)
 
     const SEQ   = ["\u2593\u2593", "\u2592\u2592", "\u2591\u2591", "\u00B7\u00B7", ""];
     const FRAME = 90;
-    const LAG   = 60;
+    const LAG   = _osCatStagger(_greenData.length, 60, 1200);
 
     let maxEnd = 0;
     for (let i = 0; i < _greenData.length && i < slots.length; i++) {

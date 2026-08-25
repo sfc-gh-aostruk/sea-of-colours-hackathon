@@ -1,6 +1,6 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.12
+Version: 1.13
 Last updated: 2026-08-25
 
 This is the single source of truth for the world, the fiction, and how
@@ -20,8 +20,13 @@ The following settings define the **canonical competitive ruleset** as of v0.9.1
 | `SOC_AGENT_WORLD_VIEW` | `grid` | Agents receive the 2D grid view (not the legacy flattened list). |
 | `SEASON_DAY_CAP` | `7` | Seasons run for **7 planning days** (7 Nox of harvesting). |
 | **Repair policy** | **No free repairs** | Damaged harvesters **do not auto-repair** at Aurora. Must pay `REPAIR_COST` (500c) in Orbit phase or sit out. |
+| **Orbit phase** | **Buy-only, uncapped** (v1.13) | The Orbit is a shop: build / repair / arm. No action cap, no refining, no bidding. See §4. |
+| **Settlement** | **Automatic** (v1.13) | Every RED parcel ships and scores `purity × tier multiplier`; every GREEN parcel is dumped at **−100**. No action required. See §4.4, §4.7. |
+| `RED_QUALITY_MULTIPLIER` | `0.75 / 1.0 / 1.5 / 3.0` | trace / vein / mass / pure. The convex curve is why probing beats scraping (§4.4). |
+| `GREEN_ENDGAME_PENALTY` | `100` | Flat charge per GREEN parcel, regardless of purity (§4.7). |
+| `HOARD_CAPACITY` | `15` | Vault slots. Since v1.13 the vault empties every orbit, so this caps **one night's** haul (§3.14). |
 
-These settings balance exploration, competition, and risk management — probes decay, drops require live intel, and damaged units cost credits to restore.
+These settings balance exploration, competition, and risk management — probes decay, drops require live intel, and damaged units cost credits to restore. Since v1.13 the strategic weight sits almost entirely in the **Nox phase**: the Orbit is where you spend, the night is where you play.
 
 ---
 
@@ -1475,39 +1480,56 @@ disambiguate co-located wrecks. The cell itself carries the
 ``cell-collision`` class for one game day; the ``data-coll-age``
 attribute is ``0`` for today, ``1`` for yesterday.
 
-## 4. Mechanics — the Orbit phase (v0.9.x)
+## 4. Mechanics — the Orbit phase (v1.13)
 
-The Orbit phase is the daytime counterpart to PRAXIS. Days **2+**
-open in Orbit; every seat may queue up to **3 actions** before
-locking. When all seats lock the resolver settles in a fixed order
-(build/repair/refine → RED catapult draft → GREEN catapult flush),
-then flips the session to `planning` so the Nox submission window
-opens. Day 1 is special — sessions open straight in PLANNING with
-**0 credits** and **no day-1 Orbit phase**, because seats have no
-parcels to ship and credits are only spendable in Orbit anyway.
+The Orbit phase is the daytime counterpart to PRAXIS. Days **2+** open
+in Orbit. A seat queues whatever it wants to **buy**, locks, and the
+resolver settles: purchases apply, then the vault **settles itself** —
+every RED parcel ships and scores, every GREEN parcel is disposed of at
+a flat penalty — and the session flips to `planning` so the Nox
+submission window opens. Day 1 is special: sessions open straight in
+PLANNING with **0 credits** and **no day-1 Orbit phase**, because seats
+have nothing to ship and credits are only spendable in Orbit anyway.
+
+> **v1.13 — the Orbit is now a shop, not a second game.** The Orbit
+> phase used to carry a whole economy of its own: a 3-action budget, a
+> BLUE-priced refinery, a sealed per-parcel credit-bid draft for 20
+> transit-charged catapult slots, a shared round-robin GREEN flush
+> priced in forfeited RED, and a bespoke Final Refinery on the last
+> turn. All of it is **gone**. What replaced it is one sentence: *buy
+> what you like, then your vault settles itself.*
+>
+> The reason is that the two phases were competing for the same
+> attention. Sea of Colours is a game about **where you send your
+> harvesters under fog** — the Nox phase. The bidding minigame was
+> genuinely interesting in isolation, but it was a second game bolted
+> to the first, and it taxed exactly the players it should have been
+> teaching: a newcomer lost seasons to *logistics* mistakes (mis-bid a
+> slot, forget to flush, waste the third action) long before they made
+> an interesting *scouting* mistake. It also made agents hard to write
+> for the wrong reason — most of a harness's orbit code was auction
+> strategy, not map reading.
+>
+> What was actually load-bearing is kept. RED still scores
+> `purity × tier multiplier`, so **finding pure ore still matters more
+> than finding a lot of ore** (§4.4). GREEN still costs you −100 a
+> parcel, so **harvesting blind still hurts** (§4.7) — you just can no
+> longer be punished twice by also fumbling the disposal. BLUE is
+> untouched and is now the *only* thing you spend on judgement:
+> weapons (§4.9).
 
 > **v1.1 credit-economy change.** There is **no birth stipend**: a
 > seat opens Nox 1 with `0c`. The `ORBIT_CREDITS_PER_TURN` award is
-> now granted at **Orbit entry** (the moment the day flips into the
-> Orbit planning step), not at settlement, so the credits readout and
-> the budget projection reflect spendable funds *while you plan*. The
+> granted at **Orbit entry** (the moment the day flips into the Orbit
+> planning step), not at settlement, so the credits readout and the
+> budget projection reflect spendable funds *while you plan*. The
 > first award therefore lands at the **first Orbit (day 2)** → a seat
 > plans its first Orbit with exactly `1000c`, +1000 each subsequent
-> Orbit (minus spend). (Previously a +1000 birth grant stacked with
-> the day-2 award, so the first Orbit effectively opened at 2000c.)
+> Orbit (minus spend).
 
-> **v0.9.x economy redesign.** The single-lane fuel-threshold catapult
-> and the pooled solar-jettison discount were replaced by a
-> **per-parcel credit-bid draft** for RED (§4.4) and a **shared
-> diminishing-cost GREEN catapult** (§4.7). Refining now costs BLUE and
-> is capped + grade-limited (§4.3), every house starts with **250
-> BLUE** (§4.1), and programming an action **locks** its parcels and
-> credits/blue for the rest of the pass (§4.2). Blue pockets now emit a
-> **blue-sign** radiative overlay visible from orbit (§4.10).
-
-The numbers below are the v0.8.0 defaults exposed in
-[`sea_of_colours/game/session.py`](sea_of_colours/game/session.py).
-The bidding mechanisms are summarised here; the resolver in
+Numbers below are the defaults in
+[`sea_of_colours/game/session.py`](sea_of_colours/game/session.py); the
+resolver in
 [`sea_of_colours/game/orbit_resolver.py`](sea_of_colours/game/orbit_resolver.py)
 is the source of truth.
 
@@ -1516,222 +1538,130 @@ is the source of truth.
 Two resources flow through the Orbit phase:
 
 - **Credits** — granted at `ORBIT_CREDITS_PER_TURN` (default `1000`)
-  per seat at **Orbit entry** (v1.1), so the stipend is visible the
-  moment the planning step opens rather than appearing at settlement.
-  Idempotent per-day so a session reload mid-Orbit doesn't
-  double-award (the settlement resolver keeps an idempotent backstop
-  for fresh loads). There is **no birth stipend** — Nox 1 opens at
-  `0c` and the first award is the day-2 Orbit. Credits buy harvesters,
-  probes, and repairs, and are the **bid currency for RED catapult
-  slots** (§4.4). They never score directly.
-- **BLUE purity** — the fissile spend surface. Every house starts the
-  season with `STARTING_BLUE_PURITY` (default **250**) held in a
-  numeric **blue bank** that does not occupy a vault slot. Harvested
-  BLUE parcels add to the same spend surface.
-  `blue_purity_available(player)` reads `blue_bank + Σ(blue parcels)`;
-  `debit_blue_purity` spends the **bank first**, then BLUE parcels
-  lowest-first. BLUE funds **refining** (§4.3) and **weapons** (§4.9).
-- **Shipped RED purity** — the sum of every RED parcel banked into
-  the `SHIPPED` bay via the catapult, scored as `effective_purity ×
-  tier multiplier` where the tier keys off the parcel's **original**
-  purity (§4.4). This is the **only** scoring substance — vault mass
-  without a launch is worthless (§3.1).
+  per seat at **Orbit entry** (v1.1). Idempotent per-day so a session
+  reload mid-Orbit doesn't double-award. There is **no birth stipend**
+  — Nox 1 opens at `0c` and the first award is the day-2 Orbit.
+  Credits buy **harvesters, probes and repairs**, and nothing else.
+  They never score directly, and (v1.13) they are no longer a bid
+  currency — shipping is free.
+- **BLUE purity** — the fissile spend surface, and since v1.13 the only
+  resource with a spending *decision* attached. Every house starts the
+  season with `STARTING_BLUE_PURITY` (default **250**) in a numeric
+  **blue bank** that does not occupy a vault slot; harvested BLUE
+  parcels add to the same surface. `blue_purity_available(player)`
+  reads `blue_bank + Σ(blue parcels)`; `debit_blue_purity` spends the
+  **bank first**, then BLUE parcels lowest-first. BLUE funds
+  **weapons** (§4.9). *(It used to also fund refining, which no longer
+  exists — so every point of BLUE is now weapons budget.)*
+- **Shipped RED purity** — the sum of every RED parcel banked into the
+  `SHIPPED` bay, scored as `purity × tier multiplier` (§4.4). This is
+  the **only** scoring substance.
 
-RED **purity** doubles as fuel: it pays the **transit charge** on each
-catapult slot (§4.4) and is the **fuel committed to the GREEN catapult**
-(§4.7). Burning fuel deducts purity from RED hoard parcels lowest-first,
-and partial-purity parcels are split (a parcel worth 80 covering a
-30-RED call ends the round at purity 50, retained in the hoard).
+> **v1.13 — RED purity is no longer fuel.** It used to pay the catapult
+> transit charge and the GREEN flush. Both are gone: RED is now purely
+> score, and nothing consumes it. BLUE is the only consumable.
 
 ### 4.2 The Orbit action queue
 
 | Action | Cost | Effect |
 | ------ | ---- | ------ |
-| `build_harvester` | `HARVESTER_BUILD_COST` (`1500c`) | Mints a new harvester in orbit. Capped at `HARVESTER_MAX_PER_PLAYER` (`3`) total live harvesters per seat — the cap rejects without billing. |
-| `build_probe` | `PROBE_BUILD_COST` (`250c`) | Adds 1 to `probe_stock`. Probes are a finite resource — see §4.6. |
+| `build_harvester` | `HARVESTER_BUILD_COST` (`1500c`) | Mints a new harvester in orbit. Capped at `HARVESTER_MAX_PER_PLAYER` (`3`) live harvesters per seat — the cap rejects without billing. |
+| `build_probe{count}` | `PROBE_BUILD_COST` (`250c`) each | Adds `count` to `probe_stock`. Probes are a finite resource — see §4.6. |
 | `repair{unit}` | `REPAIR_COST` (`500c`) | Clears the `damaged` flag on a harvester the seat owns. Refuses on a non-damaged target. |
-| `refine{source_tier}` or `refine{inputs}` | BLUE | Promote ≤5 same-tier RED parcels one grade up (§4.3). |
-| `ship_catapult{bids:[{id, credits}, …]}` | credits + RED transit | Per-parcel credit-bid slot draft (§4.4). |
-| `solar_jettison{green_parcels, red_fuel}` | RED fuel | GREEN catapult flush (§4.7). |
+| `build_emp{count}` | BLUE | Adds EMP charges to the arsenal (§4.9.3). |
+| `build_mine{count}` | BLUE | Adds caltrop mine clusters (§4.9.4). |
+| `build_chaff{count}` | BLUE | Adds chaff flares (§4.9.5). |
 
-Each seat may issue at most `MAX_ORBIT_ACTIONS = 3` actions per
-Orbit phase. Actions past the cap are dropped with a yellow log line.
-*(Exception: the **final settlement orbit** lifts this cap and the
-refine caps — see §4.3.1.)*
+**There is no action cap.** (v1.13 — `MAX_ORBIT_ACTIONS = 3` is
+removed.) A seat may queue as many purchases as it can pay for; the
+wallet is the only limit, and the frontend projects the running balance
+as you queue. Actions apply in **declared order**, and one that can no
+longer afford itself is rejected with a yellow log line rather than
+partially applied.
 
-**Locking model (v0.9.x).** Actions are applied in declared order and
-resources are **debited/locked the moment an action is programmed**:
+Batched buys (`build_probe{count: 8}`) fill **unit by unit** until the
+credits run out, so an over-ambitious batch delivers what you could
+afford instead of being dropped whole.
 
-- A parcel named by any action (a refine input, a catapult bid, or
-  reserved as green to flush) is **locked** — it cannot be reused by a
-  later action in the same pass, and cannot be shipped, refined, or
-  burned as fuel twice.
-- Credits bid on a catapult slot, and BLUE spent on a refine, are
-  **committed immediately**. A later action that can no longer afford
-  its cost is **rejected** (yellow log line) rather than silently
-  partially applied.
-- Only parcels present in the vault **at the start of the pass** are
-  eligible, so an output minted by one refine cannot be cascaded into
-  another refine or a ship in the same turn (no same-turn trace → vein
-  → mass). *(The final settlement orbit is the sole exception — §4.3.1.)*
+> **The locking model is gone (v1.13).** Parcels are never named by an
+> Orbit action any more — nothing refines, ships or burns them — so
+> there is nothing to lock. The old §4.2 rules about locked parcels,
+> committed bids and start-of-pass eligibility no longer apply.
 
-The frontend mirrors this: programming an action greys out the parcels
-and decrements the credit/blue readouts, so a house can only build a
-sequence it can actually pay for.
+**The final orbit.** On the terminal settlement orbit
+(`final_orbit`, `day = cap + 1`) purchases are still **accepted**, but
+there is no following Nox for anything you buy to act in, so they are
+simply wasted credits. The engine permits it (there is no longer any
+rule to enforce) and the UI warns you. Settlement itself is unchanged:
+it happens on the final orbit exactly as on every other one.
 
-### 4.3 Refine
+### 4.3 Refine — removed (v1.13)
 
-`refine` promotes a batch of same-tier RED parcels **one grade up**.
-Purity is conserved exactly:
+Refining promoted same-tier RED parcels one grade up for a BLUE cost,
+capped at 5 inputs per action and forbidden from cascading within a
+turn. It is **removed**, along with the `refine`, `refine_cascade`,
+`refine_trace`, `refine_vein` and `refine_pick` actions. The
+`REFINE_MAX_FOR_TIER`, `REFINE_MAX_SLOTS` and `REFINE_BLUE_COST`
+constants are deleted.
 
-```
-S = sum(parcel.purity for parcel in inputs)
-M = REFINE_MAX_FOR_TIER[source_tier]  # 150 for trace→vein, 254 for vein→mass
-out_full = S // M                       # full target-tier parcels at purity M
-residual = S % M                        # one parcel back at the source tier
-```
+Why: refining let a house **launder a bad night into a good score**.
+Because purity was conserved and only the *tier multiplier* changed,
+enough trace ore reliably became mass ore — which meant the answer to
+"I scouted badly" was arithmetic rather than scouting better. It also
+consumed the BLUE that was supposed to be making the weapons decision
+interesting. Tier is now a property of **where you dug**, permanently.
 
-Rules (v0.9.x):
+### 4.3.1 The Final Refinery — removed (v1.13)
 
-- **One grade only**: trace → vein, vein → mass. Mass and pure are
-  unrefinable. Inputs must all share a tier.
-- **Input cap**: at most `REFINE_MAX_SLOTS` (**5**) parcels per action.
-- **BLUE cost**: `REFINE_BLUE_COST` per input parcel — **10** blue per
-  trace input, **20** blue per vein input — debited from the blue spend
-  surface (§4.1) **before** any parcel mutation. A house that can't
-  afford the blue is left untouched.
-- **No same-turn cascade**: inputs must be parcels that existed in the
-  vault at the start of the Orbit pass; an output minted this pass
-  can't be refined again until the next turn.
+The terminal-orbit Final Refinery existed to give leftover BLUE a use
+on the last turn, when a normal refine would be a dead action. With
+refining gone it has no purpose; leftover BLUE is now spent on weapons
+during the season, which is the point. Removed with it: the
+`refine_cascade` and `ship_catapult{auto}` terminal-only actions, and
+the `final_refinery` block in the agent view.
 
-Two convenience shapes are accepted: `refine{source_tier}` refines up
-to 5 of the lowest-purity parcels of that tier, while
-`refine{inputs:[ids]}` names specific parcels. New parcels carry
-`lineage = "refined"` and a `refined_from` list pointing at their
-inputs. Overflow past `HOARD_CAPACITY` is trimmed from the tail of the
-new batch. The frontend refinery dialog previews `out_full × target +
-residual` and the blue cost before committing.
+### 4.4 RED settlement — everything ships, scored by tier (v1.13)
 
-### 4.3.1 The Final Refinery (terminal settlement orbit only)
-
-On the **final settlement orbit** (`final_orbit`, `day = cap + 1`) the
-Orbit phase becomes a special **Final Refinery** run. Because there is
-no next turn to ship into, the last-orbit refine would otherwise be a
-dead action; the Final Refinery makes leftover BLUE genuinely valuable
-by letting a house **concentrate and ship unshipped RED in one pass**.
-Only on this orbit, the normal §4.2 / §4.3 restrictions are relaxed:
-
-- **No action cap.** The `MAX_ORBIT_ACTIONS = 3` per-orbit cap is
-  lifted — a seat can queue as many refines + a ship as it needs.
-- **No refine slot cap.** The `REFINE_MAX_SLOTS = 5` limit is lifted:
-  a single `refine{source_tier}` (or the cascade below) folds the whole
-  tier at once.
-- **Same-turn cascade.** A parcel minted by a refine this pass **is**
-  eligible to be re-refined and shipped in the same pass, so
-  trace → vein → mass → ship resolves in one turn (elsewhere this is
-  forbidden — see §4.2).
-- **BLUE is the only limiter.** Every fold still pays
-  `REFINE_BLUE_COST`; when the blue is exhausted the cascade stops.
-  Everything else — the §4.7 fire-sale on whatever is left unshipped
-  (`0.5 × purity`, **no** tier weight), the GREEN penalty, and the §4.4
-  catapult draft — is **unchanged**.
-
-Two terminal-only convenience actions make this a two-click turn:
-
-| Action (final orbit only) | Effect |
-| ------------------------- | ------ |
-| `refine_cascade{target_tier}` | One click: fold **every** eligible RED parcel up to `vein` or `mass` (default `mass`), cascading through the tiers as far as BLUE allows. |
-| `ship_catapult{auto:true, credits, count}` | Bid `credits` on the seat's **best `count`** RED parcels (0 = all) by tier-weighted value, chosen **after** the refinery folds. Needed because refined parcels get their ids at settlement time, so they can't be named in an explicit `bids` list. |
-
-Both are **rejected on any non-final orbit** (the resolver drops them
-with a yellow log line). Manual staged control still works: a house may
-instead queue explicit `refine{source_tier}` / `refine{inputs}` actions
-(now uncapped and cascading) followed by an `auto` ship — the auto bid
-always draws from the post-refine vault. Ordering within the pass is
-declared order, so put refines before the ship.
-
-### 4.4 RED shipping catapult — per-parcel credit-bid draft (v0.9.x)
-
-`ship_catapult` is the **only** RED shipping action. v0.9.x replaced
-the fuel-threshold lane with a **sealed per-parcel credit draft over
-transit-charged rows**. Each seat submits a list of bids:
+**There is no shipping action.** At every settlement, **every RED
+parcel in every vault ships**. No bid, no slot, no transit charge, no
+action spent — the catapult loads whatever you have and fires.
 
 ```
-ship_catapult{ bids: [ {id: <square_id>, credits: N}, … ] }
+score = purity × tier_multiplier(purity)
 ```
 
-The catapult exposes `CATAPULT_ROW_COUNT × CATAPULT_SLOTS_PER_ROW`
-slots (defaults **4 × 5 = 20**). Each **row** charges a flat RED-purity
-**transit charge** to every parcel that lands in it:
+`tier_multiplier` is `RED_QUALITY_MULTIPLIER`, the **kept** half of the
+old design and the reason scouting beats scraping:
 
-| Row | Slots | `CATAPULT_ROW_TRANSIT` |
-| --- | ----- | ---------------------- |
-| 0 | 5 | **10** RED |
-| 1 | 5 | **25** RED |
-| 2 | 5 | **50** RED |
-| 3 | 5 | **100** RED |
+| Tier | Purity band | Multiplier |
+| ---- | ----------- | ---------- |
+| `trace` | 1–74 | **×0.75** |
+| `vein` | 75–149 | **×1.0** |
+| `mass` | 150–254 | **×1.5** |
+| `pure` | 255 | **×3.0** |
 
-**Scoring.** A parcel that lands in a row pays that row's transit out
-of its own purity. The tier multiplier keys off the **original** purity
-(so a `pure` parcel keeps ×3 even after transit shaves it):
+The curve is deliberately convex: one `pure`-255 parcel scores **765**,
+while ten `trace`-25 parcels — ten nights of harvester time — score
+**187** between them. Purity is found by **probing before you dig**
+(§3.9), so the multiplier is the game's standing bribe to scout.
 
-```
-effective = max(0, purity - row_transit)
-score     = effective × tier_multiplier(original_purity)
-```
+**Settlement.**
 
-If `purity - transit ≤ 0` the parcel scores **0** and **no further
-charge** is made — a wasted ride, not a debt.
+1. Every RED parcel in the seat's vault is taken, in vault order.
+2. Each is stamped with `effective_purity` (= its purity; there is no
+   longer anything to deduct) and `score_tier`, then moved to
+   `shipped_squares`.
+3. The manifest of what flew is appended to `catapult_history` and
+   rendered publicly in the post-orbital briefing (§4.8).
 
-**The draft (settlement).**
+There is nothing to get wrong and nothing to forfeit. A parcel in your
+vault at settlement **is** score.
 
-1. **Commit + lock.** When a bid is programmed its `credits` are
-   debited/locked immediately and the parcel is locked (§4.2). A bid on
-   a non-RED parcel, a locked parcel, or one the seat can't afford is
-   rejected.
-2. **Flatten.** Every valid `(parcel, credits, seat)` bid from **all
-   houses** is pooled into one global list.
-3. **Rank DESC by `credits`.** Tie-breaks, in order: (a) seat with the
-   higher **total credits** committed this pass; (b) seat shipping
-   **more** parcels; (c) higher **parcel purity**; (d) canonical seat
-   order.
-4. **Assign** the top 20 ranked bids to slots 0..19 in order — slot `S`
-   lives in row `S // SLOTS_PER_ROW`, so the highest bids buy the
-   cheap-transit rows.
-5. **Charge + ship.** Each winning parcel pays its row transit, gets an
-   `effective_purity` + `score_tier` (original tier) stamp and a
-   `catapult_shipped: True` flag, and lands in `shipped_squares`.
-   `score_for` reads these when summing (§3.1).
-6. **Overflow (> 20 bids).** Bids past the 20th slot **do not ship** —
-   their parcels stay in the hoard, but the committed credits are
-   **forfeit** (the bid was a gamble on the draft).
-
-Credits are **never refunded** for a bad row: bidding low risks a
-high-transit row (or no slot at all), so the house must weigh how much
-a slot is worth against rivals' likely bids — the hidden-information
-auction is the point.
-
-**Zero is a valid bid.** `credits` is clamped to `max(0, credits)`, so a
-`0cr` bid is legal and simply ranks last. Credits buy **priority, not
-passage** — you pay only to climb into the cheap-transit rows or to
-guarantee a slot when demand outstrips the 20 on offer. Two corollaries:
-
-- **Under-subscribed orbit (≤ 20 parcels bid).** Every bid wins a slot,
-  so a `0cr` parcel still ships — it just takes whatever rows the paying
-  bids leave behind (potentially the 100-transit row 3). With a 2-seat
-  game you rarely fill all 20 slots, so free shipping is the norm and
-  credits matter mainly to dodge the steep lower rows on thin parcels.
-- **A `0cr` bid that overflows costs nothing.** Forfeit only burns
-  *committed* credits, so betting zero risks only the parcel's ride, not
-  your treasury. Spend credits only to **secure favourable positions**;
-  otherwise ship at zero and accept the leftover row.
-
-**Worked example.** Two houses bid on the 20 slots. House A bids 70cr
-on a `pure`-255 parcel; House B bids 40cr on a `mass`-200 parcel. A's
-bid ranks first → slot 0 (row 0, transit 10) → effective 245 × 3.0 =
-**735**. B's bid → slot 1 (still row 0, transit 10) → effective 190 ×
-1.5 = **285**. Had B been outbid down into row 3 (transit 100), the
-same parcel would score 100 × 1.5 = 150.
+> **Consequence for vault pressure (§3.14).** Because the vault empties
+> every orbit, `HOARD_CAPACITY` (**15**) is now a *per-night* limit on
+> how much one Nox can bank, not a standing inventory problem. Overflow
+> still displaces the lowest-tier parcel — so a night that harvests
+> more than 15 squares still costs you the worst of them.
 
 ### 4.5 Tithe lane — removed
 
@@ -1755,90 +1685,76 @@ simulator executes a `ProbeMove`:
 The asset ledger row for the probe is unchanged; only the spawn
 gate is new.
 
-### 4.7 GREEN catapult — shared diminishing-cost flush (v0.9.x)
+### 4.7 GREEN disposal — automatic, flat penalty (v1.13)
 
-GREEN is a **punishment for bad tactical choices** (harvesting a
-contested patch or harvesting blind). Every GREEN parcel still in a
-house's vault at the end of the season bleeds `GREEN_ENDGAME_PENALTY`
-(**−100**) off the final score (§3.1), so disposing of it matters. The
-sanctioned route is the **GREEN catapult** — a separate lane with its
-own shared slots, declared via the (legacy-tagged) action:
-
-```
-solar_jettison{ green_parcels: N, red_fuel: R }
-```
-
-- `green_parcels` — how many vault-green the house offers to flush
-  (those parcels are reserved/locked, §4.2).
-- `red_fuel` — RED purity the house commits as fuel. Committed RED is
-  **forfeit whether or not it ends up flushing green** (burned at
-  commit time, excluding any parcel already locked by another action).
-
-The lane has `GREEN_CATAPULT_SLOTS` (**12**) slots shared across all
-houses in the pass. Each **global** slot costs RED purity that
-**diminishes by slot position**, floored at 0:
+GREEN is the **mistake tax**: you get it by harvesting a contested
+patch, or by harvesting blind. Every GREEN parcel costs
+`GREEN_ENDGAME_PENALTY` (**−100**) off the final score, and since v1.13
+this is charged **automatically at settlement** — the parcel is
+disposed of, leaves the vault, and the −100 is booked.
 
 ```
-slot_cost(s) = max(0, GREEN_SLOT_COST_BASE - s × GREEN_SLOT_COST_STEP)
-             = 50, 45, 40, 35, …   (base 50, step 5)
+penalty = GREEN_ENDGAME_PENALTY × (green parcels held)
 ```
 
-**Settlement (after the RED catapult).**
+The penalty is **flat**: a green parcel of purity 250 and one of purity
+3 both cost exactly 100. Purity is irrelevant to green — what you are
+being charged for is the *decision to dig there*, and that decision was
+equally wrong either way.
 
-1. Participants = houses that committed both green to flush and RED
-   fuel. Rank them by `red_fuel` committed (DESC), canonical seat order
-   as tiebreak.
-2. Deal the 12 slots **round-robin** in that order. For each slot dealt
-   to a house, if its remaining fuel covers `slot_cost(global_index)`,
-   it flushes one green parcel (removed from the vault) and pays the
-   cost out of its committed fuel; otherwise it passes.
-3. Dealing continues until slots run out or no house can afford the
-   next slot. Unspent committed RED is **forfeit** (no refund); leftover
-   green stays in the vault and will incur the endgame penalty.
+> **Why the flush is gone.** GREEN used to be disposed of through a
+> shared 12-slot lane, ranked by how much RED you were willing to burn
+> as fuel, at a cost that ramped down by global slot position. It was
+> the most intricate rule in the book and it punished the same mistake
+> twice: you harvested green (bad), and then you had to *correctly
+> execute a coordinated round-robin auction* to stop it compounding.
+> Worse, a house that misplayed the flush could end up with green
+> **permanently occupying vault slots** — a soft-lock that read as a
+> bug. The tax is the interesting part; the ceremony was not.
 
-**Collective effect.** Because the cost ramps **down** by global slot
-position, more houses flushing together pushes everyone into the
-cheaper late slots — coordinated disposal is materially cheaper per
-parcel than a lone house clearing the same green.
+Two rules that follow from this:
+
+- **GREEN can never brick a vault.** Every green parcel leaves at the
+  next settlement, guaranteed, whatever your credits or BLUE.
+- **Green harvested on the final Nox still costs you.** There is no
+  settlement after the last night, so it is charged where it sits, in
+  the vault, by the endgame scoring pass (§3.1). Holding it is never a
+  way to avoid the tax.
 
 ### 4.8 Settlement order
 
 The resolver runs one pass per Orbit phase, in the fixed order:
 
-1. **Award credits** — *idempotent backstop only* (v1.1). The stipend
-   is normally granted at Orbit entry, so by settlement it has already
-   landed; this step re-fires only for a session loaded straight into
-   an unsettled Orbit that never saw the entry award.
-2. **Apply seat actions** (build / repair / refine, plus committing
-   catapult bids and green-flush declarations) in declared order per
-   seat (canonical seat order: p1, p2, p3, p4). Parcels, credits, and
-   blue are **locked/debited at commit time** (§4.2); an action that
-   can no longer afford itself is rejected. This lets a seat refine
-   fuel before bidding it.
-3. **Settle RED catapult.** Pool every committed per-parcel credit bid
-   across all houses, rank DESC by credits (with tie-breaks), assign
-   the top 20 to slots 0..19, charge each row's transit, and ship with
-   the `effective_purity` + `score_tier` stamp (§4.4). Overflow bids
-   forfeit their credits.
-4. **Settle GREEN catapult.** Rank participants by committed RED fuel,
-   deal the 12 shared slots round-robin at diminishing per-slot cost,
-   flush affordable green, forfeit unspent fuel (§4.7).
-5. **Catapult history** — one structured row appended to
-   `catapult_history`, surfaced in the agent view as
+1. **Award credits** — *idempotent backstop only* (v1.1). The stipend is
+   normally granted at Orbit entry; this step re-fires only for a
+   session loaded straight into an unsettled Orbit that never saw the
+   entry award.
+2. **Apply seat purchases** in declared order, per seat, in canonical
+   seat order (p1, p2, p3, p4). Credits and BLUE are debited as each
+   applies; an action that can no longer afford itself is rejected.
+3. **Settle RED** — every RED parcel in every vault ships and scores
+   (§4.4).
+4. **Settle GREEN** — every GREEN parcel in every vault is disposed of
+   at −100 (§4.7).
+5. **Settlement history** — one structured row appended to
+   `catapult_history` (keeping the legacy key), carrying the full
+   per-parcel manifest of both lanes. Surfaced in the agent view as
    `last_catapult_results`.
 6. **Flip to PLANNING** — pending Orbit slots cleared, log line
    `[orbit] day N — settlement complete; planning opens` written.
 
-> **Both catapults are public.** The RED shipping draft and the GREEN
-> disposal flush are resolved on shared, openly-observed orbital
-> infrastructure: **every** house sees the full settlement of **both**
-> lanes regardless of fog — which seat won which slot, the parcel
-> shipped/flushed (origin, tier, purity), the transit charge or slot
-> cost paid, the resulting score, and every losing/overflow bid. The
-> post-orbital briefing renders both lanes for all seats, every Nox,
-> even when a lane went unused (shown as a quiet/empty lane). This is
-> distinct from per-house **station observations** and **orbital
-> action logs**, which remain fogged to the viewing seat.
+BLUE is never settled: it is fuel, not cargo, so it is the one thing
+that legitimately stays in the vault across an orbit.
+
+> **Settlement is public.** Both lanes resolve on shared, openly
+> observed orbital infrastructure: **every** house sees the full
+> settlement of **both** lanes regardless of fog — which parcels each
+> seat shipped (origin, tier, purity, score) and which it dumped. The
+> post-orbital briefing renders both lanes for all seats every Nox,
+> even when a lane was empty. This is distinct from per-house **station
+> observations** and **orbital action logs**, which stay fogged to the
+> viewing seat. Settlement is therefore the game's main **intelligence
+> leak**: your rival's manifest tells them how rich a seam you found.
 
 ### 4.9 Interdiction layer — weapons + WAIT (v0.9)
 
@@ -2421,6 +2337,70 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.13 — 2026-08-25
+
+**The Orbit phase is now a shop, and the vault settles itself.** The
+single largest simplification in the game's history: the Orbit's
+private economy is removed so that the Nox phase — deciding where to
+send harvesters under fog — is unambiguously the game.
+
+Removed:
+
+- **The 3-action cap** (`MAX_ORBIT_ACTIONS`). A seat may now queue as
+  many purchases as it can pay for; the wallet is the only limit. §4.2
+- **Refining** (§4.3) — the `refine`, `refine_cascade`, `refine_trace`,
+  `refine_vein`, `refine_pick` actions and the `REFINE_MAX_FOR_TIER` /
+  `REFINE_MAX_SLOTS` / `REFINE_BLUE_COST` constants. Refining let a
+  house launder a bad night into a good score by arithmetic; tier is
+  now a permanent property of where you dug.
+- **The Final Refinery** (§4.3.1) — existed only to give leftover BLUE
+  a use on the terminal orbit. BLUE now goes to weapons.
+- **The RED credit-bid draft** (§4.4) — the `ship_catapult` action, the
+  20 slots, the four transit rows (`CATAPULT_ROW_*`) and the overflow
+  forfeit. Shipping is free and universal.
+- **The GREEN flush** (§4.7) — the `solar_jettison` action, the 12
+  shared slots, the RED-fuel ranking and the diminishing cost ramp
+  (`GREEN_CATAPULT_SLOTS`, `GREEN_SLOT_COST_*`, `JETTISON_*`). It
+  punished the same mistake twice and could soft-lock a vault.
+- **The locking model** (§4.2) — with no action naming a parcel, there
+  is nothing to lock.
+
+Kept, because they are what made the economy worth having:
+
+- `RED_QUALITY_MULTIPLIER` (×0.75 / ×1.0 / ×1.5 / ×3.0). One `pure`
+  parcel still outscores ten `trace` parcels four-to-one, so probing
+  before you dig is still the highest-leverage habit in the game. §4.4
+- `GREEN_ENDGAME_PENALTY` (−100 per parcel, flat, purity-irrelevant).
+  Harvesting blind still hurts — you just can't also fumble the
+  cleanup. §4.7
+- The **public settlement briefing**, unchanged as an intelligence
+  leak: your manifest tells rivals how rich a seam you found. §4.8
+
+New behaviour:
+
+- **Automatic settlement.** Every orbit, every RED parcel ships and
+  scores; every GREEN parcel is disposed of at −100. BLUE is never
+  settled — it is fuel, and legitimately stays in the vault. §4.8
+- **GREEN can never brick a vault.** Guaranteed to clear at the next
+  settlement. Green harvested on the final Nox is charged where it
+  sits by the endgame pass, so holding it never dodges the tax.
+- **Vault pressure is per-night.** `HOARD_CAPACITY` (15) now limits one
+  night's haul rather than standing inventory; overflow still displaces
+  the lowest tier. §3.14
+- **Retired actions fail loudly.** A stale client or an old replay
+  sending `refine` / `ship_catapult` / `solar_jettison` gets a waste
+  line naming v1.13 and the reason, not a silent shrug.
+- **The final orbit no longer restricts purchases.** Buying is legal
+  but pointless (no following Nox); the UI warns rather than the engine
+  forbidding. Settlement runs on the final orbit as on any other.
+
+Frontend: the catapult graphics are **kept** — both lattices now size
+themselves to the settlement manifest (RED resting at 20 cells, GREEN
+at 12) and grow past it on a heavy night, so the catapult always fills
+and fires. The launch stagger is compressed for large manifests so the
+wave lands in roughly constant wall-clock time. `/mobile` and the
+frozen `orbital_exp/` fork are retired; `/play` is responsive.
 
 ### v1.12 — 2026-08-25
 

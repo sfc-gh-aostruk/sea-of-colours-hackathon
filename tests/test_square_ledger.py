@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from conftest import banked_parcels
+
 import pytest
 
 from sea_of_colours.game.ledger import (
@@ -95,7 +97,7 @@ def test_harvest_parcel_carries_square_id_and_origin_paint() -> None:
     assert sess.stash_policy("p2", [])[0]
     sess.maybe_resolve_if_ready()
 
-    hoard = sess.hoard_squares["p1"]
+    hoard = banked_parcels(sess, "p1")
     assert len(hoard) == 1
     parcel = hoard[0]
     assert parcel["x"] == target_x and parcel["y"] == dy
@@ -142,7 +144,7 @@ def test_drop_onto_red_auto_harvests_all_consecutive_reds() -> None:
     sess.maybe_resolve_if_ready()
 
     # Drop tile + 5 step tiles = 6 RED → GREEN conversions, all banked.
-    assert len(sess.hoard_squares["p1"]) == 6
+    assert len(banked_parcels(sess, "p1")) == 6
     converted = sum(1 for x in range(5, 11) if sess.grid[y][x].tile == Tile.GREEN)
     assert converted == 6
 
@@ -168,4 +170,4 @@ def test_drop_onto_empty_then_step_through_red_harvests_all() -> None:
     sess.maybe_resolve_if_ready()
     # 5 RED steps × 1 parcel each = 5 in the hoard; drop on EMPTY
     # banks nothing.
-    assert len(sess.hoard_squares["p1"]) == 5
+    assert len(banked_parcels(sess, "p1")) == 5

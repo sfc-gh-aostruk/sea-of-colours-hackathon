@@ -17,6 +17,8 @@ refactor cannot silently regress them:
 
 from __future__ import annotations
 
+from conftest import banked_parcels
+
 import pytest
 
 from sea_of_colours.game.session import (
@@ -85,8 +87,8 @@ def test_drop_on_red_converts_to_green_and_banks_parcel() -> None:
     assert sess.grid[y][3].tile == Tile.GREEN
     assert sess.grid[y][3].purity == 255
     # Hoard has the RED parcel.
-    assert len(sess.hoard_squares["p1"]) == 1
-    parcel = sess.hoard_squares["p1"][0]
+    assert len(banked_parcels(sess, "p1")) == 1
+    parcel = banked_parcels(sess, "p1")[0]
     assert parcel["tile_at_harvest"] == int(Tile.RED)
     assert parcel["purity_at_harvest"] == 200
 
@@ -114,8 +116,8 @@ def test_drop_on_green_converts_to_empty_and_banks_parcel() -> None:
     assert sess.grid[y][3].tile == Tile.EMPTY
     assert sess.grid[y][3].purity == 0
     # Hoard has the GREEN parcel carrying the original square_id.
-    assert len(sess.hoard_squares["p1"]) == 1
-    parcel = sess.hoard_squares["p1"][0]
+    assert len(banked_parcels(sess, "p1")) == 1
+    parcel = banked_parcels(sess, "p1")[0]
     assert parcel["tile_at_harvest"] == int(Tile.GREEN)
     assert parcel["square_id"] == green_sid_before
     # The natural GREEN row was stamped harvested — no new row.
@@ -176,7 +178,7 @@ def test_no_per_color_harvest_cap() -> None:
     # All 6 RED steps converted; nothing left over the historical cap.
     converted = sum(1 for x in range(4, 10) if sess.grid[y][x].tile == Tile.GREEN)
     assert converted == 6
-    assert len(sess.hoard_squares["p1"]) == 6
+    assert len(banked_parcels(sess, "p1")) == 6
 
 
 def test_outing_hold_cap_cancels_seventh_parcel() -> None:
@@ -206,7 +208,7 @@ def test_outing_hold_cap_cancels_seventh_parcel() -> None:
     sess.maybe_resolve_if_ready()
 
     # Hold caps at 6 — the 7th parcel (last step) is cancelled.
-    assert len(sess.hoard_squares["p1"]) == 6
+    assert len(banked_parcels(sess, "p1")) == 6
     # The final RED tile was never reached → still RED (not converted).
     assert sess.grid[y][9].tile == Tile.RED
 
@@ -251,7 +253,7 @@ def test_red_harvest_mints_synthetic_green_with_provenance() -> None:
     assert red_row["harvested_on_day"] is not None
     assert red_row["harvested_by"] == "harvester_p1"
     # The parcel carries the RED's id (certificate of origin).
-    parcel = sess.hoard_squares["p1"][0]
+    parcel = banked_parcels(sess, "p1")[0]
     assert parcel["square_id"] == natural_red_sid
     assert parcel.get("lineage") == "natural"
     assert parcel.get("minted_synthetic_id") == synth_sid

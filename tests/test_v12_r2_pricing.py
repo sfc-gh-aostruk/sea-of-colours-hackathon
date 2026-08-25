@@ -70,7 +70,7 @@ def test_a_longer_comb_reports_better_odds():
 
 def test_the_jackpot_is_named_undiscounted():
     est = oe.blind_estimate(_comb(4), _smear_view(comb=[]))
-    assert est["unclaimed_pure_pts"] == 735   # (255 - 10 transit) x 3.0
+    assert est["unclaimed_pure_pts"] == 765   # v1.13: 255 x 3.0, no transit
 
 
 def test_the_line_says_the_two_numbers_are_not_like_for_like():
@@ -102,14 +102,14 @@ def test_declining_is_priced_as_a_swing_not_a_zero():
     assert len(lines) == 1
     text = lines[0]
     assert "IF YOU DO NOT CONTEST (16,6)" in text
-    assert "735" in text          # what a rival banks
-    assert "1470" in text         # the swing
+    assert "765" in text          # what a rival banks
+    assert "1530" in text         # the swing (2 x 765)
     assert "not against 0" in text
 
 
 # ── OBS-53 — a sign the finder has held is not a jackpot any more ───────────
 def test_a_night_old_rival_sign_is_not_sold_as_a_live_jackpot():
-    """`V12_V11_R2_s56` night 5: the seat read "+735 to whoever banks it" about a
+    """`V12_V11_R2_s56` night 5: the seat read "+765 to whoever banks it" about a
     seam the finder had owned for a night, walked five cells and found every one
     stripped — 7 points of trace against four -100 penalties."""
     text = agency._ceding_lines([_seam_opt(_BEACON, False)], _smear_view(comb=[]))[0]

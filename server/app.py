@@ -39,7 +39,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from sea_of_colours.agent.runtime import run_agent_turn
@@ -152,7 +152,7 @@ def _bot_attempt_mark(game_id: str, key: tuple) -> None:
 # HTTP request never hangs — the browser keeps its wait frame up and retries.
 _AGENT_SUBMIT_LOCK_WAIT_S = 3.0
 # Display hint for the UI countdown — the hard per-turn ceiling enforced by
-# ``orchestrator_2/cortex_invoker.py`` (SOC_RED_REAPER_PILOT_V2 → 80s).
+# ``orchestrator_2/cortex_invoker.py``.
 _AGENT_TURN_CAP_MS = 80_000
 
 
@@ -323,7 +323,6 @@ _GUIDE_DIR = _REPO_ROOT / "guide"
 _DOCS_DIR = _REPO_ROOT / "docs"
 _INDEX_HTML = _STATIC_DIR / "index.html"
 _EVALS_HTML = _STATIC_DIR / "evals.html"
-_MOBILE_HTML = _STATIC_DIR / "mobile.html"
 _LANDING_HTML = _STATIC_DIR / "landing.html"
 
 # ── Boot banner ────────────────────────────────────────────────────────
@@ -437,16 +436,28 @@ if _DOCS_DIR.is_dir():
     app.mount("/docs", _DocsStatic(directory=_DOCS_DIR), name="docs")
 
 
+# Markdown reachable over HTTP, by exact path. An allowlist rather than
+# a directory walk because this route sits at the URL root, where
+# anything looser is a directory traversal waiting to happen.
+#
+# The agent docs are here because the guide links to them: an attendee
+# reading the guide through a tunnel should be able to follow "here is
+# how you fork V12" without being told to go find a folder on disk.
+_SERVABLE_MARKDOWN = {
+    "README",
+    "RULEBOOK",
+    "AGENTS",
+    "sea_of_colours/orchestrator_2/README",
+    "sea_of_colours/orchestrator_2/ARCHITECTURE",
+    "sea_of_colours/orchestrator_2/harnesses/tabula_v12/README",
+    "sea_of_colours/orchestrator_2/harnesses/tabula_v12/ENGINE_INTERFACE",
+}
+
+
 @app.get("/{name:path}.md", include_in_schema=False)
 def api_root_markdown(name: str) -> Response:
-    """Serve the root-level Markdown the guide links to (README, RULEBOOK).
-
-    Restricted to a fixed set rather than resolving arbitrary paths: this
-    route sits at the URL root, so anything looser would be a directory
-    traversal waiting to happen.
-    """
-    allowed = {"README", "RULEBOOK", "AGENTS"}
-    if name not in allowed:
+    """Serve the Markdown the guide links to, as readable plain text."""
+    if name not in _SERVABLE_MARKDOWN:
         raise HTTPException(status_code=404, detail="not found")
     path = _REPO_ROOT / f"{name}.md"
     if not path.is_file():
@@ -468,7 +479,7 @@ def _store():
 
 
 # ── Slow-agent (Cortex / harness) live bot fan-out ──────────────────────
-# Seats tagged with a non-heuristic agent (e.g. ``"pilot_v2"``) can't run
+# Seats tagged with a non-heuristic agent (e.g. ``"tabula_v12"``) can't run
 # through the fast in-memory heuristic fan-out (``_fire_bots_in_memory``):
 # that path is hardcoded to RED_HARVEST and silently downgrades the agent.
 # For any game containing such a seat we instead drive every pending bot
@@ -487,7 +498,12 @@ def _game_has_slow_bot(agents: dict[str, Any]) -> bool:
 
 
 def _llm_seats(agents: dict[str, Any]) -> list[str]:
-    """Seats bound to an in-process LLM harness (V12 and friends)."""
+    """Seats bound to an in-process LLM harness (V12 and hackathon forks).
+
+    Keyed off ``needs_llm`` rather than ``kind`` so a fork that doesn't
+    call an LLM — a pure-heuristic harness is a legitimate entry — isn't
+    forced to hold a PAT it never uses.
+    """
     from sea_of_colours.orchestrator_2.binding_registry import (
         AGENT_LABEL_BINDINGS,
     )
@@ -495,7 +511,9 @@ def _llm_seats(agents: dict[str, Any]) -> list[str]:
     out = []
     for seat, label in (agents or {}).items():
         binding = AGENT_LABEL_BINDINGS.get(str(label).strip().lower())
-        if binding is not None and binding.kind == "harness_in_process":
+        if binding is None or binding.kind != "harness_in_process":
+            continue
+        if binding.needs_llm:
             out.append(str(seat))
     return sorted(out)
 
@@ -535,11 +553,21 @@ _NO_CACHE_HEADERS = {
 
 
 @app.get("/")
-def index() -> FileResponse:
-    """Landing / title screen — Play / Multiplayer / Replay over a looping
-    hero background. The command centre SPA lives at ``/play``; deep links
-    (``?session=``/``?player=``/``?season=``) are path-agnostic so they keep
-    working against ``/play`` and ``/watch.html``."""
+def index(request: Request):
+    """Landing / title screen — Quick game / Play / Multiplayer / Replay.
+
+    The command-centre SPA lives at ``/play``. Deep links are **not**
+    path-agnostic, despite what this docstring used to claim: the landing
+    page has no session-loading code, so a seat link pointed at ``/``
+    silently opened the title screen instead of the game. That is what
+    every LAN invite QR did before v1.12, and what the README documented.
+
+    Generation is fixed at the source (``buildSeatUrl`` pins ``/play``),
+    but links live in other people's chat history and on printed QR
+    codes, so honour the old shape here too rather than stranding them.
+    """
+    if request.query_params.get("session"):
+        return RedirectResponse(f"/play?{request.url.query}", status_code=307)
     return FileResponse(_LANDING_HTML, headers=_NO_CACHE_HEADERS)
 
 
@@ -564,9 +592,15 @@ def evals_shell() -> FileResponse:
     return FileResponse(_EVALS_HTML, headers=_NO_CACHE_HEADERS)
 
 
+# v1.13 — /mobile is retired. It was a standalone 953-line fork frozen at
+# the initial commit while app.js kept moving, and the main SPA has
+# implemented the phone UX it duplicated for a long time (the orders
+# bottom bar, the orders sheet, the phone media queries). Redirect rather
+# than 404: printed QR codes and pasted links outlive the code.
 @app.get("/mobile")
-def mobile_shell() -> FileResponse:
-    return FileResponse(_MOBILE_HTML, headers=_NO_CACHE_HEADERS)
+def mobile_shell(request: Request) -> RedirectResponse:
+    q = request.url.query
+    return RedirectResponse(url=f"/play{'?' + q if q else ''}", status_code=307)
 
 
 @app.get("/watch.html")
@@ -1507,6 +1541,21 @@ def api_agent_think(
         return run_agent_turn(_store(), game_id, player, runtime_override=runtime)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/meta/agents")
+def api_meta_agents() -> dict[str, Any]:
+    """The New Game roster, straight from the binding registry.
+
+    The dropdown was a hardcoded list in ``app.js``, so registering a
+    hackathon fork took a frontend edit too. Teams missed it and hit the
+    worst kind of failure: the agent works, the eval runs, but it cannot
+    be picked in a game. Serving the roster means one registry entry is
+    enough.
+    """
+    from sea_of_colours.orchestrator_2.binding_registry import selectable_agents
+
+    return {"agents": selectable_agents()}
 
 
 @app.get("/api/meta/backend")

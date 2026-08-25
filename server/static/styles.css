@@ -3041,16 +3041,6 @@ body.cc-mode {
   gap: 6px;
 }
 
-.cc-add-btn-jettison {
-  color: var(--amber, #ffcc66);
-  border-color: var(--amber, #ffcc66);
-}
-
-.cc-orbit-budget {
-  color: var(--green);
-  font-weight: bold;
-}
-
 /* v0.9.1 — batched probe build (input wired beside the [+] button). */
 .cc-add-btn-group {
   display: inline-flex;
@@ -3083,12 +3073,6 @@ body.cc-mode {
 /* v0.9.1 — refine buttons (one per source tier). Disabled state when
    the seat owns no parcels of that tier — clickable looks the same as
    regular cc-add-btn so the lay-out doesn't reflow. */
-.cc-add-btn-refine.is-disabled {
-  opacity: 0.4;
-  pointer-events: none;
-  text-decoration: line-through;
-}
-
 /* ── v0.9.3 weapon icons + build-weapon buttons ─────────────────── */
 
 /* Build-weapon buttons live in their own colour family (electric
@@ -3394,25 +3378,49 @@ body.cc-mode {
   color: #ff9a3a;
 }
 
-.cc-orbit-block[data-orbit-block="refine"] {
-  border-color: rgba(255, 220, 90, 0.22);
-}
-.cc-orbit-block[data-orbit-block="refine"] .cc-orbit-block-head {
-  color: #ffdc5a;
-}
-
-.cc-orbit-block[data-orbit-block="shipping"] {
-  border-color: rgba(180, 130, 220, 0.22);
-}
-.cc-orbit-block[data-orbit-block="shipping"] .cc-orbit-block-head {
-  color: #c89af0;
-}
-
 .cc-orbit-block[data-orbit-block="construct"] {
   border-color: rgba(63, 185, 80, 0.22);
 }
 .cc-orbit-block[data-orbit-block="construct"] .cc-orbit-block-head {
   color: var(--green);
+}
+
+/* v1.13 — settlement block. Sits where the REFINE and SHIPPING lanes
+   used to, but it holds no controls: settlement is automatic, so this
+   is a preview of what the vault will do on resolve. Deliberately
+   quieter than the two buying blocks above it — it is something you
+   read, not something you click. */
+.cc-orbit-block[data-orbit-block="settlement"] {
+  border-color: rgba(140, 150, 190, 0.18);
+}
+.cc-orbit-block[data-orbit-block="settlement"] .cc-orbit-block-head {
+  color: #8f9ac0;
+}
+.cc-orbit-settlement {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.cc-settle-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.cc-settle-arrow {
+  width: 1em;
+  flex: 0 0 auto;
+  text-align: center;
+  opacity: 0.75;
+}
+.cc-settle-line[data-settle="red"] .cc-settle-arrow { color: var(--seat-p1, #e8543f); }
+.cc-settle-line[data-settle="green"] .cc-settle-arrow { color: #44cc44; }
+.cc-settle-line .dim { opacity: 0.5; }
+.cc-settle-note {
+  margin-top: 2px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
 }
 
 .cc-add-btn {
@@ -3998,14 +4006,6 @@ body.cc-mode {
   color: rgba(120, 120, 132, 0.5);
 }
 
-.cc-cat-slot[data-slot-state="failed_row"],
-.cc-cat-slot[data-slot-state="cannibalised_as_fuel"],
-.cc-cat-slot[data-slot-state="overflow_jettisoned"] {
-  background: rgba(40, 30, 20, 0.65);
-  color: rgba(255, 200, 120, 0.8);
-  border-style: dotted;
-}
-
 .cc-cat-slot--p1 { border-color: var(--seat-p1); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--seat-p1) 40%, transparent); }
 .cc-cat-slot--p2 { border-color: var(--seat-p2); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--seat-p2) 40%, transparent); }
 .cc-cat-slot--p3 { border-color: var(--seat-p3); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--seat-p3) 40%, transparent); }
@@ -4024,14 +4024,12 @@ body.cc-mode {
 }
 /* Refine output preview keeps the RED palette (it mints RED parcels). */
 .cc-cat-grid--green,
-.cc-cat-grid--refine {
-  max-width: 240px;
-}
-/* GREEN catapult is 12 shared slots — lay out as 6 x 2 rather than the
-   RED catapult's 5 x 4 lattice. */
+/* v1.13 — the GREEN lane was a fixed 12-slot 6x2 lattice because 12
+   slots were what seats drafted for. Disposal is automatic and uncapped
+   now, so the grid holds however many parcels were dumped: keep the
+   six-wide rhythm but let it grow downward instead of pinning a ratio. */
 .cc-cat-grid--green {
   grid-template-columns: repeat(6, 1fr);
-  aspect-ratio: 6 / 2;
   max-width: 320px;
 }
 
@@ -8023,29 +8021,10 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
 .final-orbit-banner[hidden] { display: none !important; }
 .final-orbit-banner-copy { margin-bottom: 8px; }
 .final-orbit-banner-copy strong { color: #fff2c2; }
-.final-orbit-refinery {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.final-orbit-btn {
-  flex: 1 1 auto;
-  min-width: 140px;
-  padding: 7px 10px;
-  border: 1px solid rgba(255, 220, 90, 0.7);
-  background: rgba(255, 220, 90, 0.12);
-  color: #ffdc5a;
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: background 0.12s ease, box-shadow 0.12s ease;
-}
-.final-orbit-btn:hover {
-  background: rgba(255, 220, 90, 0.24);
-  box-shadow: 0 0 10px rgba(255, 220, 90, 0.35);
-}
-.final-orbit-btn:active { transform: translateY(1px); }
+/* v1.13 — the final orbit no longer locks anything (settlement is
+   automatic, so there is no last-turn move to protect), but keep this
+   rule: it is what ``updateFinalOrbitUi`` clears off any button an
+   older build left disabled. */
 .orbit-btn--locked {
   opacity: 0.32 !important;
   filter: grayscale(0.8);

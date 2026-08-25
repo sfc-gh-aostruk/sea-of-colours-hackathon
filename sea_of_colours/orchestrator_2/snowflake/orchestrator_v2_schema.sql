@@ -15,7 +15,7 @@
 --      sea_of_colours.orchestrator_2.binding_registry.
 --
 --   2. SOC_AGENT_MEMORY — RELOCATED from soc_schema.sql. Harness-specific
---      persistent intel (PILOT_V2's enemy-vision history). Wiped by
+--      persistent intel (a harness's enemy-vision history). Wiped by
 --      SOC_INIT_SESSION alongside the rest of SOC_*; uses the existing
 --      _SESSION_TABLES wipe ordering once the table name is added back
 --      to SnowparkSocStore._SESSION_TABLES.
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS SOC_AGENT_BINDING (
     player       STRING NOT NULL,
     kind         STRING NOT NULL,    -- 'cortex_agent'|'harness_in_process'|'harness_proc'|'harness_spcs'|'heuristic'
     locator      STRING NOT NULL,    -- agent name | module:callable | proc identifier | URL | 'RED_HARVEST'
-    agent_label  STRING,             -- display name (e.g. 'PILOT_V2')
+    agent_label  STRING,             -- display name (e.g. 'TABULA_V12')
     notes        STRING,
     created_at   TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (session_id, player)
@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS SOC_AGENT_BINDING (
 
 -- ----------------------------------------------------------------------------
 -- 2) SOC_AGENT_MEMORY — relocated from soc_schema.sql.
---    Currently used by PILOT_V2's harness
---    (sea_of_colours.orchestrator_2.harnesses.pilot_v2.memory) to record
+--    Currently used by V12's harness
+--    (sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7.memory) to record
 --    every cell ever touched by a known enemy probe disk so the candidate
 --    compiler can flag chains the rival has had prior vision on.
 --

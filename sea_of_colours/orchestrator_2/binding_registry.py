@@ -24,15 +24,20 @@ player)`` pair. Four kinds today:
 
 Resolution order (most explicit first):
 
-1. ``SOC_AGENT_BINDING`` Snowflake table — when backend == snowflake.
-2. ``SOC_BINDING_<PLAYER>`` env var — e.g.
-   ``SOC_BINDING_P1=harness_in_process:sea_of_colours.orchestrator_2.harnesses.pilot_v2.harness:run``.
-3. ``SOC_CORTEX_AGENT`` env var + the :data:`KNOWN_AGENT_BINDINGS` map —
-   lets existing eval configs keep setting that env var and have
-   orchestrator_2 figure out the right binding (e.g. PILOT_V2 →
-   harness_in_process; PILOT v1 → cortex_agent).
-4. ``SOC_AGENT_RUNTIME=heuristic`` → kind=heuristic.
-5. Default: heuristic.
+0. ``agent_label`` — the per-seat value from the New Game menu, looked up
+   in :data:`AGENT_LABEL_BINDINGS`. This is the normal path.
+1. ``SOC_BINDING_<PLAYER>`` env var — e.g.
+   ``SOC_BINDING_P1=harness_in_process:my_team.harness:run``.
+2. ``SOC_CORTEX_AGENT`` env var + the :data:`KNOWN_AGENT_BINDINGS` map.
+3. ``SOC_AGENT_RUNTIME=heuristic`` → kind=heuristic.
+4. Default: heuristic.
+
+**Registering your own agent (the hackathon path).** Add one entry to
+:data:`AGENT_LABEL_BINDINGS` and you are done — the seat routes, and the
+New Game dropdown picks it up automatically because the web UI builds
+its roster from :func:`selectable_agents` rather than a hardcoded list.
+``scripts/new_agent.py`` writes that entry for you. See
+``harnesses/tabula_v12/README.md`` for what to change once it exists.
 """
 
 from __future__ import annotations
@@ -49,7 +54,15 @@ class AgentBinding:
 
     kind: str
     locator: str
-    agent_label: Optional[str] = None  # display name (e.g. "PILOT_V2")
+    agent_label: Optional[str] = None  # display name (e.g. "TABULA_V12")
+    # UI metadata. ``menu_label`` is what a player reads in the New Game
+    # dropdown; ``None`` keeps the binding routable but unlisted (useful
+    # for a half-finished fork you don't want opponents picking yet).
+    # ``needs_llm`` drives the credential preflight — a seat bound to an
+    # LLM harness fails loudly at game creation without a PAT rather than
+    # silently submitting zero moves all game.
+    menu_label: Optional[str] = None
+    needs_llm: bool = False
 
 
 # ── Known-agent map (orchestrator_2's view of who's who) ───────────
@@ -60,9 +73,7 @@ class AgentBinding:
 # orchestrator_2 figures out whether that name needs a harness wrap.
 #
 # IMPORTANT: orchestrator_2 ONLY claims agents in this map. Anything
-# else falls through to the heuristic. The original orchestrator
-# continues to serve PILOT v1, GRID_FAST, etc. — they are NOT registered
-# here on purpose.
+# else falls through to the heuristic.
 KNOWN_AGENT_BINDINGS = {
     # v12 — the WORLD-VIEW release, and the only LLM agent this
     # distribution ships. Deterministic packager, redsign seam-control,
@@ -71,16 +82,22 @@ KNOWN_AGENT_BINDINGS = {
     # model) and a static OUT-OF-GRID KNOWLEDGE reference (the fixed
     # scoring/weapon/redsign physics).
     #
-    # Every earlier harness (pilot_v2..v4, tabula, tabula_v2..v11) was
-    # deleted for the hackathon distribution — they were R&D lineage,
-    # and leaving a dozen near-identical agents in the tree is the
-    # fastest way to confuse someone asking "which one do I fork?".
-    # The answer is: this one.
+    # Every earlier harness (the pilot_* and tabula_v2..v11 lineage) was
+    # deleted for the hackathon distribution — it was R&D history, and
+    # leaving a dozen near-identical agents in the tree is the fastest
+    # way to confuse someone asking "which one do I fork?". The answer
+    # is: this one. Fork it with ``scripts/new_agent.py``; don't edit it
+    # in place, or you lose the baseline you are trying to beat.
     "SOC_RED_REAPER_TABULA_V12": AgentBinding(
         kind="harness_in_process",
         locator="sea_of_colours.orchestrator_2.harnesses.tabula_v12.harness:run",
         agent_label="TABULA_V12",
+        menu_label="V12 — LLM agent (needs a Snowflake PAT · slow)",
+        needs_llm=True,
     ),
+    # SOC_NEW_AGENT_ANCHOR — scripts/new_agent.py inserts forks above this
+    # line. Hand-written entries are fine too; the anchor only exists so
+    # the script never has to guess where the dict ends.
 }
 
 # Heuristic fallback — used when no other binding resolves.
@@ -88,6 +105,7 @@ HEURISTIC_BINDING = AgentBinding(
     kind="heuristic",
     locator="RED_HARVEST",
     agent_label="RED_HARVEST",
+    menu_label="RED_HARVEST — heuristic bot, weapons on",
 )
 
 # Hackathon "training wheels" opponent — same deterministic playbook,
@@ -98,33 +116,89 @@ HEURISTIC_LITE_BINDING = AgentBinding(
     kind="heuristic",
     locator="RED_HARVEST_LITE",
     agent_label="RED_HARVEST_LITE",
+    menu_label="RED_HARVEST_LITE — heuristic bot, no weapons (start here)",
 )
 
+# A human at the keyboard. Listed here so the New Game dropdown can be
+# built from one roster instead of a hardcoded list that drifts.
+HUMAN_BINDING = AgentBinding(
+    kind="human",
+    locator="HUMAN",
+    agent_label="HUMAN",
+    menu_label="HUMAN — pilot from this browser",
+)
+
+# ── The roster ──────────────────────────────────────────────────────
+#
 # Game-config agent labels — the values stored in ``GameSession.agents``
-# (chosen in the New Game / multiplayer menu) mapped to a binding. This
-# lets the live server route a seat tagged e.g. ``"pilot_v2"`` straight
-# to the harness with no env vars, so a human-vs-agent game works from
-# the menu alone. Anything not listed here is treated as heuristic.
+# (chosen in the New Game menu) mapped to a binding. Registering here is
+# all it takes to make an agent both routable and selectable: the seat
+# dispatches with no env plumbing, and the dropdown lists it because the
+# UI reads ``/api/meta/agents``, which is built from this dict.
+#
+# **Add your fork here.** Convention is ``<team>_<agent>`` — e.g.
+# ``"redwatch_reaper"`` — so a room full of forks stays legible and two
+# teams can't collide on a name. ``scripts/new_agent.py`` appends the
+# entry for you.
 AGENT_LABEL_BINDINGS = {
-    "tabula_v12": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V12"],
+    "human": HUMAN_BINDING,
     "red_harvest_lite": HEURISTIC_LITE_BINDING,
+    "red_harvest": HEURISTIC_BINDING,
+    "tabula_v12": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V12"],
+    # SOC_NEW_AGENT_LABEL_ANCHOR — forks land above this line, e.g.
+    #   "redwatch_reaper": KNOWN_AGENT_BINDINGS["SOC_REDWATCH_REAPER"],
 }
 
 # Labels that mean "just play the in-process heuristic".
 _HEURISTIC_LABELS = {"human", "red_harvest", "heuristic"}
 
 
-def _parse_env_binding(spec: str) -> AgentBinding:
-    """Parse ``"<kind>:<locator>"`` (or ``"<kind>:<locator>:<label>"``)."""
-    parts = spec.split(":", 2)
-    if len(parts) < 2:
-        raise ValueError(
-            f"env binding {spec!r} must be 'kind:locator' or 'kind:locator:label'"
+def selectable_agents() -> list[dict]:
+    """The New Game roster, in menu order.
+
+    The dropdown used to be a hardcoded list in ``app.js``, which meant
+    registering a fork took a frontend edit as well — easy to miss, and
+    the failure mode (your agent works but you cannot pick it) wastes
+    hackathon time. Serving the roster from the registry makes one edit
+    enough.
+    """
+    out = []
+    for label, binding in AGENT_LABEL_BINDINGS.items():
+        if not binding.menu_label:
+            continue
+        out.append(
+            {
+                "value": label,
+                "label": binding.menu_label,
+                "kind": binding.kind,
+                "needs_llm": binding.needs_llm,
+            }
         )
-    kind = parts[0].strip()
-    locator = parts[1].strip()
-    label = parts[2].strip() if len(parts) == 3 else None
-    return AgentBinding(kind=kind, locator=locator, agent_label=label)
+    return out
+
+
+def _parse_env_binding(spec: str) -> AgentBinding:
+    """Parse ``"<kind>:<locator>"``, with an optional ``"#<label>"`` suffix.
+
+    The label separator is ``#`` rather than a third colon because
+    harness locators contain a colon themselves
+    (``module.path:callable``). Splitting on colons made
+    ``harness_in_process:pkg.harness:run`` parse as locator ``pkg.harness``
+    with the label ``run``, so the import failed and the seat silently
+    fell back to the heuristic.
+    """
+    head, _, label = spec.partition("#")
+    kind, sep, locator = head.partition(":")
+    if not sep or not locator.strip():
+        raise ValueError(
+            f"env binding {spec!r} must be 'kind:locator' "
+            f"(optionally 'kind:locator#label')"
+        )
+    return AgentBinding(
+        kind=kind.strip(),
+        locator=locator.strip(),
+        agent_label=label.strip() or None,
+    )
 
 
 def resolve_binding(
@@ -144,7 +218,7 @@ def resolve_binding(
     ``agent_label`` is the per-seat game-config label (from
     ``GameSession.agents`` / the New Game menu). When it names a known
     agent (:data:`AGENT_LABEL_BINDINGS`) it wins over env vars — this is
-    how the live server routes a menu-selected ``"pilot_v2"`` seat to the
+    how the live server routes a menu-selected ``"tabula_v12"`` seat to the
     harness without any env plumbing. A ``runtime_override="heuristic"``
     still forces the heuristic (used by the safety-net fallback).
 
@@ -158,10 +232,15 @@ def resolve_binding(
     # 0. Explicit per-seat game-config label (New Game / multiplayer menu).
     if agent_label:
         lbl = agent_label.strip().lower()
-        if lbl in AGENT_LABEL_BINDINGS:
-            return AGENT_LABEL_BINDINGS[lbl]
+        # ``human`` is in the roster so the menu can be built from one
+        # list, but it is not a dispatch target. If something asks us to
+        # take a human's turn anyway (a bot-driver bug, a seat that was
+        # reassigned mid-game), fall back to the heuristic rather than
+        # handing the dispatcher a kind it cannot route.
         if lbl in _HEURISTIC_LABELS:
             return HEURISTIC_BINDING
+        if lbl in AGENT_LABEL_BINDINGS:
+            return AGENT_LABEL_BINDINGS[lbl]
 
     # 1. Per-player env var (most explicit).
     env_key = f"SOC_BINDING_{player.upper()}"

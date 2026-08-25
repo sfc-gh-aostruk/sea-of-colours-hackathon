@@ -14,6 +14,8 @@ to 150) don't break the suite.
 
 from __future__ import annotations
 
+from conftest import banked_parcels
+
 from typing import Any, Dict, List
 
 from sea_of_colours.game.policy import (
@@ -684,7 +686,7 @@ def test_night_same_hour_emp_launch_and_landing_still_harvests_once(
 
     # The same-hour coincidence still banked the parcel...
     assert sess.grid[8][8].tile == Tile.GREEN
-    assert len(sess.hoard_squares["p2"]) == 1
+    assert len(banked_parcels(sess, "p2")) == 1
     drop_frames = [
         f for f in sess.last_night_replay
         if f.get("owner") == "p2" and f.get("tag") == "drop"

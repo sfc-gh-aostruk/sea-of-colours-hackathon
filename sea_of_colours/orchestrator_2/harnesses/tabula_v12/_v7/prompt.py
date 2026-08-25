@@ -167,19 +167,22 @@ def format_state_block(
     ]
 
     # Held-but-unshipped RED. `vault_score` counts SHIPPED parcels only;
-    # a harvest banks to the HOARD first and scores 0 until the orbit
-    # catapult ships it. Surfacing the held RED value stops the agent from
-    # reading an unchanged vault_score after a good harvest as "pickup
-    # failed / cargo lost" (the day-4 S2024 reflection bug).
+    # a harvest banks to the HOARD first and scores 0 until the next orbit
+    # settles. v1.13 — that settlement is automatic and unconditional, so
+    # held RED is banked score in waiting, not a pending decision.
+    # Surfacing it stops the agent from reading an unchanged vault_score
+    # after a good harvest as "pickup failed / cargo lost" (the day-4
+    # S2024 reflection bug).
     hoard = (agent_view.get("hud") or {}).get("hoard") or {}
     held_count = int(hoard.get("count") or 0)
     held_red_value = int(hoard.get("red_value") or 0)
     hoard_line = (
         f"  hoard_red_value: ~{held_red_value} pts held in {held_count} "
-        f"parcel(s) — HARVESTED but NOT yet shipped, so it counts 0 toward "
-        f"vault_score until the orbit catapult ships it. If vault_score did "
-        f"not move after a harvest but the hoard grew, the harvest SUCCEEDED "
-        f"and the cargo is HELD (not lost).\n"
+        f"parcel(s) — HARVESTED but not yet settled, so it counts 0 toward "
+        f"vault_score until the next orbit. Settlement is AUTOMATIC: this "
+        f"WILL ship and score, guaranteed. If vault_score did not move "
+        f"after a harvest but the hoard grew, the harvest SUCCEEDED and "
+        f"the cargo is HELD (not lost).\n"
     )
 
     return (
@@ -904,7 +907,7 @@ def format_reflect_block(
     # Parcels the engine actually harvested into the HOARD last night, with
     # a tier-weighted RED value estimate. This is the "did my harvest land?"
     # signal — separate from SHIPPED-score change, because a fresh haul sits
-    # in the hoard (scoring 0) until the orbit catapult ships it. Surfacing
+    # in the hoard (scoring 0) until the next orbit settles it. Surfacing
     # it stops the agent from reading a still vault_score as "pickup failed".
     _TIER_MULT = {"trace": 0.75, "vein": 1.0, "mass": 1.5, "pure": 3.0}
     banked = ln.get("my_parcels_banked") or []
@@ -934,9 +937,9 @@ def format_reflect_block(
         lines.append(
             f"  you HARVESTED {len(banked)} parcel(s) into the hoard "
             f"(~{hoard_red_value} pts of RED). These are HELD, not scored — "
-            f"they only count once the orbit catapult ships them. A 0 "
+            f"they count at the next orbit, which settles AUTOMATICALLY. A 0 "
             f"shipped-change with a healthy harvest is a SUCCESS awaiting "
-            f"shipment, NOT a lost pickup — do NOT invent an EMP/chaff loss."
+            f"settlement, NOT a lost pickup — do NOT invent an EMP/chaff loss."
         )
     if losses:
         lines.append("  losses the engine recorded (you MUST acknowledge these):")

@@ -17,13 +17,38 @@ patching by calling the resolver directly or opting back in to the
 initial orbit phase. Live behaviour is unchanged for the FastAPI app
 and the Snowflake procs — those are exercised in integration tests
 that explicitly drive the orbit flow.
+
+v1.13 — that auto-settled orbit now **empties the vault**: RED ships
+and GREEN is disposed of automatically. Legacy tests asserting "the
+night banked N parcels" against ``hoard_squares`` were reading a vault
+the harness had already settled, so they should use
+:func:`banked_parcels` below instead.
 """
 
 from __future__ import annotations
 
+from typing import Any, Dict, List
+
 from sea_of_colours.game import session as _session_module
 from sea_of_colours.game import simulator as _simulator_module
 from sea_of_colours.snowpark import engine as _engine_module
+
+
+def banked_parcels(sess: Any, player: str) -> List[Dict[str, Any]]:
+    """Every parcel the seat banked this session, settled or not.
+
+    v1.13 — settlement moves parcels out of ``hoard_squares``: RED into
+    ``shipped_squares``, and GREEN into it too (tagged with its origin
+    tile, scored as a penalty). A test that resolves a night through the
+    harness therefore sees an empty vault even though the harvest worked.
+
+    Use this wherever the assertion is about *what the night produced*
+    rather than about the vault's steady state. Provenance keys survive
+    settlement untouched, so per-parcel checks read the same either way.
+    """
+    return list(sess.hoard_squares.get(player, []) or []) + list(
+        sess.shipped_squares.get(player, []) or []
+    )
 
 
 _orig_new = _session_module.GameSession.new

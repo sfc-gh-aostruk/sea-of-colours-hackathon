@@ -105,19 +105,11 @@ _PROBE_TARGET_STOCK = 4
 """Working probe magazine the Orbit playbook tops up toward each turn
 (v0.9.18). Sized to cover a typical night of hot-drops (RULEBOOK §3.9.7
 — one securing probe per uncovered vein) plus an exploration probe.
-Carry-over stock means we only build the shortfall, and the build is
-bounded by ``_SHIP_CREDIT_RESERVE`` so topping the magazine never
-starves the catapult of bid credits (the "harvested but shipped
-nothing" failure)."""
+Carry-over stock means we only build the shortfall.
 
-_SHIP_CREDIT_RESERVE = 50
-"""Credits the Orbit playbook holds back from probe building so the
-catapult ship step (priority 7) can always afford a non-zero bid
-(the bid auto-scales to ``remaining // parcels``, so even a small
-reserve keeps shipping alive). Without this, an aggressive probe
-magazine could consume the whole turn's credits and the seat would
-harvest RED all night yet ship — and score — nothing (the s404
-"both bots zero" failure)."""
+v1.13 — the build used to hold back a credit reserve so the catapult
+ship step could always afford a bid. Shipping is free and automatic
+now, so probes may spend the turn's whole remainder."""
 
 # ── Default per-unit Orbit-phase costs ────────────────────────────
 #
@@ -129,7 +121,6 @@ harvest RED all night yet ship — and score — nothing (the s404
 _DEFAULT_REPAIR_COST = 500
 _DEFAULT_PROBE_BUILD_COST = 250
 _DEFAULT_HARVESTER_BUILD_COST = 1500
-_DEFAULT_ACTIONS_MAX = 3
 _DEFAULT_HARVESTER_CAP = 3
 
 # v0.9.9 — RED_HARVEST economy tuning ──────────────────────────────
@@ -138,10 +129,12 @@ _DEFAULT_HARVESTER_CAP = 3
 # are kept here as the agent's own knobs so a sandbox view that omits
 # the matching blocks still behaves sanely.
 _VEIN_MIN_PURITY = 51
-"""Lowest purity that still counts as VEIN. RED_HARVEST will only
-catapult parcels at VEIN or above (RULEBOOK §3.1 tier bands:
-trace 0-50, vein 51-150, mass 151-254, pure 255). Sub-vein TRACE
-parcels are refined upward instead of shipped at a loss."""
+"""Lowest purity that still counts as VEIN (RULEBOOK §3.1 tier bands:
+trace 0-50, vein 51-150, mass 151-254, pure 255).
+
+v1.13 — this used to be the ship/refine threshold in the Orbit
+playbook. Everything ships now, so it only informs where the night
+planner is willing to send a harvester."""
 
 _BLUE_EMP_THRESHOLD = 250
 """When the seat's rolled-up BLUE purity is ABOVE this, RED_HARVEST
@@ -153,20 +146,6 @@ _LOW_BLUE_THRESHOLD = 250
 """When the seat's rolled-up BLUE purity is AT or BELOW this, the
 night planner folds visible BLUE tiles into the harvest target pool
 so harvesters top the weapons economy back up."""
-
-_GREEN_FLUSH_HIGH_PRIORITY_COUNT = 1
-"""Green-parcel count at which the solar-jettison flush jumps to the
-TOP of the orbit playbook (right after repairs, AHEAD of shipping).
-
-v0.9.11 — dropped from 3 to 1: flush green the moment we hold ANY.
-The catapult is fuelled by RED purity, and a seat that ships all its
-RED first has nothing left to burn — which is exactly why green used
-to pile up to the endgame (held green ≈ 45% of harvested in 4-player
-sweeps). Dumping green BEFORE the ship step keeps RED fuel on hand and
-flushes early when the catapult is cheap and uncontested, instead of a
-fuel-starved, slot-jammed scramble on the final night (RULEBOOK §4.5).
-The bid is right-sized (see ``_green_flush_fuel``) so an early flush
-never costs more RED than the penalty it avoids."""
 
 _DEFAULT_EMP_BLUE_COST = 200
 _DEFAULT_EMP_CREDIT_COST = 0
@@ -1790,38 +1769,35 @@ def plan_orbit_actions(
     """Plan an Orbit-phase submission for the seat (RULEBOOK §4).
 
     ``weapons_enabled=False`` (the hackathon "no weapons" tutorial
-    opponent, RED_HARVEST_LITE) skips Priority 4 (build_chaff /
-    build_emp) entirely — every other priority is unchanged.
+    opponent, RED_HARVEST_LITE) skips the weapons priority entirely;
+    every other priority is unchanged.
 
     Returns ``(actions, rationale)`` where ``actions`` is a list of
     wire-format Orbit action dicts ready to hand to
     :func:`sea_of_colours.snowpark.engine.submit_orbit_actions`.
 
-    v0.9.6 fixed playbook in priority order, gated on the seat's
-    credit balance + the :data:`MAX_ORBIT_ACTIONS` slot cap (default
-    3):
+    v1.13 — the playbook is now pure spending, in priority order, with
+    **no slot cap**: credits and blue are the only limit.
 
-        1. Repair every damaged harvester (one slot each).
-        2. Build a new harvester (under fleet cap + affordable).
-        3. Build 2 probes (or 1 if only one affordable).
-        4. Ship RED via the catapult (RULEBOOK §4.4). Bids for row 1
-           only — cheap (11 RED/slot × 5 slots = 55 RED clears the
-           50 RED threshold with a single slot of slack) and reliable
-           when uncontested.
-        5. Jettison every green parcel sitting in the hoard
-           (RULEBOOK §4.7) so they don't soak up shipped-bay slots
-           and the green-purity penalty stops accumulating.
+        1. Repair every damaged harvester — a dead rig earns nothing.
+        2. Build a harvester if under the fleet cap and affordable.
+        3. Build weapons from surplus BLUE (skipped when disabled).
+        4. Top the probe magazine up toward a working stock.
 
-    The catapult auto-picks the seat's TOP-N highest-purity RED
-    from the hoard, so the agent only declares ``(parcels, F)``
-    instead of naming ids. Cannibalisation is the safety net for
-    when spare RED can't cover the fuel.
+    Three priorities went away with the mechanics behind them: shipping
+    RED (now automatic), flushing GREEN (now automatic) and refining
+    TRACE upward (removed). Nothing replaces them, which is the point —
+    the whole "ship it or refine it?" branch of the playbook collapsed
+    into "mine better parcels in the first place".
+
+    Ordering note: probes now come **last** instead of competing with
+    the ship step for credits. There is no bid to hold credits back for
+    any more, so probes soak up whatever the fleet didn't need.
     """
     orbit = view.get("orbit") or {}
     credits = int(orbit.get("credits", 0))
     cap_used = int(orbit.get("harvester_cap_used", 0))
     cap_max = int(orbit.get("harvester_cap_max", _DEFAULT_HARVESTER_CAP))
-    actions_max = int(orbit.get("actions_max", _DEFAULT_ACTIONS_MAX))
     prices = orbit.get("ship_prices") or {}
     repair_cost = int(prices.get("repair", _DEFAULT_REPAIR_COST))
     probe_cost = int(prices.get("probe_build", _DEFAULT_PROBE_BUILD_COST))
@@ -1829,34 +1805,9 @@ def plan_orbit_actions(
         prices.get("harvester_build", _DEFAULT_HARVESTER_BUILD_COST),
     )
 
-    # v0.9.x catapult parameters. Per-parcel CREDIT bids draft slots
-    # (RULEBOOK §4.4); each row applies a flat RED-purity transit
-    # charge. We bid a modest flat credit per shipped parcel.
-    slots_per_row = int(prices.get("slots_per_row") or 5)
-
-    parcels = list(orbit.get("hoard_parcels") or [])
-    red_parcels = [
-        p for p in parcels if str(p.get("colour", "")).upper() == "RED"
-    ]
-    green_parcels = [
-        p for p in parcels if str(p.get("colour", "")).upper() == "GREEN"
-    ]
-    # v0.9.9 — split RED on the VEIN purity floor. Only VEIN-or-above
-    # parcels get catapulted (shipping a TRACE parcel pays full
-    # transit charge for a tier-0.75 payout — a near-certain loss).
-    # TRACE parcels are refined upward instead.
-    vein_plus = [
-        p for p in red_parcels
-        if int(p.get("purity", 0) or 0) >= _VEIN_MIN_PURITY
-    ]
-    trace_parcels = [
-        p for p in red_parcels
-        if int(p.get("purity", 0) or 0) < _VEIN_MIN_PURITY
-    ]
-
-    # v0.9.9 — weapons economy inputs. BLUE is the weapons currency;
-    # surplus blue funds an EMP, a blue drought re-routes harvesters
-    # onto blue tiles at night (handled in ``plan_moves``).
+    # BLUE is the weapons currency; a surplus should pressure rivals
+    # rather than sit idle. v1.13 — refining used to compete for the same
+    # blue, so surpluses are more common than they were.
     blue_total = _blue_purity_total(view)
     weapon_stock = orbit.get("weapon_stock") or {}
     emp_stock = int(weapon_stock.get("emp", 0) or 0)
@@ -1869,124 +1820,22 @@ def plan_orbit_actions(
     chaff_blue_cost = int(chaff_price.get("blue", _DEFAULT_CHAFF_BLUE_COST))
     chaff_credit_cost = int(chaff_price.get("credits", _DEFAULT_CHAFF_CREDIT_COST))
 
-    green_cfg = orbit.get("green_catapult") or {}
-    green_cost_base = int(green_cfg.get("cost_base", 50))
-    green_cost_step = int(green_cfg.get("cost_step", 5))
-    green_count = len(green_parcels)
-
-    # v0.9.11 — the green flush is bid at a RIGHT-SIZED level (see
-    # ``_green_flush_fuel``): committed RED fuel is FORFEIT in full by
-    # the resolver, so the bid is capped at the toxic-legacy penalty it
-    # avoids (RULEBOOK §4.5) and never escalated to burn shippable RED.
-    green_endgame_penalty = int(green_cfg.get("endgame_penalty", 100))
-
-    # v1.7 — Final Refinery (RULEBOOK §4.3.1). On the terminal settlement
-    # orbit the engine drops all builds/repairs, lifts the refine caps, and
-    # lets refined parcels ship the same turn. The winning line is simply:
-    # fold ALL red up to mass (spend the leftover blue), then AUTO-ship the
-    # best parcels — refined ids are minted at settlement, so we can't name
-    # them; the auto bid picks best-N post-refine. Green still flushes so the
-    # penalty stops. This replaces the "hoard and eat the fire-sale" failure
-    # mode that scored red_harvest 0 in prior seasons.
-    if bool(orbit.get("final_orbit")):
-        fr_actions: List[Dict[str, Any]] = []
-        refinable = [
-            p for p in red_parcels if int(p.get("purity", 0) or 0) <= 150
-        ]
-        if blue_total > 0 and refinable:
-            fr_actions.append({"a": "refine_cascade", "target_tier": "mass"})
-        est_n = max(1, len(red_parcels))
-        bid_each = max(1, min(25, credits // est_n)) if credits > 0 else 0
-        if red_parcels or (blue_total > 0 and refinable):
-            fr_actions.append({
-                "a": "ship_catapult",
-                "auto": True,
-                "credits": int(bid_each),
-                "count": 0,
-            })
-        if green_parcels:
-            fr_actions.append({
-                "a": "solar_jettison",
-                "green_parcels": len(green_parcels),
-                "red_fuel": 0,
-            })
-        if not fr_actions:
-            return [], "final orbit: nothing to refine, ship, or flush"
-        return fr_actions, (
-            f"final refinery: "
-            f"{'cascade→mass, ' if (blue_total > 0 and refinable) else ''}"
-            f"auto-ship best RED @ {bid_each}cr"
-            f"{f', flush {len(green_parcels)} green' if green_parcels else ''}"
-        )
-
     actions: List[Dict[str, Any]] = []
     descriptors: List[str] = []
     remaining = credits
-    green_flushed = False
 
-    def _green_flush_fuel() -> int:
-        """RED fuel to commit to the green flush — RIGHT-SIZED.
-
-        The resolver BURNS the entire committed bid up front (forfeit),
-        not just the cost of the slots actually won, so over-bidding
-        torches shippable RED. The earlier "desperation" multiplier
-        clamped the bid to *all* the RED we held, which routinely burned
-        500+ RED purity to flush a handful of green and avoid a far
-        smaller penalty — a net loss. We now bid only what an
-        uncontested solo flush of our green costs:
-
-            floor = base + (base-step) + (base-2·step) + …   (one term
-            per held green parcel, each clamped at ≥0)
-
-        plus one extra slot-step of headroom so we still out-rank a
-        seat bidding the bare minimum. The bid is then hard-capped at
-        the penalty we'd actually avoid (``green_count`` × the
-        per-parcel toxic-legacy penalty) so disposal can never cost
-        more RED than the green is worth. We do NOT clamp UP to the RED
-        we hold: the resolver only burns what's on hand, so a modest
-        over-declare is harmless and just keeps our draft rank honest.
-        """
-        floor = 0
-        for s in range(green_count):
-            floor += max(0, green_cost_base - green_cost_step * s)
-        # One step of rank headroom (never below a single slot's cost).
-        desired = max(green_cost_base, floor + green_cost_step)
-        # Never forfeit more RED than the penalty we're dodging.
-        penalty_avoided = green_count * max(0, green_endgame_penalty)
-        if penalty_avoided > 0:
-            desired = min(desired, penalty_avoided)
-        return max(0, desired)
-
-    def _emit_green_flush() -> None:
-        """Queue the solar-jettison flush for every held green parcel.
-
-        Commits an escalating RED-fuel bid (see :func:`_green_flush_fuel`);
-        the resolver forfeits the whole commitment either way.
-        Idempotent — guarded by ``green_flushed``.
-        """
-        nonlocal green_flushed
-        if green_flushed or not green_parcels or len(actions) >= actions_max:
-            return
-        red_fuel = _green_flush_fuel()
-        actions.append({
-            "a": "solar_jettison",
-            "green_parcels": int(green_count),
-            "red_fuel": int(red_fuel),
-        })
-        descriptors.append(
-            f"green flush: bid {red_fuel} RED fuel for {green_count} "
-            f"GREEN parcel(s)"
+    # v1.13 — on the terminal settlement orbit the season ends the moment
+    # this resolves, so anything bought here is never used. Bank it and
+    # let the automatic settlement do the work.
+    if bool(orbit.get("final_orbit")):
+        return [], (
+            "final settlement orbit: RED ships and GREEN clears "
+            "automatically — nothing worth buying"
         )
-        green_flushed = True
 
-    # Priority 1: repair damaged harvesters.
+    # Priority 1: repair every damaged harvester.
     damaged = [h for h in _my_harvesters(view) if bool(h.get("damaged"))]
     for harv in damaged:
-        if len(actions) >= actions_max:
-            descriptors.append(
-                f"deferred repair on {harv.get('id')} (out of action slots)",
-            )
-            continue
         if remaining < repair_cost:
             descriptors.append(
                 f"deferred repair on {harv.get('id')} (need {repair_cost}c, "
@@ -1997,51 +1846,36 @@ def plan_orbit_actions(
         remaining -= repair_cost
         descriptors.append(f"repaired {harv.get('id')} ({repair_cost}c)")
 
-    # Priority 2: dump green the moment we hold any. Running the flush
-    # right after repairs — AHEAD of builds and the RED ship step —
-    # means the RED fuel the catapult burns is still in the hoard, and
-    # we clear green early while slots are cheap and uncontested instead
-    # of letting it compound into an endgame toxic-legacy penalty
-    # (RULEBOOK §4.5). The bid is right-sized so this never costs more
-    # RED than the penalty avoided.
-    if green_count >= _GREEN_FLUSH_HIGH_PRIORITY_COUNT:
-        _emit_green_flush()
+    # Priority 2: build a new harvester if under cap and affordable.
+    if cap_used >= cap_max:
+        descriptors.append(
+            f"skipped harvester build (fleet at cap {cap_used}/{cap_max})",
+        )
+    elif remaining >= harvester_cost:
+        actions.append({"a": "build_harvester"})
+        remaining -= harvester_cost
+        descriptors.append(f"built harvester ({harvester_cost}c)")
+    else:
+        descriptors.append(
+            f"deferred harvester build (need {harvester_cost}c, "
+            f"have {remaining}c)",
+        )
 
-    # Priority 3: build a new harvester if under cap and affordable.
-    if len(actions) < actions_max:
-        if cap_used >= cap_max:
-            descriptors.append(
-                f"skipped harvester build (fleet at cap {cap_used}/{cap_max})",
-            )
-        elif remaining >= harvester_cost:
-            actions.append({"a": "build_harvester"})
-            remaining -= harvester_cost
-            descriptors.append(f"built harvester ({harvester_cost}c)")
-        else:
-            descriptors.append(
-                f"deferred harvester build (need {harvester_cost}c, "
-                f"have {remaining}c)",
-            )
-
-    # Priority 4: WEAPONS ECONOMY (v1.x). BLUE is the weapons currency — a
-    # surplus should pressure rivals, not sit idle. Tiered on rolled-up BLUE:
-    #   • blue > 300  → ALWAYS build a weapon. Fill the two-weapon kit: build
-    #     CHAFF first when we hold none (needed for the hour 5-7 / 11-13
-    #     egress jam), else an EMP, else whichever we can still afford.
-    #   • blue > 250  → 50% roll to build an EMP (beacon denial), as before.
-    # Every branch is gated on an affordable build + a free action slot; EMP
-    # stays capped at a small stockpile so we don't hoard salvos we never fire.
+    # Priority 3: WEAPONS ECONOMY. Tiered on rolled-up BLUE:
+    #   • blue > 300 → ALWAYS build. Fill the two-weapon kit: CHAFF first
+    #     when we hold none (the hour 5-7 / 11-13 egress jam), else an EMP,
+    #     else whichever is still affordable.
+    #   • blue > 250 → 50% roll for an EMP (beacon denial).
+    # EMP stays capped at a small stockpile so we don't hoard salvos we
+    # never fire — which is exactly the failure V12 ships with, and the
+    # reason this cap is worth keeping rather than tuning up.
     def _afford_emp() -> bool:
         return blue_total >= emp_blue_cost and remaining >= emp_credit_cost
 
     def _afford_chaff() -> bool:
         return blue_total >= chaff_blue_cost and remaining >= chaff_credit_cost
 
-    if (
-        weapons_enabled
-        and len(actions) < actions_max
-        and blue_total > _BLUE_ALWAYS_BUILD_THRESHOLD
-    ):
+    if weapons_enabled and blue_total > _BLUE_ALWAYS_BUILD_THRESHOLD:
         if chaff_stock < 1 and _afford_chaff():
             actions.append({"a": "build_chaff", "count": 1})
             remaining -= chaff_credit_cost
@@ -2070,7 +1904,6 @@ def plan_orbit_actions(
             )
     elif (
         weapons_enabled
-        and len(actions) < actions_max
         and blue_total > _BLUE_EMP_THRESHOLD
         and emp_stock < 2
         and _afford_emp()
@@ -2088,109 +1921,35 @@ def plan_orbit_actions(
                 "skipped EMP build (blue surplus but 50% roll missed)"
             )
 
-    # Priority 5: keep the probe magazine topped up. v0.9.18 — hot-drops
+    # Priority 4: keep the probe magazine topped up. Hot-drops
     # (RULEBOOK §3.9.7 live-only) spend a probe to SECURE each harvester
-    # landing on a vein without live coverage, on top of the 2
-    # exploration probes per night. A flat "build 2" magazine ran dry and
-    # left harvesters unable to land. Top the seat's stock up toward a
-    # working magazine of ``_PROBE_TARGET_STOCK`` (fleet hot-drops + scouts)
-    # in one batched build, bounded by credits and current stock.
+    # landing on a vein without live coverage, on top of the 2 exploration
+    # probes a night. A flat "build 2" magazine ran dry and left
+    # harvesters unable to land, so top up toward a working magazine in
+    # one batched build, bounded by credits and current stock.
     current_probe_stock = int(orbit.get("probe_stock", 0) or 0)
-    if len(actions) < actions_max:
-        want = max(0, _PROBE_TARGET_STOCK - current_probe_stock)
-        # Hold back a shipping reserve so we never spend the catapult's
-        # bid money on probes (RULEBOOK §4.4 — bids lock immediately).
-        # Only reserve when there's actually VEIN+ RED to ship this turn;
-        # an empty hoard needs no reserve (build the full magazine).
-        ship_reserve = _SHIP_CREDIT_RESERVE if vein_plus else 0
-        spendable = max(0, remaining - ship_reserve)
-        affordable = spendable // probe_cost if probe_cost > 0 else 0
-        build_n = min(want, affordable)
-        if build_n >= 1:
-            actions.append({"a": "build_probe", "count": int(build_n)})
-            remaining -= build_n * probe_cost
-            descriptors.append(
-                f"built {build_n} probe(s) ({build_n * probe_cost}c) — "
-                f"stock {current_probe_stock}→{current_probe_stock + build_n}"
-            )
-        elif want <= 0:
-            descriptors.append(
-                f"probe magazine full (stock {current_probe_stock}≥"
-                f"{_PROBE_TARGET_STOCK})"
-            )
-        else:
-            descriptors.append(
-                f"deferred probe build (need {probe_cost}c, have {remaining}c)",
-            )
-
-    # Priority 6: try to refine. Any sub-VEIN TRACE parcels get
-    # promoted toward VEIN (RULEBOOK §4.3) rather than shipped at a
-    # loss. Refine is paid in BLUE, so only attempt it when the seat
-    # has some blue to burn — otherwise the resolver would waste the
-    # slot. ``source_tier='trace'`` refines every trace parcel in one
-    # click.
-    if len(actions) < actions_max and trace_parcels and blue_total > 0:
-        actions.append({"a": "refine", "source_tier": "trace"})
+    want = max(0, _PROBE_TARGET_STOCK - current_probe_stock)
+    affordable = remaining // probe_cost if probe_cost > 0 else 0
+    build_n = min(want, affordable)
+    if build_n >= 1:
+        actions.append({"a": "build_probe", "count": int(build_n)})
+        remaining -= build_n * probe_cost
         descriptors.append(
-            f"refined {len(trace_parcels)} TRACE parcel(s) toward VEIN"
+            f"built {build_n} probe(s) ({build_n * probe_cost}c) — "
+            f"stock {current_probe_stock}→{current_probe_stock + build_n}"
+        )
+    elif want <= 0:
+        descriptors.append(
+            f"probe magazine full (stock {current_probe_stock}≥"
+            f"{_PROBE_TARGET_STOCK})"
+        )
+    else:
+        descriptors.append(
+            f"deferred probe build (need {probe_cost}c, have {remaining}c)",
         )
 
-    # Priority 7: catapult VEIN-or-above RED with per-parcel credit
-    # bids (RULEBOOK §4.4). Bid a modest flat credit per parcel,
-    # capped to whatever credits remain (bids lock + are forfeit
-    # immediately). TRACE parcels are excluded — they ship at a loss.
-    #
-    # v1.x — SHIPPING IS THE GAME: never skip the ship because we're broke.
-    # A 0-credit bid is legal (``_commit_ship_bid`` clamps to ≥0 and spends
-    # 0 fine); it just ranks last in the contested draft, so in an
-    # uncontested lane it still lands. Refusing to ship when short on
-    # credits was the classic "hoard RED all season → settle at 0" bug — a
-    # capped 15-slot vault of unshipped RED scores nothing (leftover RED is
-    # fire-saled at 0.5×). So we ALWAYS launch our best VEIN+ parcels,
-    # bidding whatever we can afford (down to 0).
-    if len(actions) < actions_max:
-        if not red_parcels:
-            descriptors.append("skipped catapult (no RED in hoard)")
-        elif not vein_plus:
-            descriptors.append(
-                "skipped catapult (RED hoard is all sub-VEIN — refining instead)"
-            )
-        else:
-            ranked = sorted(
-                vein_plus,
-                key=lambda p: -int(p.get("purity", 0) or 0),
-            )
-            ship_n = min(len(ranked), slots_per_row)
-            # Bid what we can afford, spread across the parcels — 0 when
-            # broke (still a valid ship, RULEBOOK §4.4).
-            bid_each = max(0, min(25, remaining // max(1, ship_n)))
-            chosen = ranked[:ship_n]
-            bids = [
-                {"id": str(p.get("square_id")), "credits": int(bid_each)}
-                for p in chosen if p.get("square_id")
-            ]
-            if bids:
-                spend = bid_each * len(bids)
-                actions.append({"a": "ship_catapult", "bids": bids})
-                remaining -= spend
-                if bid_each > 0:
-                    descriptors.append(
-                        f"catapulted {len(bids)} VEIN+ RED parcel(s) @ "
-                        f"{bid_each}cr each ({spend}c)"
-                    )
-                else:
-                    descriptors.append(
-                        f"catapulted {len(bids)} VEIN+ RED parcel(s) @ 0cr "
-                        f"(broke — uncontested-lane ship beats hoarding)"
-                    )
-
-    # Priority 8: low-priority green flush for the "just a parcel or
-    # two" case that didn't trip the high-priority gate above.
-    if len(actions) < actions_max:
-        _emit_green_flush()
-
     rationale = (
-        f"Orbit playbook: "
+        f"orbit day plan ({credits}c available): "
         + "; ".join(descriptors)
         + f". Carryover {remaining}c."
     )

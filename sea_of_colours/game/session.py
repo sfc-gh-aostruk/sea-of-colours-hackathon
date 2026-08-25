@@ -270,31 +270,14 @@ single BLUE parcel in the vault at game birth so it reads through
 ``blue_purity_available`` exactly like harvested blue. Blue is the
 spend surface for REFINING and the weapons economy (§4)."""
 
-# Catapult — shipping (v0.9.6 single-lane, row-thresholded).
-# RULEBOOK §4.4. Replaces the v0.8.0 sealed-bid ``ship_auction`` +
-# fixed-fee ``ship_tithe`` pair with one ``ship_catapult`` bid that
-# competes for 20 shared slots arranged in 4 progressively-pricier
-# rows. Each row needs a minimum pooled RED-fuel to ship; bidders
-# whose row underfills lose their fuel as a sunk cost.
-CATAPULT_ROW_COUNT: int = 4
-"""Number of catapult firing rows. Slots fill top-down by bid rank."""
-
-CATAPULT_SLOTS_PER_ROW: int = 5
-"""Capacity per row. Total catapult capacity per orbit = ROW_COUNT × SLOTS_PER_ROW."""
-
-CATAPULT_ROW_THRESHOLDS: Tuple[int, ...] = (50, 100, 150, 200)
-"""LEGACY (pre-transit) per-row pooled-RED-fuel threshold. Retained for
-back-compat with persisted catapult_history blobs; the live settlement
-now uses :data:`CATAPULT_ROW_TRANSIT`."""
-
-CATAPULT_ROW_TRANSIT: Tuple[int, ...] = (10, 25, 50, 100)
-"""v0.9.x — RED-purity TRANSIT CHARGE per catapult row, taken out of
-each shipped parcel's OWN purity. Row 0 (won by the highest credit
-bids) charges 10; row 3 charges 100. A parcel landing in a row whose
-charge >= its purity scores 0 (purity floored at 0, no further charge).
-Score = (purity - transit) x tier-multiplier of the ORIGINAL purity,
-so a pure-255 keeps its x3 even after transit knocks it to 245."""
-
+# v1.13 — the catapult is gone. RED used to compete for 20 shared slots
+# via a per-parcel credit bid, each row charging a RED-purity transit
+# fee. That draft was the single most-explained rule in the game and the
+# decision it asked for (how much to bid) was rarely interesting, so RED
+# now ships automatically at settlement with no fee and no competition.
+# The tier multiplier below survives untouched: auto-shipping changes
+# *whether you choose*, not what a parcel is worth, so where you send
+# harvesters at night stays the decision that matters.
 RED_QUALITY_MULTIPLIER: Dict[str, float] = {
     "trace": 0.75,
     "vein": 1.0,
@@ -307,20 +290,12 @@ Tweak these constants in one place to retune the entire RED economy —
 the hoard still stores raw purity, the formula only kicks in when a
 parcel lands in ``shipped_squares`` (see ``score_for``)."""
 
-# Green catapult — toxic disposal (v0.9.x). 12 shared slots dealt
-# round-robin by offer; per-slot RED-fuel cost diminishes by global
-# slot index so collective flushes are cheap per house. Committed RED
-# is forfeit. Undisposed vault green costs score at season end.
-GREEN_CATAPULT_SLOTS: int = 12
-"""Shared green-disposal slots per turn."""
-
-GREEN_SLOT_COST_BASE: int = 50
-"""RED-fuel cost of the first (most expensive) green slot."""
-
-GREEN_SLOT_COST_STEP: int = 5
-"""RED-fuel reduction per subsequent global slot index (floor 0).
-cost(slot s, 0-indexed) = max(0, BASE - STEP*s): 50,45,...,5,0,0."""
-
+# v1.13 — the green catapult is gone too. Flushing GREEN used to be a
+# round-robin slot draft paid for in forfeit RED fuel; now every GREEN
+# parcel a house is still holding is simply charged at
+# GREEN_ENDGAME_PENALTY. Same pressure, no ceremony: GREEN is a tax on
+# mining blind, and the interesting decision was always whether to take
+# the harvest at all, not how to dispose of the consequences.
 GREEN_ENDGAME_PENALTY: int = 100
 """Final-score penalty per undisposed VAULT-green parcel (toxic legacy).
 Green is the 'mistake tax' (blind/contested harvests); it must be
@@ -343,10 +318,18 @@ def compute_player_score(
     the standings, the HUD's shipped-score line, and the end-of-game
     results screen can never disagree.
 
-        score = tier-weighted effective purity over SHIPPED parcels
-              - GREEN_ENDGAME_PENALTY per undisposed vault-GREEN parcel
+        score = tier-weighted effective purity over SHIPPED RED parcels
+              - GREEN_ENDGAME_PENALTY per GREEN parcel, whether it was
+                auto-disposed at settlement or is still in the vault
               + (season-end only) 50%-of-raw-purity fire-sale on any
                 RED left unshipped in the vault
+
+    v1.13 — GREEN is auto-disposed each orbit and the disposed parcels
+    are appended to SHIPPED carrying their GREEN origin tile. They are
+    charged here rather than credited, which is what lets the bulk
+    scoreboard (``SocStore.bulk_session_scores``, which reads the
+    SHIPPED/HOARD tables without hydrating a session) reach the same
+    number as :meth:`GameSession.score_for` with no extra column.
 
     ``GameSession._parcel_purity`` / ``_tier_for_purity`` are pure
     staticmethods; referencing them keeps the purity/tier rules in one
@@ -354,6 +337,16 @@ def compute_player_score(
     """
     total = 0.0
     for parcel in shipped_parcels or []:
+        origin = parcel.get("tile_at_harvest")
+        if origin is None:
+            origin = parcel.get("origin_tile")
+        try:
+            is_green = int(origin) == int(Tile.GREEN)
+        except (TypeError, ValueError):
+            is_green = parcel.get("score_tier") == "green"
+        if is_green:
+            total -= GREEN_ENDGAME_PENALTY
+            continue
         eff = parcel.get("effective_purity")
         if eff is None:
             eff = GameSession._parcel_purity(parcel)
@@ -378,21 +371,6 @@ def compute_player_score(
     if is_complete:
         total += red_loss
     return int(round(total))
-
-# Catapult — solar jettison (inverse pool-discount) — LEGACY constants.
-JETTISON_PRICE_BASE: int = 100
-"""Per-parcel jettison cost when nobody else is bidding (RED purity)."""
-
-JETTISON_PRICE_MIN: int = 25
-"""Floor on the per-parcel jettison cost regardless of pool size."""
-
-JETTISON_FUEL_DENOMINATOR: int = 16
-"""Each 16 RED purity in the shared fuel pool shaves 1 off the
-per-parcel cost. Sanity: 4 seats × 200 → pool=800 → p = max(25,
-100 - 800/16) = max(25, 50) = 50 → each seat affords 4 parcels."""
-
-MAX_ORBIT_ACTIONS: int = 3
-"""Per-seat per-turn cap on Orbit phase actions."""
 
 # ── v0.9.11 — Station observation grades (RULEBOOK §3.15.x) ─────────
 # Each platform broadcasts a coarse "reading" that any seat can pick
@@ -440,28 +418,13 @@ STATION_GREEN_COUNT_BANDS: List[Tuple[int, str]] = [
 ]
 STATION_GREEN_COUNT_HIGH = "13+"
 
-# Refine algorithm: take N parcels of one source tier (trace or vein)
-# from the hoard, sum their purity ``S``, output ``S // M`` parcels at
-# target-tier max purity ``M`` + one residual at ``S mod M`` in the
-# **source** tier. ``M`` is the target tier's MAX purity (trace -> vein
-# has M=150; vein -> mass has M=254). RULEBOOK §4 / v0.8.0.
-REFINE_MAX_FOR_TIER: Dict[str, int] = {
-    "TRACE_TO_VEIN": 150,
-    "VEIN_TO_MASS": 254,
-}
-
-REFINE_MAX_SLOTS: int = 5
-"""Max input parcels a single refine action may consume (the interface
-offers 5 slots). Larger id lists are rejected as illegal."""
-
-REFINE_BLUE_COST: Dict[str, int] = {
-    "trace": 10,
-    "vein": 20,
-}
-"""Blue purity charged PER INPUT PARCEL when refining a source tier.
-Refining 5 trace costs 50 blue; 5 vein costs 100 blue. Paid from the
-blue spend surface (``debit_blue_purity``); refine is refused if the
-house cannot cover it. mass/pure are unrefinable."""
+# v1.13 — refining is gone. It let a house fold N low-tier parcels into
+# fewer higher-tier ones for a BLUE fee, and it was reliably the rule
+# that lost a first-time player: a purity-conserving partition with a
+# residual, a slot cap, a blue cost and a special terminal variant. A
+# parcel now ships at the tier it was mined, which makes *where you mine*
+# the whole story. Removing it also hands BLUE back to the weapons
+# economy, which is the only thing it funds now.
 
 TYPE_PUBLIC_NAME: Dict[str, str] = {
     "harvester": "Harvester",
@@ -661,6 +624,20 @@ def _hydrate_cumulative_shipped_score(
         total = 0.0
         for parcel in rows:
             if not isinstance(parcel, Mapping):
+                continue
+            # v1.13 — the SHIPPED bay is no longer RED-only: auto-disposed
+            # GREEN is appended here too, carrying its origin tile, and it
+            # is a debit. Scoring it as purity × multiplier would credit
+            # the player for the mistake the parcel represents.
+            origin = parcel.get("tile_at_harvest")
+            if origin is None:
+                origin = parcel.get("origin_tile")
+            try:
+                is_green = int(origin) == int(Tile.GREEN)
+            except (TypeError, ValueError):
+                is_green = parcel.get("score_tier") == "green"
+            if is_green:
+                total -= GREEN_ENDGAME_PENALTY
                 continue
             eff_raw = parcel.get("effective_purity")
             if eff_raw is None:
@@ -4331,41 +4308,18 @@ class GameSession:
             self.errors[player] = errs
             return False, errs
 
-        # v1.x — the terminal refinery run (RULEBOOK §4.3.1) can queue more
-        # than MAX_ORBIT_ACTIONS actions (fold several tiers, then ship), so
-        # the final orbit parses uncapped; every other orbit keeps the 3-slot
-        # cap.
-        actions, hard_errs = parse_orbit_actions(
-            payload, max_actions=None if self.final_orbit else MAX_ORBIT_ACTIONS,
-        )
+        # v1.13 — no action cap: credits and blue are the only constraint.
+        actions, hard_errs = parse_orbit_actions(payload)
         if hard_errs:
             self.errors[player] = hard_errs
             return False, hard_errs
 
-        # v1.0 — the final settlement orbit is restricted to refine /
-        # ship / green-flush. Rather than rejecting the whole
-        # submission (which would deadlock a bot/agent seat whose plan
-        # still contains builds), we DROP the blocked actions and lock
-        # the surviving ones — mirroring the UI, where the build /
-        # repair / weapon buttons are simply greyed out. The seat still
-        # locks so the orbit can resolve and the season can end.
-        if self.final_orbit:
-            allowed = {
-                "refine", "refine_cascade", "ship_catapult",
-                "solar_jettison", "orbit_waste",
-            }
-            kept = [a for a in actions if getattr(a, "tag", "") in allowed]
-            dropped = sorted(
-                {getattr(a, "tag", "") for a in actions}
-                - {getattr(a, "tag", "") for a in kept}
-            )
-            if dropped:
-                self.log_info(
-                    f"day {self.day}: {player} — final settlement orbit "
-                    f"ignored {', '.join(dropped)} (only refine / ship / "
-                    f"green-flush are allowed)."
-                )
-            actions = kept
+        # v1.13 — the final orbit used to be restricted to refine / ship /
+        # green-flush, because those were the only things that still
+        # mattered once the season was ending. All three are gone and
+        # settlement is automatic, so there is nothing left to restrict:
+        # a seat may buy on the last orbit, it just won't get to use it.
+        # Wasting your own credits is a legal move, not an error.
 
         # Store as the raw OrbitAction list — the resolver consumes
         # this shape directly. ``pending_orbit_actions`` is typed as
@@ -4753,188 +4707,14 @@ class GameSession:
             return "mass"
         return "pure"
 
-    def apply_refine(
-        self,
-        player: PlayerId,
-        input_ids: Sequence[str],
-        *,
-        eligible_ids: Optional[Set[str]] = None,
-        uncapped: bool = False,
-    ) -> Tuple[bool, str]:
-        """Combine same-tier inputs into next-tier outputs preserving purity.
-
-        v0.9.x — refine now costs BLUE (:data:`REFINE_BLUE_COST` per
-        input parcel), is capped at :data:`REFINE_MAX_SLOTS` inputs,
-        and (when ``eligible_ids`` is supplied by the orbit resolver)
-        may only consume parcels that existed at the start of the orbit
-        pass — so a parcel freshly minted by another refine this turn
-        cannot be cascaded (no same-turn trace->vein->mass).
-
-        v1.x — ``uncapped=True`` lifts the :data:`REFINE_MAX_SLOTS` input
-        limit. The orbit resolver sets it on the **final settlement
-        orbit** so a seat can concentrate its whole vault in one refinery
-        run; BLUE is then the only limiter (RULEBOOK §4.3.1). Everywhere
-        else the 5-slot cap stands.
-        """
-        hoard = self.hoard_squares.get(player, [])
-        ids = [str(x) for x in input_ids if str(x)]
-        if not ids:
-            return False, f"{player}: refine needs at least one input parcel id"
-        if not uncapped and len(ids) > REFINE_MAX_SLOTS:
-            return False, (
-                f"{player}: refine takes at most {REFINE_MAX_SLOTS} parcels "
-                f"(got {len(ids)})"
-            )
-        if eligible_ids is not None:
-            blocked = [sid for sid in ids if sid not in eligible_ids]
-            if blocked:
-                return False, (
-                    f"{player}: refine inputs locked / not in vault at turn "
-                    f"start ({', '.join(blocked[:3])}) — no same-turn cascade"
-                )
-
-        # Lookup parcels by square_id / site_id; preserve order of the
-        # caller's id list.
-        by_id: Dict[str, Dict[str, Any]] = {}
-        for parcel in hoard:
-            key = str(parcel.get("square_id") or parcel.get("site_id") or "")
-            if key:
-                by_id[key] = parcel
-        chosen: List[Dict[str, Any]] = []
-        missing: List[str] = []
-        for sid in ids:
-            p = by_id.get(sid)
-            if p is None:
-                missing.append(sid)
-            else:
-                chosen.append(p)
-        if missing:
-            return False, (
-                f"{player}: refine could not find parcels "
-                f"{', '.join(missing[:3])}"
-            )
-
-        tiers = {self._tier_for_purity(self._parcel_purity(p)) for p in chosen}
-        if len(tiers) != 1:
-            return False, (
-                f"{player}: refine inputs must share a tier "
-                f"(got {sorted(tiers)})"
-            )
-        source_tier = next(iter(tiers))
-        if source_tier == "trace":
-            target_tier = "vein"
-            M = REFINE_MAX_FOR_TIER["TRACE_TO_VEIN"]
-        elif source_tier == "vein":
-            target_tier = "mass"
-            M = REFINE_MAX_FOR_TIER["VEIN_TO_MASS"]
-        else:
-            return False, (
-                f"{player}: refine cannot promote tier '{source_tier}' "
-                f"(mass and pure are unrefinable)"
-            )
-
-        # v0.9.x — charge BLUE per input parcel before any mutation, so a
-        # house that can't afford the refine is left untouched. The debit
-        # consumes BLUE parcels (never the RED refine inputs) and rewrites
-        # ``hoard_squares`` in place, so we re-read the bucket afterwards.
-        blue_per = int(REFINE_BLUE_COST.get(source_tier, 0))
-        blue_cost = blue_per * len(chosen)
-        if blue_cost > 0:
-            avail = self.blue_purity_available(player)
-            if avail < blue_cost:
-                return False, (
-                    f"{player}: refine {len(chosen)} {source_tier} needs "
-                    f"{blue_cost} blue (have {avail})"
-                )
-            ok_blue, _consumed, _waste = self.debit_blue_purity(player, blue_cost)
-            if not ok_blue:
-                return False, (
-                    f"{player}: refine could not debit {blue_cost} blue"
-                )
-
-        S = sum(self._parcel_purity(p) for p in chosen)
-        out_full = S // M
-        residual = S % M
-
-        # Build new parcel records keyed off the first chosen parcel's
-        # provenance (so the new parcels inherit a real origin row).
-        anchor = chosen[0]
-
-        def _new_parcel(purity: int, tier_tag: str) -> Dict[str, Any]:
-            new_uid = self.square_uid_seq + 1
-            self.square_uid_seq = new_uid
-            new_sid = (
-                f"refined-{tier_tag}-{self.session_id[:6]}-{new_uid:04d}"
-            )
-            # v0.9.6 — recompute the visual ``paint`` against a synthetic
-            # Cell at the new purity tier so the VAULT slot renders with
-            # the correct glyph (vein → ▒▒, mass → ▓▓, pure → solid).
-            # Pre-v0.9.6 we skipped this and the frontend fell back to
-            # the trace-tier ░░ default, so refining trace → vein looked
-            # identical to the trace input even though purity_at_harvest
-            # had been promoted correctly. Same fix lets a refined-vein
-            # parcel be re-refined into mass with the right intermediate
-            # visual.
-            paint = dict(cell_to_paint(Cell(Tile.RED, int(purity))))
-            return {
-                "square_id": new_sid,
-                "site_id": new_sid,
-                "owner": str(player),
-                "origin_x": anchor.get("origin_x", anchor.get("x")),
-                "origin_y": anchor.get("origin_y", anchor.get("y")),
-                "origin_tile": int(Tile.RED),
-                "origin_purity": int(purity),
-                "purity_at_harvest": int(purity),
-                "harvested_day": int(self.day),
-                "harvested_on_planning_day": int(self.day),
-                "tile_at_harvest": int(Tile.RED),
-                "lineage": "refined",
-                "refined_from": [
-                    str(p.get("square_id") or p.get("site_id") or "")
-                    for p in chosen
-                ],
-                "paint": paint,
-            }
-
-        new_parcels: List[Dict[str, Any]] = []
-        for _ in range(out_full):
-            new_parcels.append(_new_parcel(M, target_tier))
-        if residual > 0:
-            new_parcels.append(_new_parcel(residual, source_tier))
-
-        # Remove input parcels from the hoard, then append the new ones.
-        # Re-read the bucket: the blue debit above may have rewritten
-        # ``hoard_squares[player]`` (consumed BLUE parcels), so the stale
-        # ``hoard`` local would resurrect them if reused here.
-        chosen_keys = {
-            str(p.get("square_id") or p.get("site_id") or "") for p in chosen
-        }
-        cur = self.hoard_squares.get(player, []) or []
-        self.hoard_squares[player] = [
-            p for p in cur
-            if str(p.get("square_id") or p.get("site_id") or "") not in chosen_keys
-        ]
-        # If the new total would exceed capacity, trim from the end of
-        # the new-parcel batch (the residual goes first, then the
-        # full-tier ones — refine returns "less than we got").
-        free = max(0, HOARD_CAPACITY - len(self.hoard_squares[player]))
-        if len(new_parcels) > free:
-            new_parcels = new_parcels[:free]
-        self.hoard_squares[player].extend(new_parcels)
-        cost_tail = f", -{blue_cost} blue" if blue_cost > 0 else ""
-        return True, (
-            f"{player}: refined {len(chosen)} {source_tier} (Σ{S}p) → "
-            f"{out_full} {target_tier} + residual "
-            f"{residual or 0} (M={M}{cost_tail})"
-        )
-
     def red_tier_counts(self, player: PlayerId) -> Dict[str, int]:
         """Return ``{trace, vein, mass, pure}`` parcel counts for RED hoard.
 
         Used by the Orbit panel + agent view to render the
-        "TRACE 5 · VEIN 2 · MASS 0" pill so a seat can see at a
-        glance whether a refine button is worth clicking. RED-only
-        because refine doesn't apply to GREEN / BLUE (RULEBOOK §4.4).
+        "TRACE 5 · VEIN 2 · MASS 0" pill. v1.13 — this used to tell a
+        seat whether a refine button was worth clicking; refining is
+        gone, so it now previews what the vault is worth when it ships
+        automatically at settlement (RULEBOOK §4.4).
         """
         out: Dict[str, int] = {"trace": 0, "vein": 0, "mass": 0, "pure": 0}
         for p in self.hoard_squares.get(player, []) or []:
@@ -4971,124 +4751,6 @@ class GameSession:
                 out[tier] += 1
         return out
 
-    def apply_refine_all(
-        self,
-        player: PlayerId,
-        source_tier: str,
-        *,
-        eligible_ids: Optional[Set[str]] = None,
-        uncapped: bool = False,
-    ) -> Tuple[bool, str]:
-        """v0.9.1 — refine up to :data:`REFINE_MAX_SLOTS` RED parcels of
-        ``source_tier`` in one click (lowest-purity first).
-
-        Delegates to :meth:`apply_refine` after gathering ids so the
-        purity-conservation algorithm, blue cost, and the post-refine
-        hoard capacity trim stay in one place. Refuses with a yellow
-        log line if the seat owns 0 eligible parcels of the requested
-        tier. ``eligible_ids`` (set by the orbit resolver) excludes
-        parcels minted earlier this turn (no same-turn cascade).
-
-        v1.x — ``uncapped=True`` (final settlement orbit) sweeps EVERY
-        eligible parcel of the tier, not just the first
-        :data:`REFINE_MAX_SLOTS`, so the terminal refinery run can fold a
-        whole tier at once (RULEBOOK §4.3.1).
-        """
-        t = (source_tier or "").lower().strip()
-        if t not in ("trace", "vein"):
-            return False, (
-                f"{player}: refine source_tier must be 'trace' or 'vein' "
-                f"(got '{source_tier}')"
-            )
-        picks: List[Tuple[int, str]] = []
-        for p in self.hoard_squares.get(player, []) or []:
-            try:
-                if int(p.get("tile_at_harvest", -1)) != int(Tile.RED):
-                    continue
-            except (TypeError, ValueError):
-                continue
-            if self._tier_for_purity(self._parcel_purity(p)) != t:
-                continue
-            sid = str(p.get("square_id") or p.get("site_id") or "")
-            if not sid:
-                continue
-            if eligible_ids is not None and sid not in eligible_ids:
-                continue
-            picks.append((self._parcel_purity(p), sid))
-        if not picks:
-            return False, (
-                f"{player}: refine {t} → "
-                f"{'vein' if t == 'trace' else 'mass'} — "
-                f"no {t}-tier parcels in hoard"
-            )
-        # Cap at the interface slot count; take lowest-purity first so a
-        # one-click refine sweeps up the dregs rather than the best stock.
-        # ``uncapped`` (final orbit) folds the entire tier in one go.
-        picks.sort(key=lambda pr: pr[0])
-        limit = len(picks) if uncapped else REFINE_MAX_SLOTS
-        ids = [sid for _, sid in picks[:limit]]
-        return self.apply_refine(
-            player, ids, eligible_ids=eligible_ids, uncapped=uncapped,
-        )
-
-    def apply_refine_cascade(
-        self,
-        player: PlayerId,
-        target_tier: str = "mass",
-        *,
-        blocked_ids: Optional[Set[str]] = None,
-    ) -> Tuple[bool, str]:
-        """v1.x — one-click terminal "refinery run" (RULEBOOK §4.3.1).
-
-        Cascades the seat's RED vault up the tier ladder as far as its
-        BLUE reserve allows: fold **all** trace → vein, then **all** vein
-        (including the just-minted parcels) → mass, stopping at
-        ``target_tier`` or when a step can no longer afford its blue.
-        Purity is conserved at every step; the payoff is the fewest,
-        highest-tier parcels the seat can afford — prime fuel for the
-        final ship draft.
-
-        ``blocked_ids`` are parcels a ship/green bid already reserved
-        this pass; they're never fed into the refinery. Because each step
-        re-reads the live hoard, freshly-refined outputs ARE eligible for
-        the next step (same-turn cascade) — this is why the method is
-        gated to the final orbit by its only caller (the resolver).
-
-        Returns ``(any_progress, summary)``.
-        """
-        blocked = {str(x) for x in (blocked_ids or set())}
-        stages = ["trace", "vein"] if target_tier == "mass" else ["trace"]
-        any_ok = False
-        step_msgs: List[str] = []
-        # A bounded loop: two passes suffice (trace→vein, then vein→mass),
-        # but re-loop a few times defensively in case a capacity trim or
-        # residual leaves more to fold. Each iteration must make progress
-        # or we stop.
-        for _round in range(8):
-            progressed = False
-            for src in stages:
-                avail = {
-                    str(p.get("square_id") or p.get("site_id") or "")
-                    for p in self.hoard_squares.get(player, []) or []
-                } - blocked
-                ok, msg = self.apply_refine_all(
-                    player, src, eligible_ids=avail, uncapped=True,
-                )
-                if ok:
-                    any_ok = True
-                    progressed = True
-                    step_msgs.append(msg)
-            if not progressed:
-                break
-        if not any_ok:
-            return False, (
-                f"{player}: refinery run — nothing to refine "
-                f"(no trace/vein parcels or not enough blue)"
-            )
-        return True, (
-            f"{player}: refinery run → {target_tier} "
-            f"({len(step_msgs)} fold(s))"
-        )
 
     # --- Serialization ----------------------------------------------
 

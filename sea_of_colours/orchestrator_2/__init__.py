@@ -18,12 +18,12 @@ What's different:
   for every agent: meta / hud / last_night / competitor_intel / world /
   navigation / my_assets. No agent-specific preprocessing in the
   orchestrator path.
-* **Harnesses are self-contained.** PILOT_V2's candidate compiler,
-  threat brief, season memory, and prompt-augmentation logic all live
-  inside :mod:`sea_of_colours.orchestrator_2.harnesses.pilot_v2`. The
+* **Harnesses are self-contained.** V12's option-menu compiler,
+  threat brief, season memory, and prompt assembly all live inside
+  :mod:`sea_of_colours.orchestrator_2.harnesses.tabula_v12`. The
   orchestrator imports nothing from there.
 
-Read ``ARCHITECTURE.md`` for the full design, ``MIGRATION.md`` for how
-to port an agent over, and ``harnesses/pilot_v2/README.md`` for the
-PILOT_V2-specific brief.
+Read ``README.md`` to plug an agent in, ``ARCHITECTURE.md`` for why it
+is shaped this way, and ``harnesses/tabula_v12/README.md`` for the
+agent you fork.
 """

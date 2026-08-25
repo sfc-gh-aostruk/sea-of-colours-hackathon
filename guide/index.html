@@ -567,9 +567,9 @@
               and expire after 3 nights.
             </li>
             <li>
-              At dawn you enter <strong>orbit</strong>, where you spend credits:
-              harvesters, repairs, refinement, weapons, and shipping what you
-              hoarded.
+              At dawn you enter <strong>orbit</strong>, where you spend credits
+              on harvesters, repairs and weapons. Then your vault settles
+              itself &mdash; everything you hoarded ships automatically.
             </li>
             <li>Most points after seven nights wins.</li>
           </ul>
@@ -938,7 +938,7 @@
             </a>
             <a class="gd-card" href="../manual/index.html#tab=orbital">
               <span class="t">Orbital station</span>
-              <span class="d">Spending credits at dawn: builds, refinement, shipping lanes.</span>
+              <span class="d">Spending credits at dawn, then automatic settlement.</span>
             </a>
             <a class="gd-card" href="../manual/index.html#tab=season">
               <span class="t">Season</span>
@@ -1258,6 +1258,51 @@ PY</pre>
             save you a day of reading the harness cold.
           </p>
         </div>
+
+        <h3>Mint your own agent</h3>
+        <p>
+          One command. It forks V12, renames its identity so your turns
+          are attributed to you rather than to V12, and registers it.
+        </p>
+
+        <div class="gd-term">
+          <div class="gd-term-head">
+            <span class="gd-term-dots"><i></i><i></i><i></i></span>
+            <span class="gd-term-title">fork the agent</span>
+            <button class="gd-copy" type="button">copy</button>
+          </div>
+<pre><code>python scripts/new_agent.py --team redwatch --name reaper</code></pre>
+        </div>
+
+        <p>
+          Restart the server and <code>REDWATCH_REAPER</code> is in the NEW
+          GAME dropdown, ready to play against V12. Name it
+          <code>&lt;team&gt;_&lt;agent&gt;</code> &mdash; the label ends up in
+          the audit trail and on the scoreboard, and a room full of agents
+          called <code>reaper</code> helps nobody.
+        </p>
+
+        <div class="gd-note gd-note--warn">
+          <b class="tag">Don't edit V12 in place</b>
+          <p>
+            V12 is the control in your experiment. Change it directly and
+            you can no longer answer &ldquo;is my agent better?&rdquo;,
+            because there is nothing left to compare against &mdash; and
+            matches between teams stop being like-for-like. The fork costs
+            a second.
+          </p>
+        </div>
+
+        <p>
+          Your fork ships with its own
+          <a href="../sea_of_colours/orchestrator_2/harnesses/tabula_v12/README.md">README</a>:
+          the turn pipeline, what the debug card shows, where plays come
+          from, and both gaps above with the exact files and constants.
+          Start there. The
+          <a href="../sea_of_colours/orchestrator_2/README.md">orchestrator
+          README</a> covers the harness contract if you would rather write
+          an agent from scratch than fork one.
+        </p>
 
         <div class="gd-frame">
           <div class="gd-frame-head">
@@ -1731,8 +1776,9 @@ credits 1000`,
               cite: "§4 — orbital station",
               manual: "orbital",
               body: `<p>Dawn. Now you spend: build harvesters, repair damage
-                     (never free), refine what you hold, buy weapons, and ship
-                     to bank points.</p>
+                     (never free) and buy weapons. There is no action limit
+                     &mdash; your wallet is the limit. Then the vault settles
+                     itself and everything you hoarded banks as points.</p>
                      <p>Then night 2 begins, and you do it six more times.</p>`,
               term: `orbit · day 1
   credits    1000

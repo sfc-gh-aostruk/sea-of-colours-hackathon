@@ -286,7 +286,7 @@
           <button type="button" class="cc-tab" data-cc-tab="orbit">
             <span class="cc-tab-key">[1]</span>
             <span class="cc-tab-label">ORBIT</span>
-            <span id="cc-tab-orbit-meta" class="cc-tab-meta dim">0/3</span>
+            <span id="cc-tab-orbit-meta" class="cc-tab-meta dim">0</span>
           </button>
           <button type="button" class="cc-tab cc-tab--active" data-cc-tab="orders">
             <span class="cc-tab-key">[2]</span>
@@ -335,7 +335,7 @@
             <header class="cc-panel-head">
               <span class="cc-panel-title">ORBIT &middot; daytime planner</span>
               <span class="dim cc-panel-sub">
-                Build &middot; refine &middot; bid &middot; <span class="cc-orbit-budget">3</span> actions / turn
+                Build &middot; repair &middot; arm &mdash; credits are the only limit
               </span>
             </header>
 
@@ -353,11 +353,11 @@
                 <span id="cc-orbit-harvesters" class="cc-orbit-readout-value">0/3</span>
               </div>
               <div class="cc-orbit-readout" data-readout="green-owned">
-                <span class="cc-orbit-readout-label dim">GREEN OWNED</span>
+                <span class="cc-orbit-readout-label dim">GREEN &rarr; DUMPED</span>
                 <span id="cc-orbit-green" class="cc-orbit-readout-value">0 (&Sigma;0p)</span>
               </div>
               <div class="cc-orbit-readout" data-readout="tier-counts">
-                <span class="cc-orbit-readout-label dim">RED TIERS</span>
+                <span class="cc-orbit-readout-label dim">RED &rarr; SHIPPING</span>
                 <span id="cc-orbit-tier-counts" class="cc-orbit-readout-value">trace 0 &middot; vein 0 &middot; mass 0</span>
               </div>
               <div class="cc-orbit-readout" data-readout="blue-tier-counts">
@@ -406,47 +406,32 @@
               <fieldset class="cc-queue-fieldset">
                 <legend class="cc-queue-legend">
                   <span class="dim">orbit action queue</span>
-                  <span id="solo-orbit-queue-count" class="solo-queue-count">0/3</span>
+                  <span id="solo-orbit-queue-count" class="solo-queue-count">0</span>
                 </legend>
                 <div
                   id="solo-orbit-queue"
                   class="cc-move-queue"
                   aria-label="Ordered orbit action queue"
                 ></div>
-                <!-- v1.0 — final settlement orbit banner. Shown only
-                     when the season has run its course and the last
-                     restricted orbit is open (refine / ship / flush
-                     only). app.js toggles this + greys the blocked
-                     construct / weapon / repair buttons. -->
+                <!-- v1.13 — final settlement orbit banner. Nothing is
+                     blocked any more (settlement is automatic, so there
+                     is no last-turn move to protect); the banner now
+                     just warns that anything bought here never flies.
+                     app.js toggles it via updateFinalOrbitUi. -->
                 <div id="final-orbit-banner" class="final-orbit-banner" hidden>
                   <div class="final-orbit-banner-copy">
-                    FINAL SETTLEMENT ORBIT &mdash; the <strong>Final Refinery</strong> is open:
-                    caps are lifted, so you can fold your whole vault up the tiers and
-                    ship it <em>this</em> turn. Building and repairs are closed. Blue is
-                    your only limiter. The season ends once this orbit resolves.
-                  </div>
-                  <div class="final-orbit-refinery">
-                    <button
-                      type="button"
-                      id="final-refine-cascade"
-                      class="cc-btn final-orbit-btn"
-                      title="Fold every RED parcel up to mass in one action, spending all available blue (RULEBOOK §4.3.1)."
-                    >&#9650; Refine everything up</button>
-                    <button
-                      type="button"
-                      id="final-ship-auto"
-                      class="cc-btn final-orbit-btn"
-                      title="Bid on your best RED parcels after the refinery folds — needed because refined parcels' ids are minted at settlement."
-                    >&#8648; Ship best (auto)</button>
+                    FINAL SETTLEMENT ORBIT &mdash; your vault settles automatically when
+                    this orbit resolves: every RED parcel ships for score, every GREEN
+                    one is dumped at &minus;100. There is no night after this, so
+                    anything you build now will never leave the pad. The season ends
+                    here.
                   </div>
                 </div>
-                <!-- v0.9.5 — orbit action toolbar grouped into four
-                     functional blocks so the user can scan the panel
-                     instead of hunting through a flat button strip:
+                <!-- v1.13 — orbit action toolbar. Was four blocks; the
+                     REFINE and SHIPPING/JETTISON lanes went with the
+                     mechanics they drove, leaving:
                        1. CONSTRUCT / REPAIR — fleet build + workshop
-                       2. WEAPONS — EMP / MINE / CHAFF stockpile
-                       3. REFINE — RED tier promotion
-                       4. SHIPPING / JETTISON — catapult lanes -->
+                       2. WEAPONS — EMP / MINE / CHAFF stockpile -->
                 <div class="cc-queue-toolbar cc-orbit-toolbar">
                   <div class="cc-orbit-block" data-orbit-block="construct">
                     <div class="cc-orbit-block-head dim">// construct &middot; repair</div>
@@ -569,57 +554,24 @@
                     </div>
                   </div>
 
-                  <div class="cc-orbit-block" data-orbit-block="refine">
-                    <div class="cc-orbit-block-head dim">// refine RED</div>
-                    <div class="cc-orbit-block-body">
-                      <button
-                        type="button"
-                        class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-refine"
-                        data-orbit-action="refine_trace"
-                        title="Promote EVERY RED trace parcel into vein (auto)"
-                      >
-                        [ + refine all trace &rarr; vein
-                          (<span data-orbit-tier-pill="trace">0</span>) ]
-                      </button>
-                      <button
-                        type="button"
-                        class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-refine"
-                        data-orbit-action="refine_vein"
-                        title="Promote EVERY RED vein parcel into mass (auto)"
-                      >
-                        [ + refine all vein &rarr; mass
-                          (<span data-orbit-tier-pill="vein">0</span>) ]
-                      </button>
-                      <button
-                        type="button"
-                        class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-refine"
-                        data-orbit-action="refine_pick"
-                        title="Pick up to 5 same-tier parcels and preview the promotion + blue cost before committing"
-                      >
-                        [ + refine (pick&hellip;) ]
-                      </button>
-                    </div>
-                  </div>
-
-                  <div class="cc-orbit-block" data-orbit-block="shipping">
-                    <div class="cc-orbit-block-head dim">// shipping &middot; green flush</div>
-                    <div class="cc-orbit-block-body">
-                      <button
-                        type="button"
-                        class="cli-btn solo-add-orbit cc-add-btn"
-                        data-orbit-action="ship_catapult"
-                        title="RED catapult — 4 rows × 5 slots. Bid credits per parcel; highest bids win the low-transit rows. Each parcel pays its row's transit charge (10/25/50/100 purity)."
-                      >
-                        [ + ship catapult ]
-                      </button>
-                      <button
-                        type="button"
-                        class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-jettison"
-                        data-orbit-action="solar_jettison"
-                        title="GREEN catapult — flush toxic green to avoid the -100/parcel endgame penalty. Commit RED fuel; slots get cheaper as more houses flush together."
-                      >
-                        [ + green flush ]
-                      </button>
+                  <!-- v1.13 — not a control, a readout. Settlement is
+                       automatic now, so the thing a player most needs
+                       to know here is what their vault is about to do
+                       without being asked. app.js fills the counts. -->
+                  <div class="cc-orbit-block" data-orbit-block="settlement">
+                    <div class="cc-orbit-block-head dim">// on resolve &middot; automatic</div>
+                    <div class="cc-orbit-block-body cc-orbit-settlement">
+                      <div class="cc-settle-line" data-settle="red">
+                        <span class="cc-settle-arrow" aria-hidden="true">&#8648;</span>
+                        <span id="cc-settle-red">no RED to ship</span>
+                      </div>
+                      <div class="cc-settle-line" data-settle="green">
+                        <span class="cc-settle-arrow" aria-hidden="true">&#9760;</span>
+                        <span id="cc-settle-green">no GREEN to dump</span>
+                      </div>
+                      <div class="cc-settle-note dim">
+                        Your vault empties every orbit &mdash; no bid, no slot, no action.
+                      </div>
                     </div>
                   </div>
 
@@ -913,14 +865,14 @@
             hidden
           >
             <header class="cc-panel-head">
-              <span class="cc-panel-title">SHIPPED · catapulted to Earth</span>
+              <span class="cc-panel-title">SHIPPED &middot; sent to Earth</span>
               <span class="dim cc-panel-sub">
-                Tier-multiplier score \u00B7 RULEBOOK \u00A73.1 / \u00A74.4
+                Tier-multiplier score &middot; RULEBOOK &sect;3.1 / &sect;4.4
               </span>
             </header>
             <p class="cc-vault-blurb">
-              // post-catapult manifest \u00B7 these parcels are the
-              only ones that score. Capacity 25.
+              // settlement manifest &middot; these parcels are the
+              only ones that score. Uncapped.
             </p>
             <!-- v0.9.9 — per-seat shipped stats row reads
                  ``cumulative_shipped_score`` (the same source the HUD
@@ -1295,13 +1247,6 @@
       ></div>
     </div>
 
-    <!-- v0.9.6 ORBIT phase replay flash overlay.
-         Populated by ``renderOrbitFlash`` in app.js when the user
-         toggles [ ORBIT ] on in the replay strip. Shows that day's
-         catapult settlement (single-lane ship_catapult + solar
-         jettison) per seat, each shipped parcel rendered with an
-         owner-coloured border and a vault-style hover tooltip. Click
-         the backdrop or press ESC to dismiss. -->
     <!-- v0.9.9 — HUD scoreboard. Permanent top-right fixture
          showing each seat's cumulative tier-multiplier shipped score.
          Reads ``cumulative_shipped_score`` from /status (live) and
@@ -1315,7 +1260,7 @@
     <!-- v0.9.11 — unified full-screen ORBIT REPORT shell. Hosts the
          two minimalist reports that map 1:1 to the night/orbit phase
          transitions: the PRE-ORBITAL RECAP (night chronicle + station
-         observations) and the POST-ORBITAL BRIEFING (catapults +
+         observations) and the POST-ORBITAL BRIEFING (what settled +
          post-settlement observations + per-player orbit log). The
          segmented header toggle flips between them for the current
          context day. Replaces the legacy ``#cc-orbit-flash`` modal +
@@ -1382,220 +1327,10 @@
       [ SEASON RESULTS ]
     </button>
 
-    <!-- v0.9.9 — Catapult submission mini-interface. Replaces the
-         legacy ``window.prompt`` pair (parcel count + fps) with a
-         3-column visual: clickable RED hoard pips populate a 4×5
-         catapult preview, max-fuel-per-slot stepper sits between.
-         Sits at body level (sibling of #cc-orbit-flash) so its
-         ``position: fixed`` is unaffected by any ancestor filter /
-         transform on #crt-viewport. -->
-    <div id="cc-cat-submit" class="cc-cat-submit" hidden aria-hidden="true">
-      <div class="cc-cat-submit-backdrop" id="cc-cat-submit-backdrop"></div>
-      <div
-        class="cc-cat-submit-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cc-cat-submit-title"
-      >
-        <header class="cc-cat-submit-head">
-          <span id="cc-cat-submit-title" class="cc-cat-submit-title">
-            SHIPPING CATAPULT &middot; submit
-          </span>
-          <span id="cc-cat-submit-sub" class="cc-cat-submit-sub dim">
-            click hoard pips to bid &middot; highest credit bids win the low-transit rows
-          </span>
-          <button
-            type="button"
-            id="cc-cat-submit-close"
-            class="cli-btn cc-cat-submit-close"
-            aria-label="Close catapult submit"
-          >[ &times; ]</button>
-        </header>
-        <div class="cc-cat-submit-body">
-          <div class="cc-cat-submit-col cc-cat-submit-col--hoard">
-            <div class="cc-cat-submit-col-head dim">// your RED hoard</div>
-            <div id="cc-cat-submit-hoard" class="cc-cat-submit-hoard"></div>
-            <div id="cc-cat-submit-hoard-empty" class="cc-cat-submit-hoard-empty dim" hidden>
-              // no RED parcels in hoard
-            </div>
-          </div>
-          <div class="cc-cat-submit-col cc-cat-submit-col--ctrl">
-            <div class="cc-cat-submit-col-head dim">// credits / parcel</div>
-            <div class="cc-cat-submit-fps">
-              <button
-                type="button"
-                class="cli-btn cc-cat-submit-fps-btn"
-                id="cc-cat-submit-fps-dec"
-                aria-label="Decrease credit bid per parcel"
-              >[ - ]</button>
-              <input
-                type="number"
-                id="cc-cat-submit-fps"
-                class="cc-cat-submit-fps-input"
-                min="0"
-                max="9999"
-                step="1"
-                value="25"
-              />
-              <button
-                type="button"
-                class="cli-btn cc-cat-submit-fps-btn"
-                id="cc-cat-submit-fps-inc"
-                aria-label="Increase credit bid per parcel"
-              >[ + ]</button>
-            </div>
-            <div class="cc-cat-submit-ramp dim" id="cc-cat-submit-ramp">
-              <div>row1 transit 10</div>
-              <div>row2 transit 25</div>
-              <div>row3 transit 50</div>
-              <div>row4 transit 100</div>
-            </div>
-            <div class="cc-cat-submit-meta">
-              <div>
-                <span class="dim">parcels</span>
-                <span id="cc-cat-submit-meta-slots">0</span>
-              </div>
-              <div>
-                <span class="dim">bid / parcel</span>
-                <span id="cc-cat-submit-meta-fps">0</span> cr
-              </div>
-              <div>
-                <span class="dim">credits cost</span>
-                <span id="cc-cat-submit-meta-cost">0</span> cr
-              </div>
-              <div class="cc-cat-submit-meta-total" title="Sum of (purity - row transit) x tier-multiplier for every selected parcel, IF it lands in the previewed row uncontested. Rivals' higher bids can push you into a harsher row.">
-                <span>TOTAL SCORE</span>
-                <span id="cc-cat-submit-meta-score">0</span> pts
-              </div>
-            </div>
-          </div>
-          <div class="cc-cat-submit-col cc-cat-submit-col--grid">
-            <div class="cc-cat-submit-col-head dim">// catapult preview</div>
-            <div id="cc-cat-submit-grid" class="cc-cat-grid cc-cat-grid--preview"></div>
-          </div>
-        </div>
-        <footer class="cc-cat-submit-foot">
-          <button
-            type="button"
-            id="cc-cat-submit-cancel"
-            class="cli-btn cc-cat-submit-cancel"
-          >[ cancel ]</button>
-          <button
-            type="button"
-            id="cc-cat-submit-ok"
-            class="cli-btn cli-btn-primary cc-cat-submit-ok"
-          >[ + queue ship_catapult ]</button>
-        </footer>
-      </div>
-    </div>
-
-    <!-- v0.9.x — GREEN CATAPULT flush dialog (RULEBOOK §4.5). Sibling
-         of the shipping catapult modal; reuses its frame/column CSS.
-         Green is a punishment to dispose: every undisposed vault-green
-         costs -100 at endgame. Slots cost RED purity, diminishing by
-         global draft position (cheaper when more houses flush together)
-         — the preview shows your SOLO best case. -->
-    <div id="cc-green-submit" class="cc-cat-submit cc-cat-submit--green" hidden aria-hidden="true">
-      <div class="cc-cat-submit-backdrop" id="cc-green-submit-backdrop"></div>
-      <div
-        class="cc-cat-submit-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cc-green-submit-title"
-      >
-        <header class="cc-cat-submit-head">
-          <span id="cc-green-submit-title" class="cc-cat-submit-title">
-            GREEN CATAPULT &middot; flush
-          </span>
-          <span id="cc-green-submit-sub" class="cc-cat-submit-sub dim">
-            click toxic parcels to flush &middot; commit RED fuel &middot; cheaper when houses flush together
-          </span>
-          <button
-            type="button"
-            id="cc-green-submit-close"
-            class="cli-btn cc-cat-submit-close"
-            aria-label="Close green catapult flush"
-          >[ &times; ]</button>
-        </header>
-        <div class="cc-cat-submit-body">
-          <div class="cc-cat-submit-col cc-cat-submit-col--hoard">
-            <div class="cc-cat-submit-col-head dim">// your GREEN hoard</div>
-            <div id="cc-green-submit-hoard" class="cc-cat-submit-hoard"></div>
-            <div id="cc-green-submit-hoard-empty" class="cc-cat-submit-hoard-empty dim" hidden>
-              // no GREEN parcels in hoard
-            </div>
-          </div>
-          <div class="cc-cat-submit-col cc-cat-submit-col--ctrl">
-            <div class="cc-cat-submit-col-head dim">// RED fuel committed</div>
-            <div class="cc-cat-submit-fps">
-              <button
-                type="button"
-                class="cli-btn cc-cat-submit-fps-btn"
-                id="cc-green-submit-fuel-dec"
-                aria-label="Decrease RED fuel"
-              >[ - ]</button>
-              <input
-                type="number"
-                id="cc-green-submit-fuel"
-                class="cc-cat-submit-fps-input"
-                min="0"
-                max="9999"
-                step="10"
-                value="50"
-              />
-              <button
-                type="button"
-                class="cli-btn cc-cat-submit-fps-btn"
-                id="cc-green-submit-fuel-inc"
-                aria-label="Increase RED fuel"
-              >[ + ]</button>
-            </div>
-            <div class="cc-cat-submit-ramp dim" id="cc-green-submit-ramp">
-              <div>slot1 cost 50</div>
-              <div>slot2 cost 45</div>
-              <div>&hellip; &minus;5 / slot</div>
-            </div>
-            <div class="cc-cat-submit-meta">
-              <div>
-                <span class="dim">flush</span>
-                <span id="cc-green-submit-meta-green">0</span>
-              </div>
-              <div>
-                <span class="dim">RED fuel</span>
-                <span id="cc-green-submit-meta-fuel">0</span>
-              </div>
-              <div>
-                <span class="dim">solo flush</span>
-                <span id="cc-green-submit-meta-flush">0</span>
-              </div>
-              <div class="cc-cat-submit-meta-total" title="Endgame penalty avoided: -100 score per vault-green you successfully flush. Costs shown are your SOLO best case; flushing alongside other houses gets cheaper.">
-                <span>PENALTY AVOIDED</span>
-                <span id="cc-green-submit-meta-penalty">0</span> pts
-              </div>
-            </div>
-          </div>
-          <div class="cc-cat-submit-col cc-cat-submit-col--grid">
-            <div class="cc-cat-submit-col-head dim">// flush preview (solo)</div>
-            <div id="cc-green-submit-grid" class="cc-cat-grid cc-cat-grid--preview cc-cat-grid--green"></div>
-          </div>
-        </div>
-        <footer class="cc-cat-submit-foot">
-          <button
-            type="button"
-            id="cc-green-submit-cancel"
-            class="cli-btn cc-cat-submit-cancel"
-          >[ cancel ]</button>
-          <button
-            type="button"
-            id="cc-green-submit-ok"
-            class="cli-btn cli-btn-primary cc-cat-submit-ok"
-          >[ + queue green flush ]</button>
-        </footer>
-      </div>
-    </div>
-
     <!-- REPAIR HARVESTER dialog — one damaged harvester per action.
-         Reuses the catapult frame/column CSS. -->
+         v1.13 — the last survivor of four sibling dialogs (ship / green
+         flush / refine went with their mechanics), so the shared
+         .cc-cat-submit frame CSS now exists solely for this one. -->
     <div id="cc-repair-submit" class="cc-cat-submit cc-cat-submit--repair" hidden aria-hidden="true">
       <div class="cc-cat-submit-backdrop" id="cc-repair-submit-backdrop"></div>
       <div
@@ -1664,91 +1399,6 @@
             class="cli-btn cli-btn-primary cc-cat-submit-ok"
             disabled
           >[ + queue repair ]</button>
-        </footer>
-      </div>
-    </div>
-
-    <!-- v0.9.x — REFINE dialog (RULEBOOK §4.3). Sibling of the catapult
-         composer; reuses its frame/column CSS. Pick up to 5 same-tier
-         RED parcels (trace or vein), pay BLUE per parcel, and preview
-         the promoted outputs + residual BEFORE committing. One grade
-         up only; outputs are locked from same-turn cascade. -->
-    <div id="cc-refine-submit" class="cc-cat-submit cc-cat-submit--refine" hidden aria-hidden="true">
-      <div class="cc-cat-submit-backdrop" id="cc-refine-submit-backdrop"></div>
-      <div
-        class="cc-cat-submit-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cc-refine-submit-title"
-      >
-        <header class="cc-cat-submit-head">
-          <span id="cc-refine-submit-title" class="cc-cat-submit-title">
-            REFINERY &middot; promote
-          </span>
-          <span id="cc-refine-submit-sub" class="cc-cat-submit-sub dim">
-            pick up to 5 same-tier RED parcels &middot; one grade up &middot; costs BLUE
-          </span>
-          <button
-            type="button"
-            id="cc-refine-submit-close"
-            class="cli-btn cc-cat-submit-close"
-            aria-label="Close refinery"
-          >[ &times; ]</button>
-        </header>
-        <div class="cc-cat-submit-body">
-          <div class="cc-cat-submit-col cc-cat-submit-col--hoard">
-            <div class="cc-cat-submit-col-head dim">// your RED hoard (trace/vein)</div>
-            <div id="cc-refine-submit-hoard" class="cc-cat-submit-hoard"></div>
-            <div id="cc-refine-submit-hoard-empty" class="cc-cat-submit-hoard-empty dim" hidden>
-              // no refinable RED parcels
-            </div>
-          </div>
-          <div class="cc-cat-submit-col cc-cat-submit-col--ctrl">
-            <div class="cc-cat-submit-col-head dim">// promotion</div>
-            <div class="cc-cat-submit-ramp dim" id="cc-refine-submit-ramp">
-              <div>trace &rarr; vein &middot; 10 blue/ea</div>
-              <div>vein &rarr; mass &middot; 20 blue/ea</div>
-              <div>max 5 inputs &middot; same tier</div>
-            </div>
-            <div class="cc-cat-submit-meta">
-              <div>
-                <span class="dim">inputs</span>
-                <span id="cc-refine-submit-meta-inputs">0</span>
-              </div>
-              <div>
-                <span class="dim">grade</span>
-                <span id="cc-refine-submit-meta-grade">&mdash;</span>
-              </div>
-              <div>
-                <span class="dim">blue cost</span>
-                <span id="cc-refine-submit-meta-cost">0</span>
-              </div>
-              <div>
-                <span class="dim">&Sigma; purity</span>
-                <span id="cc-refine-submit-meta-sum">0</span>
-              </div>
-              <div class="cc-cat-submit-meta-total" title="Output = floor(sum / M) full target-tier parcels at purity M, plus one residual parcel at sum mod M in the source tier.">
-                <span>OUTPUT</span>
-                <span id="cc-refine-submit-meta-out">&mdash;</span>
-              </div>
-            </div>
-          </div>
-          <div class="cc-cat-submit-col cc-cat-submit-col--grid">
-            <div class="cc-cat-submit-col-head dim">// output preview</div>
-            <div id="cc-refine-submit-grid" class="cc-cat-grid cc-cat-grid--preview cc-cat-grid--refine"></div>
-          </div>
-        </div>
-        <footer class="cc-cat-submit-foot">
-          <button
-            type="button"
-            id="cc-refine-submit-cancel"
-            class="cli-btn cc-cat-submit-cancel"
-          >[ cancel ]</button>
-          <button
-            type="button"
-            id="cc-refine-submit-ok"
-            class="cli-btn cli-btn-primary cc-cat-submit-ok"
-          >[ + queue refine ]</button>
         </footer>
       </div>
     </div>

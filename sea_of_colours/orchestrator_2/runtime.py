@@ -13,9 +13,10 @@ five things, in order:
    the heuristic so the night still resolves.
 6. Writes one row to ``SOC_AGENT_INVOCATION`` and returns the envelope.
 
-Nothing in this module names a specific agent. ``PILOT_V2`` is not
-mentioned; ``RED_HARVEST`` only as the fallback. Every other agent
-identity lives in the binding registry or inside a harness.
+Nothing in this module names a specific agent — ``RED_HARVEST``
+appears only as the fallback. Every other agent identity lives in the
+binding registry or inside a harness, which is what lets a hackathon
+fork drop in without touching this file.
 """
 
 from __future__ import annotations
@@ -58,55 +59,32 @@ def _heuristic_fallback(
 ) -> Dict[str, Any]:
     """Land a policy when Cortex / a harness didn't submit.
 
-    v0.9.27 — Try the harness's compiled ``candidates.recommended_policy``
-    FIRST. It's the harness's own best-guess plan, already legal and
-    tuned for RED-seeking (drop_blocks routed first, top harvest per
-    harvester, balanced probes, supersede when juicy). Only if that
-    compile fails or emits an empty queue do we drop to the legacy
-    RED_HARVEST heuristic, which biases toward BLUE topup on failure —
-    a worse plan than the harness's recommended composition.
+    v0.9.27 tried the harness's own compiled ``recommended_policy``
+    first, on the reasoning that a harness's best guess beats the legacy
+    heuristic (which biases toward BLUE topup on failure). That code
+    imported ``pilot_v2.candidates``.
+
+    v1.12 — ``pilot_v2`` was deleted with the rest of the R&D lineage, so
+    that import had been raising ``ModuleNotFoundError`` into a bare
+    ``except`` on every single fallback since. The "prefer the harness
+    plan" path was dead and nobody noticed, because the silent result is
+    just a slightly worse fallback policy. Removed rather than
+    re-pointed: V12 already has richer internal fallbacks (finisher
+    agent, then its own chain heuristic — see ``tabula_v12/harness.py``),
+    so by the time a turn reaches *this* function the harness itself is
+    unavailable or broken, and reaching back into harness code to
+    rescue it is what made the failure invisible in the first place.
     """
     agent_view = view.get("agent_view") or {}
 
-    # Try the harness's own recommended policy first.
-    recommended_moves = []
-    try:
-        from sea_of_colours.orchestrator_2.harnesses.pilot_v2.candidates import (
-            compile_candidates,
-        )
-        compiled = compile_candidates(agent_view) or {}
-        rec = ((compiled.get("candidates") or {}).get("recommended_policy") or {})
-        maybe = rec.get("moves") if isinstance(rec, dict) else None
-        if isinstance(maybe, list) and maybe:
-            recommended_moves = maybe
-    except Exception:
-        recommended_moves = []
-
-    if recommended_moves:
-        soc_engine.submit_policy(store, session_id, player, recommended_moves)
-        return {
-            "agent_id": HEURISTIC_AGENT_NAME,
-            "runtime": "heuristic_fallback",
-            "rationale": (
-                f"FALLBACK ({reason}) — used harness "
-                f"recommended_policy ({len(recommended_moves)} moves): "
-                f"drop_blocks routed first, top harvest per harvester, "
-                f"balanced probes."
-            ),
-            "moves_count": len(recommended_moves),
-            "ok": True,
-        }
-
-    # Second-line fallback: legacy RED_HARVEST heuristic. Only fires when
-    # the harness's own compile failed — genuinely rare.
     moves, rationale = _heuristic_plan_moves(agent_view)
     soc_engine.submit_policy(store, session_id, player, moves)
     return {
         "agent_id": HEURISTIC_AGENT_NAME,
         "runtime": "heuristic_fallback",
         "rationale": (
-            f"FALLBACK ({reason}) — recommended_policy empty; "
-            f"used RED_HARVEST heuristic: " + (rationale or "")
+            f"FALLBACK ({reason}) — used RED_HARVEST heuristic: "
+            + (rationale or "")
         ),
         "moves_count": len(moves),
         "ok": True,
@@ -128,8 +106,8 @@ def run_agent_turn(
     at orchestrator_2 by changing only the import.
 
     ``agent_label`` lets a caller pin the seat's binding from the game
-    config (``GameSession.agents``) — the live server passes
-    ``"pilot_v2"`` here so the harness is selected without env vars.
+    config (``GameSession.agents``) — the live server passes e.g.
+    ``"tabula_v12"`` here so the harness is selected without env vars.
     """
     started = time.time()
     view = soc_engine.get_view(store, session_id, player)
@@ -146,7 +124,7 @@ def run_agent_turn(
     # ── Orbit phase: binding-aware dispatch. ──────────────────────────
     #
     # v1.8 — orbit is no longer forced through the heuristic. When the
-    # seat's binding declares a harness (e.g. PILOT_V2), we route the
+    # seat's binding declares a harness (e.g. V12), we route the
     # orbit turn through it so the same Cortex agent that plays the
     # night also owns weapon purchases, harvester builds, refinement,
     # and shipping. The heuristic remains the fallback path for seats
@@ -204,7 +182,7 @@ def run_agent_turn(
             orbit_actions, rationale = plan_orbit_actions(agent_view)
             soc_engine.submit_orbit_actions(store, session_id, player, orbit_actions)
             ms_elapsed = int((time.time() - started) * 1000)
-            # Audit the miss so we can see PILOT_V2 was invoked but didn't submit.
+            # Audit the miss so we can see the harness was invoked but didn't submit.
             from sea_of_colours.orchestrator_2.dispatcher import DispatchResult
             fb_result = DispatchResult(
                 ok=False,

@@ -14,5 +14,5 @@ The returned dict is the audit envelope the orchestrator stamps into
 
 The orchestrator's dispatcher locates a harness via the binding
 ``locator`` string ``"<module_path>:<callable_name>"``, e.g.
-``"sea_of_colours.orchestrator_2.harnesses.pilot_v2.harness:run"``.
+``"sea_of_colours.orchestrator_2.harnesses.tabula_v12.harness:run"``.
 """

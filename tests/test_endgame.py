@@ -56,28 +56,31 @@ def test_new_session_assigns_bot_names() -> None:
 
 
 # ── Final settlement orbit ───────────────────────────────────────────
-def test_final_orbit_drops_build_actions_but_still_locks() -> None:
-    """Blocked actions are silently dropped (mirroring the greyed-out
-    buttons) so a bot/agent seat still locks and the orbit can resolve,
-    rather than deadlocking on a rejected submission."""
+def test_final_orbit_no_longer_restricts_what_you_may_buy() -> None:
+    """v1.13 — the final orbit used to drop everything except refine /
+    ship / green-flush, because those were the only things that still
+    mattered. All three are gone and settlement is automatic, so there
+    is nothing left to restrict: a seat may buy on the last orbit and
+    simply gets no value from it. Wasting your own credits is a legal
+    move, not an error."""
     sess = GameSession.new(20, 14, seed=11)
     sess.phase = Phase.ORBIT
     sess.final_orbit = True
 
-    # A pure build submission still locks — but with zero actions kept.
     ok, _ = sess.stash_orbit_actions("p1", [{"a": "build_harvester"}])
     assert ok
-    assert sess.pending_orbit_actions["p1"] == []
+    kept = sess.pending_orbit_actions["p1"]
+    assert len(kept) == 1 and kept[0].tag == "build_harvester"
 
-    # A mixed submission keeps only the allowed (refine) action.
     ok, _ = sess.stash_orbit_actions(
-        "p1", [{"a": "build_probe"}, {"a": "refine", "source_tier": "trace"}],
+        "p1", [{"a": "build_probe"}, {"a": "repair", "unit": "harvester_p1"}],
     )
     assert ok
-    kept = sess.pending_orbit_actions["p1"]
-    assert len(kept) == 1 and kept[0].tag == "refine"
+    assert [a.tag for a in sess.pending_orbit_actions["p1"]] == [
+        "build_probe", "repair",
+    ]
 
-    # Refine + empty are allowed outright.
+    # An empty submission still locks the seat so the orbit can resolve.
     ok, _ = sess.stash_orbit_actions("p2", [])
     assert ok
 

@@ -34,7 +34,7 @@ layer (hint compilers, sanitizer, wishlist, memory, weapon inference, recorder)
 by import. v10 stays frozen as the fallback champion. (v12 = native-thinking bet.)
 
 The CONTAINED TWO-CALL SPLIT (reasoning-first thinker -> moves-first mover,
-both on the inference API) is native and on by default; ``TABULA_V11_SINGLE=1``
+both on the inference API) is native and on by default; ``TABULA_V12_SINGLE=1``
 runs mover-only for an A/B.
 
 Flow per turn mirrors v10: close prior-day memory, snapshot, read memory, build

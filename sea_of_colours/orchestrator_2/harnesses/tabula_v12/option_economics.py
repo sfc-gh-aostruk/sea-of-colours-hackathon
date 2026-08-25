@@ -9,11 +9,13 @@ can carry them inline — making the menu the single source of truth:
   * WALK      — the ordered cells a harvester would drop on + step through.
   * YIELD     — expected score contribution, broken out by colour, using the
                 ENGINE's real scoring model (not the harness proxy):
-                  RED   score = max(0, purity - transit) x MULT[tier(purity)]
+                  RED   score = purity x MULT[tier(purity)]
                   BLUE  scores 0 (it is the fissile spend surface, not standings)
                   GREEN costs GREEN_ENDGAME_PENALTY (-100) per banked parcel
-                Transit is row-dependent (10/25/50/100) and unknown at night, so
-                we report the BEST-ROW (transit=10) upper bound and label it.
+                v1.13 — shipping is automatic and free, so a banked RED parcel
+                is worth exactly this. There is no longer a transit charge or a
+                catapult row to guess at, so the figure is exact rather than a
+                best-case upper bound.
   * CRUSH     — probe centres the maneuver lands on: YOUR probe (bad, lose your
                 own vision) vs an ENEMY probe (good, a supersede/denial).
   * COLLISION — how exposed the maneuver is to a rival crash, per the user's
@@ -47,10 +49,11 @@ RED_QUALITY_MULTIPLIER: Dict[str, float] = {
     "mass": 1.5,
     "pure": 3.0,
 }
-# Transit charge per catapult row (10/25/50/100). We cannot know which row a
-# parcel lands in at night, so the menu reports the BEST-ROW (cheapest) case as
-# the honest upper bound and labels it "best row".
-BEST_ROW_TRANSIT = 10
+# v1.13 — the catapult's four transit rows (10/25/50/100) are gone; every RED
+# parcel ships free at settlement. Kept at 0 rather than deleted because forks
+# of this harness reference it, and 0 makes the formula below read as the
+# identity it now is.
+BEST_ROW_TRANSIT = 0
 # Standing liability per undisposed vault-GREEN parcel.
 GREEN_ENDGAME_PENALTY = 100
 # Engine outing budget: a drop banks its own cell + up to 5 steps.
@@ -73,9 +76,9 @@ def _tier(purity: int) -> str:
 
 
 def _red_ship_points(purity: int) -> float:
-    """Best-row ship points for a RED cell of ``purity`` — the engine formula
-    ``max(0, purity - transit) x MULT[tier(purity)]`` with transit=best row.
-    Tier for the multiplier comes from the ORIGINAL purity, not post-transit."""
+    """Ship points for a RED cell of ``purity`` — the engine formula
+    ``purity x MULT[tier(purity)]`` (v1.13: no transit charge, so this is
+    exact rather than a best case)."""
     p = int(purity or 0)
     mult = RED_QUALITY_MULTIPLIER.get(_tier(p), 1.0)
     effective = max(0, p - BEST_ROW_TRANSIT)
@@ -299,7 +302,7 @@ def yield_breakdown(
     """Expected banked yield over ``cells``, broken out by colour.
 
     Returns:
-      red_pts        — best-row ship points from RED cells (float, rounded int)
+      red_pts        — ship points from RED cells (float, rounded int)
       red_tiers      — {tier: count} of harvested RED cells
       blue_fissile   — summed BLUE purity (fissile budget; 0 score)
       green_penalty  — -100 per harvested GREEN cell (negative int)

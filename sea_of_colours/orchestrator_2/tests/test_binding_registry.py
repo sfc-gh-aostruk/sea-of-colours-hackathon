@@ -3,7 +3,7 @@
 Pins:
 1. The default with nothing set is heuristic.
 2. SOC_BINDING_<player> env vars are honoured.
-3. KNOWN_AGENT_BINDINGS maps SOC_CORTEX_AGENT correctly for PILOT_V2.
+3. KNOWN_AGENT_BINDINGS maps SOC_CORTEX_AGENT correctly for V12.
 4. Unknown SOC_CORTEX_AGENT names with runtime_override="cortex"
    produce a bare cortex_agent binding.
 5. Heuristic override short-circuits everything.
@@ -35,15 +35,28 @@ def test_default_resolves_to_heuristic():
 
 
 def test_env_per_player_override_parses(monkeypatch):
+    """v1.12 — a harness locator survives the env round-trip.
+
+    The old parser split on colons, so ``my_mod.path:run`` came back as
+    locator ``my_mod.path`` with the label ``run``: the import failed and
+    the seat silently fell back to the heuristic. The label separator is
+    now ``#``, leaving the locator intact.
+    """
     monkeypatch.setenv(
         "SOC_BINDING_P1",
-        "harness_in_process:my_mod.path:run:MY_LABEL",
+        "harness_in_process:my_mod.path:run#MY_LABEL",
     )
     b = br.resolve_binding(store=None, session_id="s", player="p1")
     assert b.kind == "harness_in_process"
-    # The locator is everything between the first and last colon (locator + label allowed via 3-part).
-    assert b.locator == "my_mod.path"
-    assert b.agent_label == "run:MY_LABEL"
+    assert b.locator == "my_mod.path:run"
+    assert b.agent_label == "MY_LABEL"
+
+
+def test_env_per_player_override_without_label(monkeypatch):
+    monkeypatch.setenv("SOC_BINDING_P2", "harness_in_process:my_mod.path:run")
+    b = br.resolve_binding(store=None, session_id="s", player="p2")
+    assert b.locator == "my_mod.path:run"
+    assert b.agent_label is None
 
 
 def test_known_agent_maps_v12(monkeypatch):
@@ -55,13 +68,41 @@ def test_known_agent_maps_v12(monkeypatch):
 
 
 def test_retired_harness_labels_no_longer_resolve(monkeypatch):
-    """The R&D lineage (pilot_v2..v4, tabula_v2..v11) was deleted. Their
-    labels must not silently resolve to anything."""
+    """The R&D lineage (the pilot_* and tabula_v2..v11 agents) was
+    deleted. Their labels must not silently resolve to anything."""
     for name in ("SOC_RED_REAPER_PILOT_V2", "SOC_RED_REAPER_TABULA_V9"):
         monkeypatch.setenv("SOC_CORTEX_AGENT", name)
         b = br.resolve_binding(store=None, session_id="s", player="p1")
         assert b.kind == "heuristic", f"{name} should not resolve to a harness"
-    assert set(br.AGENT_LABEL_BINDINGS) == {"tabula_v12", "red_harvest_lite"}
+
+
+def test_shipped_roster_is_exactly_the_documented_four():
+    """The roster is the New Game dropdown (served at /api/meta/agents),
+    so an accidental addition ships a selectable agent to players.
+
+    Hackathon forks land here too — if this fails on your machine because
+    you ran scripts/new_agent.py, that is the test working."""
+    assert set(br.AGENT_LABEL_BINDINGS) == {
+        "human", "red_harvest", "red_harvest_lite", "tabula_v12",
+    }
+
+
+def test_human_is_listed_but_never_dispatched():
+    """``human`` is in the roster so the menu can be built from one list,
+    but resolving it must not hand the dispatcher a kind it cannot route."""
+    b = br.resolve_binding(store=None, session_id="s", player="p1",
+                           agent_label="human")
+    assert b.kind == "heuristic"
+
+
+def test_selectable_agents_matches_the_registry():
+    roster = br.selectable_agents()
+    assert [a["value"] for a in roster] == [
+        k for k, v in br.AGENT_LABEL_BINDINGS.items() if v.menu_label
+    ]
+    assert all(a["label"] for a in roster), "every listed agent needs a menu label"
+    # Only V12 needs credentials today; a heuristic must never demand a PAT.
+    assert {a["value"] for a in roster if a["needs_llm"]} == {"tabula_v12"}
 
 
 def test_unknown_cortex_agent_with_override_becomes_bare(monkeypatch):

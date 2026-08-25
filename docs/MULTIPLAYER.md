@@ -6,10 +6,13 @@ see the [README](../README.md) and [RULEBOOK.md](../RULEBOOK.md).
 
 ## TL;DR
 
-1. Start the server (single worker, Snowflake backend):
+1. Start the server (single worker, backend pinned so it doesn't
+   auto-detect into something you didn't intend mid-party):
    ```bash
-   PYTHONPATH=. SOC_BACKEND=snowflake uvicorn server.app:app --host 0.0.0.0 --port 8000
+   PYTHONPATH=. SOC_BACKEND=memory uvicorn server.app:app --host 0.0.0.0 --port 8000
    ```
+   Use `SOC_BACKEND=snowflake` instead if you want the match to survive a
+   server restart — that needs the schema deployed first.
 2. Start a tunnel and copy the public URL it prints:
    ```bash
    cloudflared tunnel --url http://localhost:8000
@@ -20,6 +23,16 @@ see the [README](../README.md) and [RULEBOOK.md](../RULEBOOK.md).
    modal pops up with a **scannable QR + link per seat**.
 5. Scan `p2`'s QR on the phone (works on cellular or any network). Both clients
    land in the same game and sync every 2.5s.
+
+## Seat links live at `/play`, not `/`
+
+A seat link is `http://<host>/play?session=<id>&player=p2`. The `/play`
+matters: `/` is the title screen and has no session-loading code, so a
+link pointed there silently opens the title screen instead of the game.
+Until v1.12 the LAN invite QR codes did exactly that — `fetchLanOrigin()`
+returns a bare origin whose path is `/`, so every QR a phone scanned on
+the same Wi-Fi landed on the title screen. Generation now pins `/play`,
+and `/` redirects when it sees a `?session=`, so older links still work.
 
 ## Why open the laptop on the tunnel URL (the key gotcha)
 
@@ -57,7 +70,16 @@ For phone-next-to-laptop with no tunnel:
 
 ## Mobile interface notes
 
-- The phone client is the same SPA; a `?player=pN` link boots it into a
+> ⚠️ **`/mobile` is known broken and should not be relied on.** There are
+> two mobile implementations in the tree: the main SPA (`/play`), which
+> is responsive and implements everything described below, and
+> `server/static/mobile.html` (`/mobile`), a 953-line standalone fork
+> that has not been touched since the initial commit while `app.js` moved
+> on. The invite modal still offers a `/mobile` QR alongside the normal
+> one — ignore it and use the `/play` link, which works on a phone.
+> Retiring `/mobile` is tracked in the build plan.
+
+- The phone client is the main SPA; a `?player=pN` link boots it into a
   playable, fog-of-war seat (not the read-only watcher).
 - **Map**: one-finger drag pans, two-finger pinch zooms, tap a cell to deploy.
   A tap-vs-drag guard stops a pan/pinch from firing a stray order.

@@ -54,11 +54,13 @@ TILES:
     weapons + repairs). BLUE cells can be stepped on and picked up like RED.
 - GREEN: a HAZARD, not a prize. Dropping onto or stepping onto GREEN
     auto-harvests a GREEN parcel into your hold (the cell becomes EMPTY).
-    It does NOT destroy the harvester, but every green parcel still in
-    your hoard at season end costs -100 pts (GREEN_ENDGAME_PENALTY), and
-    the only disposal path is the orbit-phase green catapult (§4.5),
-    which some harness configs stub out. Treat GREEN as poison: never
-    route a drop or a step onto a GREEN cell.
+    It does NOT destroy the harvester, but every green parcel costs a
+    flat -100 pts (GREEN_ENDGAME_PENALTY), charged automatically at the
+    next orbit settlement (v1.13) and unavoidable — there is no disposal
+    action to spend, no fuel to pay, and nothing you can do afterwards
+    to dodge it. The penalty does NOT scale with purity: a green 255 and
+    a green 3 both cost exactly 100. Treat GREEN as poison: the only
+    defence is never routing a drop or a step onto a GREEN cell.
 - synthetic_green (sg): a cell that was ALREADY HARVESTED becomes a
     GREEN(255) tile. It is the SAME hazard as natural GREEN, not
     "worthless empty ground": drop or step onto it and you auto-bank a

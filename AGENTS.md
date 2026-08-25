@@ -66,9 +66,14 @@ sea_of_colours/
   snowpark/      Storage-agnostic engine wrappers (engine.py) + backend.py + stores
   agent/         RED_HARVEST heuristic + Cortex AI agent runtime/invoker
   evals/         Scenario/eval harness
-  orchestrator_2/  Newer agent orchestration (pilot_v2 harness) — migration in progress
-    harnesses/tabula_v12/  current Red-Reaper agent — see its README.md, and
-                           ENGINE_INTERFACE.md for the engine boundary it must obey
+  orchestrator_2/  Agent orchestration + the plug-in contract — see its README.md
+    harnesses/tabula_v12/  V12 — the shipped LLM agent, and the one attendees
+                           fork. Its README.md is the fork guide (pipeline, the
+                           two deliberate gaps, where to change what);
+                           ENGINE_INTERFACE.md is the engine boundary a harness
+                           must obey. Fork it with scripts/new_agent.py; never
+                           edit it in place — it is the baseline forks are
+                           measured against.
 server/
   app.py         FastAPI thin proxy (/, /api/game/*); static mounted no-cache
   static/        Web UI — app.js, styles.css, station.js, index.html
@@ -132,9 +137,11 @@ Checklist for any rule/constant/formula change:
      `probe_lifetime_nights`) and `hud.season_day_cap` from the view instead of
      hardcoding, so future retunes don't require prompt edits.
 4. **Agent logic/heuristics that model the mechanic.** `agent/heuristic_agent.py`
-   and the `orchestrator_2/harnesses/pilot_v*` compilers must derive coverage /
+   and the `orchestrator_2/harnesses/tabula_v12/` compilers must derive coverage /
    caps / costs from the constant or `tuning.py` — never a hardcoded copy
-   (e.g. `_fog_yield` reads `probe_vision_radius()`).
+   (e.g. `_fog_yield` reads `probe_vision_radius()`). Note that attendee forks
+   copy V12 wholesale, so a hardcoded literal you leave here gets replicated
+   into every fork in the room and can't be fixed centrally.
 4b. **Onboarding surfaces.** `guide/index.html` and `manual/` restate
  rules and numbers in prose an attendee reads *before* touching code —
  the place a stale value does the most damage. Grep both.

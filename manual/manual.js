@@ -7173,7 +7173,7 @@
   // Stages walk the full nomenclature + process:
   //   0 · NOX · 21 hours (mini-play: probe drop, harvest, vault fills)
   //   1 · AURORA (engine heat sweep — vault survives, planet doesn't)
-  //   2 · DAY · orbital · 3 actions (repair / refine / SHIP → +earth)
+  //   2 · DAY · orbital · buy freely, then auto-settle (SHIP → +earth)
   //   3 · VESPERA → new Nox (engine cool + refog + fresh drop)
   //   4 · SEASON · 7 nights + 7 days (zoom-out strip overlay)
   //   5 · FULL LOOP (compressed harvest→vault→ship pipeline)
@@ -7885,47 +7885,45 @@
         dur: 2200,
       },
 
-      // 2 · DAY · ORBITAL · 3 actions — the SHIP action fires a parcel
+      // 2 · DAY · ORBITAL — buy, then the vault settles itself (v1.13)
       {
         label: "2 · DAY · ORBITAL",
         body:
-          '<p>After Aurora comes <span class="kw">DAY</span> — 3 orbital actions. Repair equipment, refine RED, and <span class="kw">SHIP</span> parcels home to Earth.</p>' +
-          '<p>Only shipped parcels count as score. Everything else — planet, orbit — is either lost or in-flight.</p>',
+          '<p>After Aurora comes <span class="kw">DAY</span> — the shop. Spend credits on harvesters, probes and repairs; spend BLUE on weapons. There is no action limit: your wallet is the limit.</p>' +
+          '<p>Then the vault <span class="kw">settles itself</span>. Every RED parcel ships and scores — no bid, no slot, no action. Only shipped parcels count.</p>',
         cite: "§4 · orbital phase",
         settle: () => {
           stageEl.classList.remove("is-zoomed");
           stripOverlayEl.hidden = true;
-          setSticker("DAY 1 \u00b7 ORBITAL \u00b7 S1 REPAIR", "is-day");
-          phaseEl.textContent = "# Day 1 \u00b7 orbital \u00b7 3 actions";
+          setSticker("DAY 1 \u00b7 ORBITAL \u00b7 BUY", "is-day");
+          phaseEl.textContent = "# Day 1 \u00b7 orbital \u00b7 buy, then settle";
           statusEl.textContent = "# stage 2 \u00b7 day \u00b7 orbital";
         },
         animate: () => {
-          pushLog("stage", "DAY 1 opens \u00b7 3 orbital actions available");
-          // Slot 1: REPAIR — diamond pulse
+          pushLog("stage", "DAY 1 opens \u00b7 credits granted \u00b7 buy freely");
           timer(() => {
-            setSticker("DAY 1 \u00b7 ORBITAL \u00b7 S1 REPAIR", "is-day");
+            setSticker("DAY 1 \u00b7 ORBITAL \u00b7 REPAIR", "is-day");
             pulseStation();
-            pushLog("stage", "S1 \u00b7 REPAIR \u00b7 platform pulses");
+            pushLog("stage", "BUY \u00b7 REPAIR \u00b7 platform pulses");
           }, 200);
-          // Slot 2: REFINE
           timer(() => {
-            setSticker("DAY 1 \u00b7 ORBITAL \u00b7 S2 REFINE", "is-day");
+            setSticker("DAY 1 \u00b7 ORBITAL \u00b7 ARM", "is-day");
             pulseStation();
-            pushLog("stage", "S2 \u00b7 REFINE \u00b7 red processed");
+            pushLog("stage", "BUY \u00b7 WEAPONS \u00b7 blue spent");
           }, 1200);
-          // Slot 3: SHIP — parcel arcs from diamond to earth
+          // Settlement: the catapult loads whatever is in the vault and fires.
           timer(() => {
-            setSticker("DAY 1 \u00b7 ORBITAL \u00b7 S3 SHIP", "is-day");
+            setSticker("DAY 1 \u00b7 ORBITAL \u00b7 SETTLE", "is-day");
             pulseStation();
-            const parcels = Math.max(1, state.vault.length);
-            const nShip = Math.min(3, parcels);
+            // v1.13 — the whole vault goes, not a 3-slot allowance.
+            const nShip = Math.max(1, state.vault.length);
             for (let i = 0; i < nShip; i++) {
               timer(() => {
                 shipParcel(() => {
                   drainVaultOne();
                   tickEarthScore(1);
                 });
-                pushLog("aurora", `S3 \u00b7 SHIP \u00b7 parcel launched to Earth (${i + 1}/${nShip})`);
+                pushLog("aurora", `SETTLE \u00b7 parcel launched to Earth (${i + 1}/${nShip})`);
               }, i * 500);
             }
           }, 2400);
@@ -7979,7 +7977,7 @@
       {
         label: "4 · SEASON \u00b7 7 NIGHTS + 7 DAYS",
         body:
-          '<p>Zoom out: the game is <span class="kw">7 nights + 7 days</span>. Between each Nox comes an <span class="kw">Aurora</span> (surface burn), a <span class="kw">day</span> of 3 orbital actions, and a <span class="kw">Vespera</span> (dusk).</p>' +
+          '<p>Zoom out: the game is <span class="kw">7 nights + 7 days</span>. Between each Nox comes an <span class="kw">Aurora</span> (surface burn), a <span class="kw">day</span> of buying and automatic settlement, and a <span class="kw">Vespera</span> (dusk).</p>' +
           '<p>The season ends on <b>Day 7</b>. Highest EARTH score wins.</p>',
         cite: "§3.2 · season length",
         settle: () => {

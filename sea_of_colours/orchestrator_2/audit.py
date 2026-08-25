@@ -25,7 +25,7 @@ from sea_of_colours.snowpark import engine as soc_engine
 RATIONALE_CHAR_CAP = 2_000
 
 # Soft cap on the prompt-excerpt column so a 40KB STATE JSON doesn't
-# blow up the audit row. 32KB captures ~80% of a typical PILOT_V2
+# blow up the audit row. 32KB captures ~80% of a typical V12
 # prompt — enough to include world.grid PLUS the extras blocks
 # (candidates / combat / threat / memory_summary) that live at the
 # end of the STATE JSON. 8KB was too aggressive: it truncated inside
@@ -59,7 +59,7 @@ def write_invocation(
     timings.update(result.extras or {})
 
     # v0.9.27 — persist the prompt excerpt too. Harnesses that expose
-    # the built prompt via ``extras["prompt_excerpt"]`` (PILOT_V2 does)
+    # the built prompt via ``extras["prompt_excerpt"]`` (V12 does)
     # get their prompt captured in the audit row so we can debug what
     # the agent actually saw. Cap length so a 40KB brief doesn't blow
     # the row up.

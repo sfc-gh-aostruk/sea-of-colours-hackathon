@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from conftest import banked_parcels
+
 import pytest
 
 from sea_of_colours.game.entities import Entity
@@ -417,7 +419,7 @@ def test_v0_6_no_per_night_harvest_cap_hold_is_the_limit() -> None:
     assert converted == 6, (
         f"expected the 6-parcel hold to cap conversions at 6, got {converted}"
     )
-    assert len(sess.hoard_squares["p1"]) == 6
+    assert len(banked_parcels(sess, "p1")) == 6
     # Tiles past the hold cap were never reached — still RED.
     assert all(sess.grid[y][xx].tile == Tile.RED for xx in range(10, 15))
     # The deprecated per-night sentinel is unrelated to the hold cap.
@@ -477,7 +479,7 @@ def test_drop_then_steps_then_pickup_banks_into_hoard() -> None:
     assert sess.stash_policy("p1", moves)[0]
     assert sess.stash_policy("p2", [])[0]
     sess.maybe_resolve_if_ready()
-    assert len(sess.hoard_squares["p1"]) == 1
+    assert len(banked_parcels(sess, "p1")) == 1
     h = sess.entities["harvester_p1"]
     assert h.x is None and not h.cargo_squares
     assert not h.lost_last_night

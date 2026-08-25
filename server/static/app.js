@@ -720,14 +720,13 @@
   // Expose the viewer's TRUE current live vault to the orbital-station panel so
   // its LIVE view shows the real post-orbital hoard (not a stale replay-frame
   // reconstruction). Only MY_SEAT is known in live play (fog hides rivals).
+  // v1.13 — a straight passthrough now. This used to overlay the queued
+  // refine's optimistic outcome, because refining was the one orbit
+  // action that rewrote the vault before commit. Nothing left in the
+  // queue touches the hoard, so the live reading is always the truth.
   window._socLiveInventory = (seat) => {
     if (seat !== MY_SEAT || !lastLiveInventory) return null;
-    // Reflect any queued (uncommitted) refine optimistically so the orbital
-    // vault shows the pending outcome (byproducts gone, refined cell minted).
-    const base = Array.isArray(lastLiveInventory.hoard)
-      ? lastLiveInventory.hoard : [];
-    const eff = applyPendingRefines(base);
-    return eff === base ? lastLiveInventory : { ...lastLiveInventory, hoard: eff };
+    return lastLiveInventory;
   };
   // v1.9 (bug #10) — one-shot consistency audit for the vault surfaces. Compares,
   // per active seat, the VAULT-tab reading, the ORBITAL-station diamond's working
@@ -795,7 +794,7 @@
    *  in the solo human-vs-agent flow. */
   let _slowBotGame = false;
   /** v1.11 — what the committed wait frame is waiting on, so the ticker can
-   *  paint a live "waiting on PILOT_V2 · Ns / ~80s" headline. */
+   *  paint a live "waiting on V12 · Ns / ~80s" headline. */
   let _waitTicker = null;
   let _waitAgent = /** @type {any} */ (null); // {agent, seat, baseMs, capMs}
   let _waitHumans = /** @type {string[]} */ ([]);
@@ -1194,7 +1193,7 @@
         ? [
             { at:  300, sig: "syn:hydrate", tag: "soc",   msg: "hydrating session blob",        kind: "info" },
             { at:  800, sig: "syn:bots",    tag: "bots",  msg: "bots plotting orbit playbook",  kind: "info", headline: "[ %s BOTS ON ORBIT %s ]" },
-            { at: 1300, sig: "syn:res",     tag: "rdv",   msg: "settling catapult + refinery",  kind: "info", headline: "[ %s SETTLING ORBIT %s ]" },
+            { at: 1300, sig: "syn:res",     tag: "rdv",   msg: "settling vault \u2014 shipping + disposal",  kind: "info", headline: "[ %s SETTLING ORBIT %s ]" },
             { at: 1800, sig: "syn:save",    tag: "io",    msg: "writing to praxis ledgers",     kind: "info", headline: "[ %s WRITING / PRAXIS %s ]" },
             { at: 3500, sig: "syn:wait",    tag: "io",    msg: "syncing entity + grid state",   kind: "info" },
             { at: 6000, sig: "syn:longer",  tag: "io",    msg: "warehouse cold start? hold on…", kind: "warn" },
@@ -2775,99 +2774,8 @@
    * that sit below the vault mosaic.
    * @param {any} inv
    */
-  /* ── Pending-refine optimistic preview ───────────────────────────────
-   * When a refine is queued (but not yet committed), the vault tab, the
-   * ship/refine composers and the orbital-station vault all show its
-   * OUTCOME optimistically: the consumed input parcels vanish and a
-   * "pending" refined parcel (white border in the tab) appears in their
-   * place. Pending parcels are display-only — they aren't in the real
-   * hoard, so the composers never offer them (no same-turn ship / re-refine,
-   * which the engine forbids anyway). Everything reverts if the refine is
-   * dropped from the queue, and commit replaces it with the real result. */
-
   function _parcelIdOf(p) {
     return String((p && (p.square_id || p.site_id)) || "");
-  }
-
-  // Resolve the queued refines against the live hoard IN ORDER, so each
-  // action consumes only parcels still available (handles multiple refines
-  // and the "refine all <tier>" variant without double-counting).
-  function _computePendingRefine() {
-    const consumedIds = new Set();
-    const outputs = [];
-    const hoard =
-      lastLiveInventory && Array.isArray(lastLiveInventory.hoard)
-        ? lastLiveInventory.hoard
-        : [];
-    if (!hoard.length || !Array.isArray(orbitQueue) || !orbitQueue.length) {
-      return { consumedIds, outputs };
-    }
-    const cfg = _refineCfg();
-    const purOf = (p) =>
-      Number(p?.purity_at_harvest ?? p?.origin_purity ?? p?.purity ?? 0);
-    const isRed = (p) =>
-      Number(p?.tile_at_harvest ?? p?.origin_tile ?? -1) === 2;
-    const avail = () => hoard.filter((p) => !consumedIds.has(_parcelIdOf(p)));
-    let seq = 0;
-    for (const a of orbitQueue) {
-      if (!a || a.a !== "refine") continue;
-      let inputs = [];
-      if (Array.isArray(a.inputs) && a.inputs.length) {
-        const want = new Set(a.inputs.map(String));
-        inputs = avail().filter((p) => want.has(_parcelIdOf(p)));
-      } else if (a.source_tier) {
-        inputs = avail().filter(
-          (p) => isRed(p) && _catSubmitTierClass(purOf(p)) === a.source_tier,
-        );
-      }
-      if (!inputs.length) continue;
-      for (const p of inputs) consumedIds.add(_parcelIdOf(p));
-      const tier = a.source_tier || _catSubmitTierClass(purOf(inputs[0]));
-      if (tier !== "trace" && tier !== "vein") continue;
-      const S = inputs.reduce((s, p) => s + purOf(p), 0);
-      const M = Number(cfg.M[tier]) || 0;
-      const target = tier === "trace" ? "vein" : "mass";
-      const outFull = M > 0 ? Math.floor(S / M) : 0;
-      const residual = M > 0 ? S % M : 0;
-      for (let i = 0; i < outFull; i++)
-        outputs.push(_mkPendingParcel(M, target, false, seq++));
-      if (residual > 0) outputs.push(_mkPendingParcel(residual, tier, true, seq++));
-    }
-    return { consumedIds, outputs };
-  }
-
-  function _mkPendingParcel(purity, tier, residual, seq) {
-    const p = Math.max(0, Math.min(255, Number(purity) || 0));
-    return {
-      square_id: `pending-refine-${seq}`,
-      tile_at_harvest: 2,
-      origin_tile: 2,
-      purity_at_harvest: p,
-      origin_purity: p,
-      purity: p,
-      paint: computeParcelPaintFallback(2, p),
-      _pending: true,
-      _pendingKind: "refine",
-      _pendingTier: tier,
-      _pendingResidual: !!residual,
-    };
-  }
-
-  // Ids of every real parcel consumed by the queued refines.
-  function pendingRefineConsumedIds() {
-    return _computePendingRefine().consumedIds;
-  }
-
-  // Apply the queued refines to a base hoard array: drop consumed inputs,
-  // append the pending outputs. Returns the base array unchanged when there's
-  // nothing pending (so callers can cheaply detect "no preview").
-  function applyPendingRefines(baseHoard) {
-    if (!Array.isArray(baseHoard)) return baseHoard;
-    const { consumedIds, outputs } = _computePendingRefine();
-    if (!consumedIds.size && !outputs.length) return baseHoard;
-    return baseHoard
-      .filter((p) => !consumedIds.has(_parcelIdOf(p)))
-      .concat(outputs);
   }
 
   /**
@@ -2878,10 +2786,7 @@
    *   the single-seat ``inv.shipped``. The hoard grid stays per-seat.
    */
   function renderVault(inv, shippedOverride) {
-    let hoard = inv && Array.isArray(inv.hoard) ? inv.hoard : [];
-    // Optimistic pending-refine preview — only for the LIVE self hoard
-    // (object identity guards out replay reconstructions and rival views).
-    if (inv && inv === lastLiveInventory) hoard = applyPendingRefines(hoard);
+    const hoard = inv && Array.isArray(inv.hoard) ? inv.hoard : [];
     const cap = Number(inv && inv.hoard_capacity) || HOARD_CAP_FALLBACK;
     const allPlayersShipped = Array.isArray(shippedOverride);
     const shipped = allPlayersShipped
@@ -2906,11 +2811,11 @@
         ccTabVaultMeta.classList.add("cc-tab-meta--full");
         ccTabVaultMeta.title =
           `VAULT FULL (${used}/${cap}) — new squares displace the lowest-tier ` +
-          `parcel (RULEBOOK §3.14). Ship or refine to free slots.`;
+          `parcel (RULEBOOK \u00A73.14). The vault empties itself at the next orbit \u2014 this only bites if you overfill it tonight.`;
       } else if (cap > 0 && used >= Math.ceil(cap * 0.9)) {
         ccTabVaultMeta.classList.add("cc-tab-meta--warn");
         ccTabVaultMeta.title =
-          `VAULT NEARLY FULL (${used}/${cap}) — ship or refine soon; ` +
+          `VAULT NEARLY FULL (${used}/${cap}) — it clears at the next orbit; ` +
           `overflow displaces the lowest tier.`;
       } else {
         ccTabVaultMeta.title = "";
@@ -6057,31 +5962,6 @@
       }
       case "repair":
         return `repair ${a.unit || "?"} (500c)`;
-      case "refine":
-        if (a.source_tier === "trace") return "refine all trace \u2192 vein";
-        if (a.source_tier === "vein") return "refine all vein \u2192 mass";
-        return `refine [${(a.inputs || []).length} parcels]`;
-      case "refine_cascade":
-        return `refinery run \u2192 ${a.target_tier || "mass"} (all RED)`;
-      case "ship_catapult": {
-        if (a.auto) {
-          const cr = Math.max(0, Number(a.credits) || 0);
-          const cnt = Math.max(0, Number(a.count) || 0);
-          return `auto-ship ${cnt > 0 ? `best ${cnt}` : "best RED"} \u00B7 ${cr}cr/parcel`;
-        }
-        const bids = Array.isArray(a.bids) ? a.bids : [];
-        const n = bids.length || Math.max(0, Number(a.parcels || 0));
-        const cr = bids.reduce(
-          (s, b) => s + Math.max(0, Number(b?.credits) || 0),
-          0,
-        );
-        return `catapult \u00D7${n} \u00B7 ${cr}cr bid`;
-      }
-      case "solar_jettison": {
-        const g = Math.max(0, Number(a.green_parcels || 0));
-        const r = Math.max(0, Number(a.red_fuel ?? a.max_red_burn ?? 0));
-        return `green flush \u00D7${g} \u00B7 ${r} RED fuel`;
-      }
       // v0.9.3 — three build-weapons actions. Each enqueues the
       // batch count + the per-unit blue+credit cost so the seat can
       // eyeball the wallet hit before TRANSMIT.
@@ -6103,21 +5983,15 @@
   }
 
   /** v1.2 — per-action wallet cost (credits + blue), mirroring the
-   *  engine's declared-order locking model (RULEBOOK §4.3). A
-   *  ``ship_catapult`` action carries its per-parcel credit bids in
-   *  ``parcelBids`` so the projector can apply them sequentially —
-   *  shipping until the wallet runs dry — exactly like
-   *  ``OrbitResolver._commit_ship_bid``. Prices come off the live
-   *  ``ship_prices`` block when present, falling back to the canonical
-   *  constants. */
+   *  engine's declared-order locking model (RULEBOOK §4.3). Prices come
+   *  off the live ``ship_prices`` block when present, falling back to
+   *  the canonical constants. */
   function orbitActionCost(a) {
     const prices = (lastOrbitView && lastOrbitView.ship_prices) || {};
     const HARV = Number(prices.harvester_build ?? 1500);
     const PROBE = Number(prices.probe_build ?? 250);
     const REPAIR = Number(prices.repair ?? 500);
-    const refineBlue =
-      (prices.refine && prices.refine.blue_cost) || { trace: 10, vein: 20 };
-    const out = { cr: 0, blue: 0, parcelBids: null };
+    const out = { cr: 0, blue: 0 };
     if (!a || typeof a !== "object") return out;
     switch (a.a) {
       case "build_harvester":
@@ -6152,37 +6026,69 @@
         out.blue = 255 * n;
         break;
       }
-      case "ship_catapult": {
-        const bids = Array.isArray(a.bids) ? a.bids : [];
-        out.parcelBids = bids.map((b) => Math.max(0, Number(b?.credits) || 0));
-        out.cr = out.parcelBids.reduce((s, c) => s + c, 0);
-        break;
-      }
-      case "refine": {
-        // Blue is charged per input parcel by source tier. The
-        // "refine all <tier>" variant's count is the live tier total;
-        // the explicit-inputs variant doesn't carry per-parcel tiers
-        // here, so we best-effort to 0 blue for it.
-        const tc = (lastOrbitView && lastOrbitView.tier_counts) || {};
-        const tier = a.source_tier;
-        if (tier) {
-          out.blue = Number(refineBlue[tier] || 0) * Number(tc[tier] || 0);
-        }
-        break;
-      }
       default:
         break;
     }
     return out;
   }
 
+  /** v1.13 — "what your vault does when you hit TRANSMIT".
+   *
+   *  Settlement is automatic, so the orbit panel has no control for it —
+   *  but a player still needs to see it coming, especially the green
+   *  penalty, which is the only way the board takes points off you.
+   *  Reads the same view fields the panel readouts already use, and
+   *  prices RED off ``ship_prices.quality_mult`` so a retune of the tier
+   *  multipliers doesn't need a change here. */
+  function _updateSettlementPreview(orbitView, tierCounts) {
+    const redEl = document.getElementById("cc-settle-red");
+    const greenEl = document.getElementById("cc-settle-green");
+    if (!redEl && !greenEl) return;
+    const mult = (orbitView && orbitView.ship_prices
+      && orbitView.ship_prices.quality_mult)
+      || window.__SOC_QUALITY_MULT__
+      || { trace: 0.75, vein: 1.0, mass: 1.5, pure: 3.0 };
+    if (redEl) {
+      const tc = tierCounts || {};
+      const n = ["trace", "vein", "mass", "pure"]
+        .reduce((s, k) => s + (Number(tc[k]) || 0), 0);
+      if (!n) {
+        redEl.textContent = "no RED to ship";
+        redEl.classList.add("dim");
+      } else {
+        // Purity isn't broken down per tier in the view, so quote the
+        // spread of multipliers in play rather than inventing a total
+        // the settlement might not match.
+        const best = ["pure", "mass", "vein", "trace"]
+          .find((k) => Number(tc[k]) > 0);
+        redEl.textContent =
+          `${n} RED ship for score \u00B7 best tier ${best} \u00D7${mult[best] ?? 1}`;
+        redEl.classList.remove("dim");
+      }
+    }
+    if (greenEl) {
+      const g = Number(orbitView && orbitView.green_owned_count) || 0;
+      const per = Number(
+        (orbitView && orbitView.settlement
+          && orbitView.settlement.green_penalty) ?? 100,
+      );
+      if (!g) {
+        greenEl.textContent = "no GREEN to dump";
+        greenEl.classList.add("dim");
+      } else {
+        greenEl.textContent = `${g} GREEN dumped \u00B7 \u2212${g * per} score`;
+        greenEl.classList.remove("dim");
+      }
+    }
+  }
+
   /** v1.2 — simulate the engine's declared-order locking over the
    *  queued orbit actions to project the seat's end-of-turn wallet
-   *  (credits + blue). Build / repair / refine debit atomically (an
-   *  unaffordable one is rejected whole); a ship bid fills parcel by
-   *  parcel until the credits run out. Returns the running remainder,
-   *  the total over-spend, and a per-row flag array so the queue can
-   *  mark dropped / partially-filled orders. */
+   *  (credits + blue). Build and repair debit atomically (an
+   *  unaffordable one is rejected whole); a batched build fills unit by
+   *  unit until the credits run out. Returns the running remainder, the
+   *  total over-spend, and a per-row flag array so the queue can mark
+   *  dropped / partially-filled orders. */
   function projectOrbitBudget() {
     const startCr = Math.max(0, Number(lastOrbitView?.credits ?? 0));
     const startBlue = Math.max(0, Number(lastOrbitView?.blue_purity_total ?? 0));
@@ -6193,25 +6099,7 @@
     const flags = [];
     orbitQueue.forEach((a, ix) => {
       const cost = orbitActionCost(a);
-      if (Array.isArray(cost.parcelBids)) {
-        let shipped = 0;
-        let dropped = 0;
-        for (const c of cost.parcelBids) {
-          if (cr >= c) {
-            cr -= c;
-            shipped += 1;
-          } else {
-            dropped += 1;
-            overCr += c;
-          }
-        }
-        flags[ix] = dropped > 0
-          ? {
-              kind: "partial",
-              note: `ships ${shipped}/${shipped + dropped} · ${dropped} unaffordable`,
-            }
-          : null;
-      } else if (cost.units && cost.units.count > 1) {
+      if (cost.units && cost.units.count > 1) {
         // v1.2 — uniform-unit build (probes): buy as many as the wallet
         // covers, mirroring the engine's partial fill. A trimmed order
         // is flagged "partial" (not dropped) unless ZERO units fit.
@@ -6330,13 +6218,13 @@
       updateOrbitBudgetProjection(proj);
     }
     if (!orbitQueue.length) updateOrbitBudgetProjection();
+    // v1.13 — bare count, not "n/3". The action cap is gone; credits are
+    // the limit, and the budget projection above already shows those.
     const n = orbitQueue.length;
-    const _cap = orbitActionCap();
-    if (orbitQueueCount) orbitQueueCount.textContent = `${n}/${_cap}`;
-    if (orbitTabMeta) orbitTabMeta.textContent = `${n}/${_cap}`;
-    // Refresh the optimistic pending-refine preview across the vault tab and
-    // the orbital-station vault whenever the queue changes (add / remove /
-    // clear). Skip in replay — the queue is a live-only concept.
+    if (orbitQueueCount) orbitQueueCount.textContent = `${n}`;
+    if (orbitTabMeta) orbitTabMeta.textContent = `${n}`;
+    // Keep the orbital-station vault in step with the queue. Skip in
+    // replay — the queue is a live-only concept.
     if (mainMapSource !== "replay") {
       try { repaintVaultForActiveSeat(); } catch (_e) { /* non-fatal */ }
       try {
@@ -6352,21 +6240,17 @@
     renderOrbitQueue();
   }
 
-  /** v1.7 — effective per-orbit action cap. Normally MAX_ORBIT_ACTIONS (3),
-   *  but the terminal "Final Refinery" orbit lifts it (RULEBOOK §4.3.1); the
-   *  engine surfaces the live value on ``orbit.actions_max``. */
-  function orbitActionCap() {
-    const m = Number(lastOrbitView && lastOrbitView.actions_max);
-    return Number.isFinite(m) && m > 0 ? m : 3;
-  }
   function isFinalOrbitView() {
     return !!(lastOrbitView && lastOrbitView.final_orbit);
   }
 
-  /** Build an Orbit action dict from the toolbar button. Some actions
-   *  need follow-up prompts; we keep this minimal and lean on
-   *  ``window.prompt`` for parcel ids / fuel values so the panel
-   *  doesn't need a six-modal sidebar before the user can play. */
+  /** Build an Orbit action dict from the toolbar button.
+   *
+   *  v1.13 — every action left here is a purchase, so all but ``repair``
+   *  resolve synchronously off the button. Repair still opens a picker
+   *  because it needs a unit id; it is the last of what were once four
+   *  composer dialogs (ship / green flush / refine went with their
+   *  mechanics). */
   function makeOrbitActionFromButton(kind) {
     switch (kind) {
       case "build_harvester":
@@ -6385,50 +6269,6 @@
       }
       case "repair": {
         openRepairSubmit();
-        return null;
-      }
-      case "refine_trace":
-        return { a: "refine", source_tier: "trace" };
-      case "refine_vein":
-        return { a: "refine", source_tier: "vein" };
-      case "refine_pick": {
-        // v0.9.x — vault-style refine composer (preview outputs + blue
-        // cost before committing). Returns null; the modal pushes
-        // ``{a:"refine", inputs:[ids]}`` on confirm.
-        openRefineSubmit();
-        return null;
-      }
-      case "refine": {
-        // Legacy expert-mode prompt (kept for backwards compatibility
-        // with any external automations that still hit it).
-        const raw = window.prompt(
-          "Refine input parcel ids (comma-separated). They must share the same tier (trace or vein).",
-          "",
-        );
-        if (!raw) return null;
-        const ids = String(raw).split(",").map((s) => s.trim()).filter(Boolean);
-        if (!ids.length) return null;
-        return { a: "refine", inputs: ids };
-      }
-      case "ship_catapult": {
-        // v0.9.9 — open the vault-style mini-interface instead of
-        // back-to-back ``window.prompt`` dialogs. The modal lets the
-        // operator click RED parcels in their hoard to populate a
-        // live 4×5 preview grid (matching the engine's row-major,
-        // highest-purity-first slot assignment) and adjust the
-        // max-fuel/slot stepper before queuing the action. Returns
-        // ``null`` here so the outer ``solo-add-orbit`` handler does
-        // not enqueue anything synchronously; the modal's own confirm
-        // callback pushes into ``orbitQueue`` once the user commits.
-        openShipCatapultSubmit();
-        return null;
-      }
-      case "solar_jettison": {
-        // v0.9.x — open the green-catapult flush dialog (vault-style,
-        // sibling of ship_catapult). Returns null so nothing enqueues
-        // synchronously; the modal's confirm pushes the
-        // ``{green_parcels, red_fuel}`` action onto the queue.
-        openGreenCatapultSubmit();
         return null;
       }
       // v0.9.3 — Build-weapon actions read their count from the
@@ -6470,28 +6310,16 @@
       orbitGreenEl.textContent = `${orbitView.green_owned_count ?? 0} (\u03A3${
         orbitView.green_owned_purity_total ?? 0
       }p)`;
-    // v0.9.1 — RED tier pill + refine button disabled state. The
-    // pill shows trace/vein/mass at a glance so the seat knows which
-    // refine button is worth clicking; mass is included for context
-    // (mass is unrefinable, but watching it grow is the strategic
-    // goal). Refine-trace / refine-vein buttons disable themselves
-    // when their tier count is 0.
+    // v1.13 — the RED tier pill is now a settlement preview rather than
+    // a refine-affordance readout: these are the parcels that will ship
+    // on resolve, broken down by the tier multiplier each will score at.
     const tc = (orbitView && orbitView.tier_counts) || {};
     const tierEl = document.getElementById("cc-orbit-tier-counts");
     if (tierEl) {
       tierEl.textContent =
         `trace ${tc.trace ?? 0} \u00B7 vein ${tc.vein ?? 0} \u00B7 mass ${tc.mass ?? 0} \u00B7 pure ${tc.pure ?? 0}`;
     }
-    document.querySelectorAll("[data-orbit-tier-pill]").forEach((el) => {
-      const k = el.getAttribute("data-orbit-tier-pill");
-      el.textContent = String((tc && tc[k]) ?? 0);
-    });
-    document.querySelectorAll('[data-orbit-action="refine_trace"]').forEach((b) => {
-      b.classList.toggle("is-disabled", !(tc && tc.trace));
-    });
-    document.querySelectorAll('[data-orbit-action="refine_vein"]').forEach((b) => {
-      b.classList.toggle("is-disabled", !(tc && tc.vein));
-    });
+    _updateSettlementPreview(orbitView, tc);
     // v0.9.5 — BLUE tier readout. Engine ships the same trace/vein/
     // mass/pure tier shape; the UI prefers the colloquial BLUE band
     // names (shallow / mid / sink / deep) so the watcher doesn't
@@ -6656,7 +6484,7 @@
     // foreground the progress timeline / locked-in actions recap.
     const resolvingList = beginResolvingFrame({
       headline: "orbit actions",
-      recap: orbitQueue.slice(0, orbitActionCap()).map(_describeOrbitActionForRecap),
+      recap: orbitQueue.map(_describeOrbitActionForRecap),
     });
     // v0.9.8 — live status feed.
     const progress = startTransmitProgress({
@@ -6692,7 +6520,7 @@
       // (orbit → planning of the next day) and the endpoint
       // returns "wrong phase". Submit only the human and let the
       // server walk the rest of the seat list.
-      const orbitActions = orbitQueue.slice(0, orbitActionCap());
+      const orbitActions = orbitQueue.slice();
       const body = await submit(MY_SEAT, orbitActions);
       // v1.11 — slow (agent) game: non-blocking submit; retry on agent_busy.
       if (body?.agent_busy) {
@@ -6766,7 +6594,7 @@
 
   document.querySelectorAll(".solo-add-orbit").forEach((btn) => {
     btn.addEventListener("click", () => {
-      // v0.9.1 — a disabled button (0 parcels to refine, 0 damaged, etc.)
+      // v0.9.1 — a disabled button (nothing affordable, 0 damaged, etc.)
       // must not enqueue a no-op. Repair is the exception: the modal opens
       // regardless so the player can see all harvester statuses.
       if (btn.classList.contains("is-disabled")) {
@@ -6776,14 +6604,7 @@
           return;
         }
         if (orbitErr) {
-          orbitErr.textContent = "! no parcels of that tier to refine";
-          orbitErr.hidden = false;
-        }
-        return;
-      }
-      if (orbitQueue.length >= orbitActionCap()) {
-        if (orbitErr) {
-          orbitErr.textContent = `! orbit queue capped at ${orbitActionCap()} actions`;
+          orbitErr.textContent = "! can't afford that right now";
           orbitErr.hidden = false;
         }
         return;
@@ -6797,55 +6618,6 @@
     });
   });
 
-  // v1.7 — Final Refinery one-click controls (terminal orbit only,
-  // RULEBOOK §4.3.1). "Refine everything up" queues the uncapped cascade;
-  // "Ship best (auto)" queues an auto bid that ships the best post-refine
-  // parcels (refined ids don't exist until settlement, so they can't be
-  // named). Both are no-ops off the final orbit (the banner is hidden then).
-  function _queueFinalRefineryAction(action, label) {
-    if (!isFinalOrbitView()) return;
-    if (orbitQueue.some((a) => a && a.a === action.a)) {
-      if (orbitErr) {
-        orbitErr.textContent = `! ${label} already queued`;
-        orbitErr.hidden = false;
-      }
-      return;
-    }
-    if (orbitQueue.length >= orbitActionCap()) {
-      if (orbitErr) {
-        orbitErr.textContent = `! orbit queue capped at ${orbitActionCap()} actions`;
-        orbitErr.hidden = false;
-      }
-      return;
-    }
-    if (orbitErr) orbitErr.hidden = true;
-    orbitQueue.push(action);
-    renderOrbitQueue();
-  }
-  document
-    .getElementById("final-refine-cascade")
-    ?.addEventListener("click", () => {
-      _queueFinalRefineryAction(
-        { a: "refine_cascade", target_tier: "mass" },
-        "refine cascade",
-      );
-    });
-  document
-    .getElementById("final-ship-auto")
-    ?.addEventListener("click", () => {
-      const wallet = Math.max(0, Number(lastOrbitView?.credits ?? 0));
-      const raw = window.prompt(
-        "Auto-ship: credits to bid PER parcel on your best RED (after refining).\n" +
-          `You hold ${wallet}c. Higher bids win cheaper catapult rows.`,
-        "25",
-      );
-      if (raw === null) return;
-      const credits = Math.max(0, Number.parseInt(raw, 10) || 0);
-      _queueFinalRefineryAction(
-        { a: "ship_catapult", auto: true, credits, count: 0 },
-        "auto ship",
-      );
-    });
   // Keep the "× N" chip on the build-probes button in sync with the
   // adjacent numeric input — purely cosmetic but lets the seat see
   // the cost ladder before they commit.
@@ -9695,10 +9467,6 @@
       case "build_emp":      return `build ×${a.count ?? 1} EMP`;
       case "build_mine":     return `build ×${a.count ?? 1} mine`;
       case "build_chaff":    return `build ×${a.count ?? 1} chaff`;
-      case "refine":         return `refine ${a.source_tier || a.tier || ""}`.trim();
-      case "refine_cascade": return `refinery run → ${a.target_tier || "mass"}`;
-      case "ship_catapult":  return a.auto ? "auto-ship best RED" : "catapult shipment";
-      case "solar_jettison": return "green flush";
       default:               return kind || "—";
     }
   }
@@ -12132,14 +11900,12 @@
       window._osRenderCatGrid        = (slots) => _orbitFlashRenderCatGrid(slots);
       window._osRenderCatLegend      = (slots, seats) => _orbitFlashRenderLegend(slots, seats);
       window._osGetCatapultBlob      = (day) => catapultByDay[String(day)] || null;
-      // Green solar-jettison lattice renderer for the station's right-side
-      // catapult hover card. Mirrors _osRenderCatGrid but for the GREEN lane.
-      window._osRenderGreenGrid      = (slots, total) =>
-        _orbitFlashRenderGreenGrid(
-          Array.isArray(slots) ? slots : [],
-          Number(total) || (_greenCfg().slots ?? 12),
-          _greenCfg(),
-        );
+      // Green disposal manifest for the station's right-side hover card.
+      // Mirrors _osRenderCatGrid but for the GREEN lane. v1.13 — the
+      // second argument (slot total) is gone: the grid is exactly as long
+      // as the manifest.
+      window._osRenderGreenGrid      = (slots) =>
+        _orbitFlashRenderGreenGrid(Array.isArray(slots) ? slots : []);
       window._osGetActiveSeatsList   = () => observedSeats();
       // Cumulative RED shipped score through (and including) ``throughDay``.
       // The station score readouts count up to this as the replay plays: at
@@ -12364,693 +12130,6 @@
     }
   }
 
-  // ── v0.9.9 Catapult submit mini-interface ───────────────────────
-  //
-  // Vault-style modal that replaces the legacy ``window.prompt`` pair
-  // for ``ship_catapult`` actions. Three columns:
-  //
-  //   * left   — clickable RED hoard parcels (re-uses
-  //              ``.cc-vault-slot`` markup so the look matches the
-  //              VAULT panel; click toggles "selected").
-  //   * middle — max-fuel-per-slot stepper + cost summary + the
-  //              CATAPULT_ROW_THRESHOLDS ramp so the user can see
-  //              which row their bid clears.
-  //   * right  — live 4×5 preview grid. Selected parcels populate
-  //              row-major, highest-purity first (matching the
-  //              engine's ``slot_entries`` ordering).
-  //
-  // On confirm the modal pushes the same wire shape the legacy
-  // prompt produced — ``{a: "ship_catapult", parcels, max_fuel_per_slot}``
-  // — onto ``orbitQueue`` and closes. Cancel discards selection
-  // without touching the queue.
-
-  const catSubmitEl = document.getElementById("cc-cat-submit");
-  const catSubmitBackdrop = document.getElementById("cc-cat-submit-backdrop");
-  const catSubmitCloseBtn = document.getElementById("cc-cat-submit-close");
-  const catSubmitCancelBtn = document.getElementById("cc-cat-submit-cancel");
-  const catSubmitOkBtn = document.getElementById("cc-cat-submit-ok");
-  const catSubmitHoardEl = document.getElementById("cc-cat-submit-hoard");
-  const catSubmitHoardEmptyEl = document.getElementById(
-    "cc-cat-submit-hoard-empty",
-  );
-  const catSubmitGridEl = document.getElementById("cc-cat-submit-grid");
-  const catSubmitFpsInput = /** @type {HTMLInputElement|null} */ (
-    document.getElementById("cc-cat-submit-fps")
-  );
-  const catSubmitFpsDecBtn = document.getElementById("cc-cat-submit-fps-dec");
-  const catSubmitFpsIncBtn = document.getElementById("cc-cat-submit-fps-inc");
-  const catSubmitMetaSlotsEl = document.getElementById(
-    "cc-cat-submit-meta-slots",
-  );
-  const catSubmitMetaCostEl = document.getElementById(
-    "cc-cat-submit-meta-cost",
-  );
-
-  /** Mutable model for the open catapult submit modal:
-   *  ``selectedIds`` is a Set of square_id strings — order is derived
-   *  on render by sorting candidates by purity DESC (matches the
-   *  engine's auto-pick rule, RULEBOOK §4.4). */
-  const catSubmitState = {
-    /** @type {Array<any>} */ redParcels: [],
-    /** @type {Set<string>} */ selectedIds: new Set(),
-    credits: 25,
-    seat: "p1",
-  };
-
-  // Per-row RED-purity transit charge (RULEBOOK §4.4). Read from the
-  // live agent /view (``ship_prices.row_transit``) so retuning the
-  // backend constants re-tunes the preview; falls back to the v0.9.x
-  // default ramp.
-  function _catRowTransit() {
-    const sp = lastOrbitView && lastOrbitView.ship_prices;
-    const rt = sp && Array.isArray(sp.row_transit) ? sp.row_transit : null;
-    if (rt && rt.length) return rt.map((v) => Math.max(0, Number(v) || 0));
-    return [10, 25, 50, 100];
-  }
-
-  /** Returns the array of RED parcels in the active live hoard, sorted
-   *  highest-purity-first so the preview grid populates in the same
-   *  order the engine will at settlement time. */
-  function _catSubmitRedHoard() {
-    const inv = lastLiveInventory;
-    const hoard = inv && Array.isArray(inv.hoard) ? inv.hoard : [];
-    // Hide parcels already consumed by a queued (pending) refine — they can't
-    // be shipped this turn. Pending refine OUTPUTS aren't in the real hoard,
-    // so they never appear here (no same-turn ship of a fresh refine).
-    const consumed = pendingRefineConsumedIds();
-    const red = hoard.filter((p) => {
-      const tile = Number(p?.tile_at_harvest ?? p?.origin_tile ?? -1);
-      return tile === 2 && !consumed.has(_parcelIdOf(p));
-    });
-    red.sort((a, b) => {
-      const pa = Number(
-        a?.purity_at_harvest ?? a?.origin_purity ?? a?.purity ?? 0,
-      );
-      const pb = Number(
-        b?.purity_at_harvest ?? b?.origin_purity ?? b?.purity ?? 0,
-      );
-      return pb - pa;
-    });
-    return red;
-  }
-
-  function _catSubmitParcelId(parcel) {
-    return String(parcel?.square_id || parcel?.site_id || "");
-  }
-
-  function _catSubmitTierClass(purity) {
-    const p = Math.max(0, Math.min(255, Number(purity) || 0));
-    if (p >= 255) return "pure";
-    if (p >= 151) return "mass";
-    if (p >= 51) return "vein";
-    if (p >= 1) return "trace";
-    return "empty";
-  }
-
-  // Point value of a single RED parcel = purity × tier multiplier,
-  // matching the TOTAL SCORE projection in updateCatSubmitMeta and the
-  // engine's score_for. Surfaced on the hoard tiles so a house can pick
-  // the most valuable parcels to ship at a glance.
-  function _catSubmitParcelValue(purity) {
-    const mults =
-      (window.__SOC_QUALITY_MULT__
-        && typeof window.__SOC_QUALITY_MULT__ === "object"
-        && window.__SOC_QUALITY_MULT__)
-      || { trace: 0.75, vein: 1.0, mass: 1.5, pure: 3.0 };
-    const tier = _catSubmitTierClass(purity);
-    const mult = Number(mults[tier]) || 1;
-    return Math.round((Number(purity) || 0) * mult);
-  }
-
-  function openShipCatapultSubmit() {
-    if (!catSubmitEl) return;
-    catSubmitState.redParcels = _catSubmitRedHoard();
-    catSubmitState.selectedIds = new Set();
-    catSubmitState.credits = Math.max(
-      0,
-      Math.min(9999, Number(catSubmitFpsInput?.value) || 25),
-    );
-    catSubmitState.seat = "p1";
-    if (catSubmitFpsInput) {
-      catSubmitFpsInput.value = String(catSubmitState.credits);
-    }
-    catSubmitEl.hidden = false;
-    catSubmitEl.setAttribute("aria-hidden", "false");
-    const rampEl = document.getElementById("cc-cat-submit-ramp");
-    if (rampEl) {
-      rampEl.innerHTML = _catRowTransit()
-        .map((t, i) => `<div>row${i + 1} transit ${t}</div>`)
-        .join("");
-    }
-    renderCatSubmitHoard();
-    renderCatSubmitGrid();
-    updateCatSubmitMeta();
-  }
-
-  function closeShipCatapultSubmit() {
-    if (!catSubmitEl) return;
-    catSubmitEl.hidden = true;
-    catSubmitEl.setAttribute("aria-hidden", "true");
-  }
-
-  function renderCatSubmitHoard() {
-    if (!catSubmitHoardEl) return;
-    catSubmitHoardEl.textContent = "";
-    const parcels = catSubmitState.redParcels;
-    if (catSubmitHoardEmptyEl) catSubmitHoardEmptyEl.hidden = parcels.length > 0;
-    // Render up to 20 slots (catapult capacity); anything beyond that
-    // is unreachable in a single settlement and would just be visual
-    // clutter. The hoard cap (25) is preserved by the engine, so the
-    // user can still see them in the VAULT panel.
-    const cap = Math.min(20, Math.max(parcels.length, 5));
-    for (let i = 0; i < cap; i++) {
-      const slot = i + 1;
-      const slotLabel = String(slot).padStart(2, "0");
-      const row = parcels[i];
-      if (!row) {
-        const el = document.createElement("div");
-        el.className = "cc-vault-slot cc-vault-slot--empty";
-        el.innerHTML = `<span class="cc-vault-slot-num">${slotLabel}</span>`;
-        catSubmitHoardEl.appendChild(el);
-        continue;
-      }
-      const sid = _catSubmitParcelId(row);
-      const purity = Number(
-        row?.purity_at_harvest ?? row?.origin_purity ?? row?.purity ?? 0,
-      );
-      const tile = Number(row?.tile_at_harvest ?? row?.origin_tile ?? -1);
-      const paint = (row && row.paint && typeof row.paint === "object")
-        ? row.paint
-        : computeParcelPaintFallback(tile, purity);
-      const bg = paint && paint.bg ? String(paint.bg) : "#1a1322";
-      let fg = paint && paint.fg ? String(paint.fg) : "#d14a4a";
-      let ch = paint && typeof paint.ch === "string" ? paint.ch : "\u2591\u2591";
-      const _trimmed = ch.replace(/\s+/g, "");
-      let bgFinal = bg;
-      if (_trimmed === "" && bg) {
-        fg = bg;
-        bgFinal = "rgb(14,11,22)";
-        ch = "\u2588\u2588";
-      }
-      const isSel = catSubmitState.selectedIds.has(sid) ? "1" : "0";
-      const el = document.createElement("div");
-      el.className = "cc-vault-slot cc-vault-slot--filled";
-      el.setAttribute("data-slot", slotLabel);
-      el.setAttribute("data-sid", sid);
-      el.setAttribute("data-purity", String(purity));
-      el.setAttribute("data-tile-tag", "red");
-      el.setAttribute("data-selected", isSel);
-      const value = _catSubmitParcelValue(purity);
-      el.title =
-        `${sid} \u00B7 purity ${purity} \u00B7 ${_catSubmitTierClass(purity)}` +
-        ` \u00B7 value ${value} pts`;
-      el.style.background = bgFinal;
-      el.style.color = fg;
-      el.innerHTML =
-        `<span class="cc-vault-tile">${esc(ch)}</span>` +
-        `<span class="cc-vault-slot-num">${slotLabel}</span>` +
-        `<span class="cc-vault-slot-val">${value}</span>`;
-      el.addEventListener("click", () => {
-        if (catSubmitState.selectedIds.has(sid)) {
-          catSubmitState.selectedIds.delete(sid);
-        } else {
-          // Cap at 20 (CATAPULT_ROW_COUNT × CATAPULT_SLOTS_PER_ROW).
-          if (catSubmitState.selectedIds.size >= 20) return;
-          catSubmitState.selectedIds.add(sid);
-        }
-        el.setAttribute(
-          "data-selected",
-          catSubmitState.selectedIds.has(sid) ? "1" : "0",
-        );
-        renderCatSubmitGrid();
-        updateCatSubmitMeta();
-      });
-      catSubmitHoardEl.appendChild(el);
-    }
-  }
-
-  function renderCatSubmitGrid() {
-    if (!catSubmitGridEl) return;
-    catSubmitGridEl.textContent = "";
-    // Selected parcels go into slots row-major, highest-purity-first.
-    const selectedRows = catSubmitState.redParcels.filter(
-      (p) => catSubmitState.selectedIds.has(_catSubmitParcelId(p)),
-    );
-    // already sorted (redParcels is purity-desc), but be defensive.
-    selectedRows.sort((a, b) => {
-      const pa = Number(
-        a?.purity_at_harvest ?? a?.origin_purity ?? a?.purity ?? 0,
-      );
-      const pb = Number(
-        b?.purity_at_harvest ?? b?.origin_purity ?? b?.purity ?? 0,
-      );
-      return pb - pa;
-    });
-    const SEAT = catSubmitState.seat;
-    const transit = _catRowTransit();
-    const ROW_COUNT = transit.length || 4;
-    const SLOTS_PER_ROW = 5;
-    const TOTAL = ROW_COUNT * SLOTS_PER_ROW;
-    const bid = Math.max(0, Number(catSubmitState.credits) || 0);
-    for (let i = 0; i < TOTAL; i++) {
-      const r = Math.floor(i / SLOTS_PER_ROW);
-      const charge = Math.max(0, Number(transit[r]) || 0);
-      const filled = i < selectedRows.length;
-      const parcel = filled ? selectedRows[i] : null;
-      const el = document.createElement("div");
-      const purity = filled
-        ? Number(
-            parcel?.purity_at_harvest
-              ?? parcel?.origin_purity
-              ?? parcel?.purity
-              ?? 0,
-          )
-        : 0;
-      const effective = Math.max(0, purity - charge);
-      // A parcel whose purity can't survive the row's transit charge
-      // scores 0 — flag it so the house sees the burn is wasted here.
-      const state = filled
-        ? (effective > 0 ? "shipped" : "failed_row")
-        : "empty";
-      el.className = `cc-cat-slot ${filled ? `cc-cat-slot--${SEAT}` : ""}`.trim();
-      el.setAttribute("data-slot", String(i));
-      el.setAttribute("data-row", String(r));
-      el.setAttribute("data-slot-state", state);
-      const tier = _catSubmitTierClass(purity);
-      const glyph = filled ? catTierGlyph(purity) : "";
-      el.innerHTML =
-        `<span class="cc-cat-slot-label">r${r + 1} &minus;${charge}</span>` +
-        (filled
-          ? `<span class="cc-cat-slot-glyph">${glyph}</span>` +
-            `<span class="cc-cat-slot-purity">${effective}</span>`
-          : "<span class=\"cc-cat-slot-glyph dim\">·</span>");
-      if (filled) {
-        const value = _catSubmitParcelValue(purity);
-        const scored = effective > 0
-          ? Math.round((value / Math.max(1, purity)) * effective)
-          : 0;
-        el.title =
-          `slot ${i + 1} \u00B7 row ${r + 1} \u00B7 ${tier} ${purity}p\n` +
-          `transit \u2212${charge} \u2192 effective ${effective}p \u00B7 ` +
-          `${scored} pts \u00B7 bid ${bid} cr`;
-      } else {
-        el.title =
-          `slot ${i + 1} \u00B7 row ${r + 1} \u00B7 transit \u2212${charge}`;
-      }
-      catSubmitGridEl.appendChild(el);
-    }
-  }
-
-  function updateCatSubmitMeta() {
-    const n = catSubmitState.selectedIds.size;
-    const bid = Math.max(0, Number(catSubmitState.credits) || 0);
-    if (catSubmitMetaSlotsEl) catSubmitMetaSlotsEl.textContent = String(n);
-    // v0.9.x — per-parcel CREDIT bid model (RULEBOOK §4.4). Show the
-    // bid per parcel and the total credits debited/locked (n × bid),
-    // then ``TOTAL SCORE`` projecting (purity − row transit) × tier
-    // multiplier for every selected parcel IF it lands in its previewed
-    // row uncontested. Submit gates on n > 0 (a zero-parcel bid is a
-    // no-op).
-    const fpsEl = document.getElementById("cc-cat-submit-meta-fps");
-    if (fpsEl) fpsEl.textContent = String(bid);
-    if (catSubmitMetaCostEl) catSubmitMetaCostEl.textContent = String(n * bid);
-
-    // Project transit-charged tier-multiplier score for the selected
-    // parcels. The tier multiplier keys off the ORIGINAL purity (so a
-    // pure parcel keeps ×3 even after transit shaves its purity).
-    // ``__SOC_QUALITY_MULT__`` is the canonical RED multiplier table
-    // stamped by the agent /view; the fallback mirrors session.py.
-    const mults =
-      (window.__SOC_QUALITY_MULT__
-        && typeof window.__SOC_QUALITY_MULT__ === "object"
-        && window.__SOC_QUALITY_MULT__)
-      || { trace: 0.75, vein: 1.0, mass: 1.5, pure: 3.0 };
-    const tierFor = (p) => {
-      const pp = Math.max(0, Math.min(255, Number(p) || 0));
-      if (pp <= 0) return "empty";
-      if (pp <= 50) return "trace";
-      if (pp <= 150) return "vein";
-      if (pp <= 254) return "mass";
-      return "pure";
-    };
-    const transit = _catRowTransit();
-    const SLOTS_PER_ROW = 5;
-    // Selected parcels populate the preview purity-desc, so row index
-    // mirrors renderCatSubmitGrid.
-    const selectedRows = catSubmitState.redParcels
-      .filter((p) => catSubmitState.selectedIds.has(_catSubmitParcelId(p)))
-      .sort((a, b) => {
-        const pa = Number(
-          a?.purity_at_harvest ?? a?.origin_purity ?? a?.purity ?? 0,
-        );
-        const pb = Number(
-          b?.purity_at_harvest ?? b?.origin_purity ?? b?.purity ?? 0,
-        );
-        return pb - pa;
-      });
-    let totalScore = 0;
-    selectedRows.forEach((parcel, i) => {
-      const purity = Number(
-        parcel?.purity_at_harvest
-          ?? parcel?.origin_purity
-          ?? parcel?.purity
-          ?? 0,
-      );
-      const r = Math.floor(i / SLOTS_PER_ROW);
-      const charge = Math.max(0, Number(transit[r]) || 0);
-      const effective = Math.max(0, purity - charge);
-      const mult = Number(mults[tierFor(purity)]) || 1;
-      totalScore += effective * mult;
-    });
-    const scoreEl = document.getElementById("cc-cat-submit-meta-score");
-    if (scoreEl) {
-      scoreEl.textContent = Math.round(totalScore).toLocaleString("en-US");
-    }
-
-    if (catSubmitOkBtn) {
-      catSubmitOkBtn.toggleAttribute("disabled", n <= 0);
-    }
-  }
-
-  function _catSubmitConfirm() {
-    const n = catSubmitState.selectedIds.size;
-    const bid = Math.max(0, Number(catSubmitState.credits) || 0);
-    if (n <= 0) return;
-    if (orbitQueue.length >= orbitActionCap()) {
-      if (orbitErr) {
-        orbitErr.textContent = `! orbit queue capped at ${orbitActionCap()} actions`;
-        orbitErr.hidden = false;
-      }
-      closeShipCatapultSubmit();
-      return;
-    }
-    // Per-parcel credit bids (RULEBOOK §4.4). Each selected parcel
-    // carries the same uniform bid; the engine ranks every bid (across
-    // all houses) and fills the low-transit rows with the highest.
-    const bids = [];
-    for (const parcel of catSubmitState.redParcels) {
-      const sid = _catSubmitParcelId(parcel);
-      if (catSubmitState.selectedIds.has(sid)) {
-        bids.push({ id: sid, credits: bid });
-      }
-    }
-    orbitQueue.push({
-      a: "ship_catapult",
-      bids,
-    });
-    renderOrbitQueue();
-    closeShipCatapultSubmit();
-  }
-
-  catSubmitCloseBtn?.addEventListener("click", () => closeShipCatapultSubmit());
-  catSubmitBackdrop?.addEventListener("click", () => closeShipCatapultSubmit());
-  catSubmitCancelBtn?.addEventListener("click", () => closeShipCatapultSubmit());
-  catSubmitOkBtn?.addEventListener("click", () => _catSubmitConfirm());
-  catSubmitFpsInput?.addEventListener("input", () => {
-    const v = Math.max(
-      0,
-      Math.min(9999, Number.parseInt(String(catSubmitFpsInput.value), 10) || 0),
-    );
-    catSubmitState.credits = v;
-    renderCatSubmitGrid();
-    updateCatSubmitMeta();
-  });
-  catSubmitFpsDecBtn?.addEventListener("click", () => {
-    if (!catSubmitFpsInput) return;
-    const v = Math.max(0, (Number(catSubmitFpsInput.value) || 0) - 5);
-    catSubmitFpsInput.value = String(v);
-    catSubmitFpsInput.dispatchEvent(new Event("input"));
-  });
-  catSubmitFpsIncBtn?.addEventListener("click", () => {
-    if (!catSubmitFpsInput) return;
-    const v = Math.min(9999, (Number(catSubmitFpsInput.value) || 0) + 5);
-    catSubmitFpsInput.value = String(v);
-    catSubmitFpsInput.dispatchEvent(new Event("input"));
-  });
-
-  // ── v0.9.x — GREEN CATAPULT flush dialog (RULEBOOK §4.5) ──────────
-  //
-  // Sibling of the shipping catapult composer. Green is a punishment:
-  // every undisposed vault-green costs -100 at endgame. The seat picks
-  // GREEN parcels to flush and commits RED purity as fuel. Slots cost
-  // RED purity diminishing by GLOBAL draft position (slot 1 = cost_base,
-  // -cost_step each, floored at 0), so flushing together is cheaper —
-  // but the dialog can only project the SOLO best case (you take the
-  // cheapest slots). The wire shape is unchanged (tag "solar_jettison")
-  // but now carries ``{green_parcels, red_fuel}``.
-  const greenSubmitEl = document.getElementById("cc-green-submit");
-  const greenSubmitBackdrop = document.getElementById("cc-green-submit-backdrop");
-  const greenSubmitCloseBtn = document.getElementById("cc-green-submit-close");
-  const greenSubmitCancelBtn = document.getElementById("cc-green-submit-cancel");
-  const greenSubmitOkBtn = document.getElementById("cc-green-submit-ok");
-  const greenSubmitHoardEl = document.getElementById("cc-green-submit-hoard");
-  const greenSubmitHoardEmptyEl = document.getElementById(
-    "cc-green-submit-hoard-empty",
-  );
-  const greenSubmitGridEl = document.getElementById("cc-green-submit-grid");
-  const greenSubmitFuelInput = /** @type {HTMLInputElement|null} */ (
-    document.getElementById("cc-green-submit-fuel")
-  );
-  const greenSubmitFuelDecBtn = document.getElementById("cc-green-submit-fuel-dec");
-  const greenSubmitFuelIncBtn = document.getElementById("cc-green-submit-fuel-inc");
-  const greenSubmitMetaGreenEl = document.getElementById("cc-green-submit-meta-green");
-  const greenSubmitMetaFuelEl = document.getElementById("cc-green-submit-meta-fuel");
-  const greenSubmitMetaFlushEl = document.getElementById("cc-green-submit-meta-flush");
-  const greenSubmitMetaPenaltyEl = document.getElementById("cc-green-submit-meta-penalty");
-
-  const greenSubmitState = {
-    /** @type {Array<any>} */ greenParcels: [],
-    /** @type {Set<string>} */ selectedIds: new Set(),
-    fuel: 50,
-  };
-
-  // Green-catapult pricing from the live agent /view, with the v0.9.x
-  // defaults as fallback.
-  function _greenCfg() {
-    const gc = (lastOrbitView && lastOrbitView.green_catapult) || {};
-    return {
-      slots: Math.max(1, Number(gc.slots) || 12),
-      costBase: Math.max(0, Number(gc.cost_base) || 50),
-      costStep: Math.max(0, Number(gc.cost_step) || 5),
-      penalty: Math.max(0, Number(gc.endgame_penalty) || 100),
-    };
-  }
-
-  function _greenSlotCost(globalSlotIdx, cfg) {
-    return Math.max(0, cfg.costBase - globalSlotIdx * cfg.costStep);
-  }
-
-  function _greenHoard() {
-    const inv = lastLiveInventory;
-    const hoard = inv && Array.isArray(inv.hoard) ? inv.hoard : [];
-    return hoard.filter((p) => {
-      const tile = Number(p?.tile_at_harvest ?? p?.origin_tile ?? -1);
-      return tile === 1;
-    });
-  }
-
-  // How many of the selected green parcels you could flush SOLO with
-  // the committed fuel, taking the cheapest slots first.
-  function _greenSoloFlush() {
-    const cfg = _greenCfg();
-    const want = greenSubmitState.selectedIds.size;
-    let fuel = Math.max(0, Number(greenSubmitState.fuel) || 0);
-    let flushed = 0;
-    for (let s = 0; s < cfg.slots && flushed < want; s++) {
-      const cost = _greenSlotCost(s, cfg);
-      if (fuel < cost) break;
-      fuel -= cost;
-      flushed += 1;
-    }
-    return flushed;
-  }
-
-  function openGreenCatapultSubmit() {
-    if (!greenSubmitEl) return;
-    greenSubmitState.greenParcels = _greenHoard();
-    greenSubmitState.selectedIds = new Set();
-    greenSubmitState.fuel = Math.max(
-      0,
-      Math.min(9999, Number(greenSubmitFuelInput?.value) || 50),
-    );
-    if (greenSubmitFuelInput) {
-      greenSubmitFuelInput.value = String(greenSubmitState.fuel);
-    }
-    greenSubmitEl.hidden = false;
-    greenSubmitEl.setAttribute("aria-hidden", "false");
-    const cfg = _greenCfg();
-    const rampEl = document.getElementById("cc-green-submit-ramp");
-    if (rampEl) {
-      rampEl.innerHTML =
-        `<div>slot1 cost ${cfg.costBase}</div>` +
-        `<div>slot2 cost ${Math.max(0, cfg.costBase - cfg.costStep)}</div>` +
-        `<div>&hellip; &minus;${cfg.costStep} / slot &middot; ${cfg.slots} shared</div>`;
-    }
-    renderGreenSubmitHoard();
-    renderGreenSubmitGrid();
-    updateGreenSubmitMeta();
-  }
-
-  function closeGreenCatapultSubmit() {
-    if (!greenSubmitEl) return;
-    greenSubmitEl.hidden = true;
-    greenSubmitEl.setAttribute("aria-hidden", "true");
-  }
-
-  function renderGreenSubmitHoard() {
-    if (!greenSubmitHoardEl) return;
-    greenSubmitHoardEl.textContent = "";
-    const parcels = greenSubmitState.greenParcels;
-    if (greenSubmitHoardEmptyEl) {
-      greenSubmitHoardEmptyEl.hidden = parcels.length > 0;
-    }
-    const cfg = _greenCfg();
-    const cap = Math.min(cfg.slots, Math.max(parcels.length, 6));
-    for (let i = 0; i < cap; i++) {
-      const slot = i + 1;
-      const slotLabel = String(slot).padStart(2, "0");
-      const row = parcels[i];
-      if (!row) {
-        const el = document.createElement("div");
-        el.className = "cc-vault-slot cc-vault-slot--empty";
-        el.innerHTML = `<span class="cc-vault-slot-num">${slotLabel}</span>`;
-        greenSubmitHoardEl.appendChild(el);
-        continue;
-      }
-      const sid = _catSubmitParcelId(row);
-      const purity = Number(
-        row?.purity_at_harvest ?? row?.origin_purity ?? row?.purity ?? 255,
-      );
-      const paint = (row && row.paint && typeof row.paint === "object")
-        ? row.paint
-        : computeParcelPaintFallback(1, purity);
-      const bg = paint && paint.bg ? String(paint.bg) : "#13201a";
-      let fg = paint && paint.fg ? String(paint.fg) : "#49d17a";
-      let ch = paint && typeof paint.ch === "string" ? paint.ch : "\u2591\u2591";
-      const isSel = greenSubmitState.selectedIds.has(sid) ? "1" : "0";
-      const el = document.createElement("div");
-      el.className = "cc-vault-slot cc-vault-slot--filled";
-      el.setAttribute("data-slot", slotLabel);
-      el.setAttribute("data-sid", sid);
-      el.setAttribute("data-tile-tag", "green");
-      el.setAttribute("data-selected", isSel);
-      el.title = `${sid} \u00B7 toxic green \u00B7 \u2212${_greenCfg().penalty} pts if not flushed`;
-      el.style.background = bg;
-      el.style.color = fg;
-      el.innerHTML =
-        `<span class="cc-vault-tile">${esc(ch)}</span>` +
-        `<span class="cc-vault-slot-num">${slotLabel}</span>`;
-      el.addEventListener("click", () => {
-        if (greenSubmitState.selectedIds.has(sid)) {
-          greenSubmitState.selectedIds.delete(sid);
-        } else {
-          if (greenSubmitState.selectedIds.size >= cfg.slots) return;
-          greenSubmitState.selectedIds.add(sid);
-        }
-        el.setAttribute(
-          "data-selected",
-          greenSubmitState.selectedIds.has(sid) ? "1" : "0",
-        );
-        renderGreenSubmitGrid();
-        updateGreenSubmitMeta();
-      });
-      greenSubmitHoardEl.appendChild(el);
-    }
-  }
-
-  function renderGreenSubmitGrid() {
-    if (!greenSubmitGridEl) return;
-    greenSubmitGridEl.textContent = "";
-    const cfg = _greenCfg();
-    const flushable = _greenSoloFlush();
-    for (let i = 0; i < cfg.slots; i++) {
-      const cost = _greenSlotCost(i, cfg);
-      const filled = i < flushable;
-      const el = document.createElement("div");
-      // v0.9.13 — match the public briefing + vault: a filled flush slot
-      // is a plain green block (██) with the flushing seat's own colour
-      // on the border (green fill stays via the grid-scoped rule).
-      el.className =
-        `cc-cat-slot ${filled ? `cc-cat-slot--${MY_SEAT}` : ""}`.trim();
-      el.setAttribute("data-slot", String(i));
-      el.setAttribute("data-slot-state", filled ? "shipped" : "empty");
-      el.innerHTML =
-        `<span class="cc-cat-slot-label">s${i + 1}</span>` +
-        (filled
-          ? `<span class="cc-cat-slot-glyph">\u2588\u2588</span>` +
-            `<span class="cc-cat-slot-purity">${cost}</span>`
-          : `<span class="cc-cat-slot-glyph dim">${cost}</span>`);
-      el.title = filled
-        ? `slot ${i + 1} \u00B7 cost ${cost} RED \u00B7 flushes 1 green`
-        : `slot ${i + 1} \u00B7 cost ${cost} RED (need more fuel / green)`;
-      greenSubmitGridEl.appendChild(el);
-    }
-  }
-
-  function updateGreenSubmitMeta() {
-    const cfg = _greenCfg();
-    const n = greenSubmitState.selectedIds.size;
-    const fuel = Math.max(0, Number(greenSubmitState.fuel) || 0);
-    const flush = _greenSoloFlush();
-    if (greenSubmitMetaGreenEl) greenSubmitMetaGreenEl.textContent = String(n);
-    if (greenSubmitMetaFuelEl) greenSubmitMetaFuelEl.textContent = String(fuel);
-    if (greenSubmitMetaFlushEl) greenSubmitMetaFlushEl.textContent = String(flush);
-    if (greenSubmitMetaPenaltyEl) {
-      greenSubmitMetaPenaltyEl.textContent =
-        (flush * cfg.penalty).toLocaleString("en-US");
-    }
-    if (greenSubmitOkBtn) {
-      greenSubmitOkBtn.toggleAttribute("disabled", n <= 0 || fuel <= 0);
-    }
-  }
-
-  function _greenSubmitConfirm() {
-    const n = greenSubmitState.selectedIds.size;
-    const fuel = Math.max(0, Number(greenSubmitState.fuel) || 0);
-    if (n <= 0 || fuel <= 0) return;
-    if (orbitQueue.length >= orbitActionCap()) {
-      if (orbitErr) {
-        orbitErr.textContent = `! orbit queue capped at ${orbitActionCap()} actions`;
-        orbitErr.hidden = false;
-      }
-      closeGreenCatapultSubmit();
-      return;
-    }
-    orbitQueue.push({
-      a: "solar_jettison",
-      green_parcels: n,
-      red_fuel: fuel,
-    });
-    renderOrbitQueue();
-    closeGreenCatapultSubmit();
-  }
-
-  greenSubmitCloseBtn?.addEventListener("click", () => closeGreenCatapultSubmit());
-  greenSubmitBackdrop?.addEventListener("click", () => closeGreenCatapultSubmit());
-  greenSubmitCancelBtn?.addEventListener("click", () => closeGreenCatapultSubmit());
-  greenSubmitOkBtn?.addEventListener("click", () => _greenSubmitConfirm());
-  greenSubmitFuelInput?.addEventListener("input", () => {
-    const v = Math.max(
-      0,
-      Math.min(9999, Number.parseInt(String(greenSubmitFuelInput.value), 10) || 0),
-    );
-    greenSubmitState.fuel = v;
-    renderGreenSubmitGrid();
-    updateGreenSubmitMeta();
-  });
-  greenSubmitFuelDecBtn?.addEventListener("click", () => {
-    if (!greenSubmitFuelInput) return;
-    const v = Math.max(0, (Number(greenSubmitFuelInput.value) || 0) - 10);
-    greenSubmitFuelInput.value = String(v);
-    greenSubmitFuelInput.dispatchEvent(new Event("input"));
-  });
-  greenSubmitFuelIncBtn?.addEventListener("click", () => {
-    if (!greenSubmitFuelInput) return;
-    const v = Math.min(9999, (Number(greenSubmitFuelInput.value) || 0) + 10);
-    greenSubmitFuelInput.value = String(v);
-    greenSubmitFuelInput.dispatchEvent(new Event("input"));
-  });
-
   // ── REPAIR HARVESTER dialog ──────────────────────────────────────
   //
   // Vault-style modal replacing the legacy window.prompt for the
@@ -13185,285 +12264,6 @@
   repairSubmitCancelBtn?.addEventListener("click", () => closeRepairSubmit());
   repairSubmitOkBtn?.addEventListener("click",     () => _repairSubmitConfirm());
 
-  // ── v0.9.x — REFINE dialog (RULEBOOK §4.3) ───────────────────────
-  //
-  // Pick up to ``max_slots`` same-tier RED parcels (trace OR vein) and
-  // preview the promotion before committing: output = floor(ΣP / M)
-  // full target-tier parcels at purity M, plus one residual parcel at
-  // ΣP mod M in the source tier. Costs BLUE per input parcel. Once a
-  // parcel is picked the dialog locks selection to that tier (the
-  // engine refuses mixed-tier inputs). Wire: {a:"refine", inputs:[ids]}.
-  const refineSubmitEl = document.getElementById("cc-refine-submit");
-  const refineSubmitBackdrop = document.getElementById("cc-refine-submit-backdrop");
-  const refineSubmitCloseBtn = document.getElementById("cc-refine-submit-close");
-  const refineSubmitCancelBtn = document.getElementById("cc-refine-submit-cancel");
-  const refineSubmitOkBtn = document.getElementById("cc-refine-submit-ok");
-  const refineSubmitHoardEl = document.getElementById("cc-refine-submit-hoard");
-  const refineSubmitHoardEmptyEl = document.getElementById(
-    "cc-refine-submit-hoard-empty",
-  );
-  const refineSubmitGridEl = document.getElementById("cc-refine-submit-grid");
-
-  const refineSubmitState = {
-    /** @type {Array<any>} */ parcels: [],
-    /** @type {Set<string>} */ selectedIds: new Set(),
-    /** @type {string|null} */ tier: null,
-  };
-
-  function _refineCfg() {
-    const rf = (lastOrbitView && lastOrbitView.refine) || {};
-    return {
-      maxSlots: Math.max(1, Number(rf.max_slots) || 5),
-      blueCost: {
-        trace: Math.max(0, Number(rf?.blue_cost?.trace) || 10),
-        vein: Math.max(0, Number(rf?.blue_cost?.vein) || 20),
-      },
-      M: {
-        trace: Math.max(1, Number(rf?.max_for_tier?.trace_to_vein) || 150),
-        vein: Math.max(1, Number(rf?.max_for_tier?.vein_to_mass) || 254),
-      },
-    };
-  }
-
-  // Refinable RED parcels = trace or vein (mass/pure can't promote),
-  // purity-desc.
-  function _refineHoard() {
-    const inv = lastLiveInventory;
-    const hoard = inv && Array.isArray(inv.hoard) ? inv.hoard : [];
-    // Exclude parcels already committed to a queued refine so they can't be
-    // selected into a second refine.
-    const consumed = pendingRefineConsumedIds();
-    return hoard
-      .filter((p) => {
-        if (consumed.has(_parcelIdOf(p))) return false;
-        const tile = Number(p?.tile_at_harvest ?? p?.origin_tile ?? -1);
-        if (tile !== 2) return false;
-        const t = _catSubmitTierClass(
-          Number(p?.purity_at_harvest ?? p?.origin_purity ?? p?.purity ?? 0),
-        );
-        return t === "trace" || t === "vein";
-      })
-      .sort((a, b) => {
-        const pa = Number(a?.purity_at_harvest ?? a?.origin_purity ?? a?.purity ?? 0);
-        const pb = Number(b?.purity_at_harvest ?? b?.origin_purity ?? b?.purity ?? 0);
-        return pb - pa;
-      });
-  }
-
-  function _refinePreview() {
-    const cfg = _refineCfg();
-    const tier = refineSubmitState.tier;
-    const chosen = refineSubmitState.parcels.filter((p) =>
-      refineSubmitState.selectedIds.has(_catSubmitParcelId(p)),
-    );
-    const S = chosen.reduce(
-      (s, p) => s + Number(
-        p?.purity_at_harvest ?? p?.origin_purity ?? p?.purity ?? 0,
-      ),
-      0,
-    );
-    const M = tier ? cfg.M[tier] : 0;
-    const target = tier === "trace" ? "vein" : (tier === "vein" ? "mass" : "—");
-    const outFull = M > 0 ? Math.floor(S / M) : 0;
-    const residual = M > 0 ? S % M : 0;
-    const cost = tier ? cfg.blueCost[tier] * chosen.length : 0;
-    return { tier, target, S, M, outFull, residual, cost, n: chosen.length };
-  }
-
-  function openRefineSubmit() {
-    if (!refineSubmitEl) return;
-    refineSubmitState.parcels = _refineHoard();
-    refineSubmitState.selectedIds = new Set();
-    refineSubmitState.tier = null;
-    refineSubmitEl.hidden = false;
-    refineSubmitEl.setAttribute("aria-hidden", "false");
-    // Populate the promotion column from the live config so the
-    // purity THRESHOLD (M) per grade is visible — refining pools
-    // purity and only mints a higher tier once ΣP clears M; the
-    // remainder stays at the source tier.
-    const cfg = _refineCfg();
-    const rampEl = document.getElementById("cc-refine-submit-ramp");
-    if (rampEl) {
-      rampEl.innerHTML =
-        `<div>trace &rarr; vein \u00B7 ${cfg.blueCost.trace} blue/ea \u00B7 pool \u03A3${cfg.M.trace}/vein</div>` +
-        `<div>vein &rarr; mass \u00B7 ${cfg.blueCost.vein} blue/ea \u00B7 pool \u03A3${cfg.M.vein}/mass</div>` +
-        `<div>max ${cfg.maxSlots} inputs \u00B7 same tier \u00B7 leftover stays source tier</div>`;
-    }
-    renderRefineSubmitHoard();
-    renderRefineSubmitGrid();
-    updateRefineSubmitMeta();
-  }
-
-  function closeRefineSubmit() {
-    if (!refineSubmitEl) return;
-    refineSubmitEl.hidden = true;
-    refineSubmitEl.setAttribute("aria-hidden", "true");
-  }
-
-  function renderRefineSubmitHoard() {
-    if (!refineSubmitHoardEl) return;
-    refineSubmitHoardEl.textContent = "";
-    const cfg = _refineCfg();
-    const parcels = refineSubmitState.parcels;
-    if (refineSubmitHoardEmptyEl) {
-      refineSubmitHoardEmptyEl.hidden = parcels.length > 0;
-    }
-    const cap = Math.max(parcels.length, 8);
-    for (let i = 0; i < cap; i++) {
-      const slot = i + 1;
-      const slotLabel = String(slot).padStart(2, "0");
-      const row = parcels[i];
-      if (!row) {
-        const el = document.createElement("div");
-        el.className = "cc-vault-slot cc-vault-slot--empty";
-        el.innerHTML = `<span class="cc-vault-slot-num">${slotLabel}</span>`;
-        refineSubmitHoardEl.appendChild(el);
-        continue;
-      }
-      const sid = _catSubmitParcelId(row);
-      const purity = Number(
-        row?.purity_at_harvest ?? row?.origin_purity ?? row?.purity ?? 0,
-      );
-      const tier = _catSubmitTierClass(purity);
-      const paint = (row && row.paint && typeof row.paint === "object")
-        ? row.paint
-        : computeParcelPaintFallback(2, purity);
-      const bg = paint && paint.bg ? String(paint.bg) : "#1a1322";
-      let fg = paint && paint.fg ? String(paint.fg) : "#d14a4a";
-      let ch = paint && typeof paint.ch === "string" ? paint.ch : "\u2591\u2591";
-      const isSel = refineSubmitState.selectedIds.has(sid) ? "1" : "0";
-      // Once a tier is chosen, the other tier's parcels are dimmed/locked.
-      const locked = refineSubmitState.tier && tier !== refineSubmitState.tier;
-      const el = document.createElement("div");
-      el.className = "cc-vault-slot cc-vault-slot--filled";
-      el.setAttribute("data-slot", slotLabel);
-      el.setAttribute("data-sid", sid);
-      el.setAttribute("data-tile-tag", "red");
-      el.setAttribute("data-selected", isSel);
-      if (locked) el.style.opacity = "0.32";
-      el.title =
-        `${sid} \u00B7 ${tier} ${purity}p` +
-        (locked ? " \u00B7 locked (different tier)" : "");
-      el.style.background = bg;
-      el.style.color = fg;
-      el.innerHTML =
-        `<span class="cc-vault-tile">${esc(ch)}</span>` +
-        `<span class="cc-vault-slot-num">${slotLabel}</span>` +
-        `<span class="cc-vault-slot-val">${purity}</span>`;
-      el.addEventListener("click", () => {
-        const t = _catSubmitTierClass(purity);
-        if (refineSubmitState.selectedIds.has(sid)) {
-          refineSubmitState.selectedIds.delete(sid);
-          if (refineSubmitState.selectedIds.size === 0) {
-            refineSubmitState.tier = null;
-          }
-        } else {
-          if (refineSubmitState.tier && t !== refineSubmitState.tier) return;
-          if (refineSubmitState.selectedIds.size >= cfg.maxSlots) return;
-          refineSubmitState.tier = t;
-          refineSubmitState.selectedIds.add(sid);
-        }
-        renderRefineSubmitHoard();
-        renderRefineSubmitGrid();
-        updateRefineSubmitMeta();
-      });
-      refineSubmitHoardEl.appendChild(el);
-    }
-  }
-
-  function renderRefineSubmitGrid() {
-    if (!refineSubmitGridEl) return;
-    refineSubmitGridEl.textContent = "";
-    const pv = _refinePreview();
-    const tiles = [];
-    for (let i = 0; i < pv.outFull; i++) {
-      tiles.push({ purity: pv.M, tier: pv.target });
-    }
-    if (pv.residual > 0) {
-      tiles.push({ purity: pv.residual, tier: pv.tier || "trace", residual: true });
-    }
-    const TOTAL = Math.max(8, tiles.length);
-    for (let i = 0; i < TOTAL; i++) {
-      const t = tiles[i];
-      const el = document.createElement("div");
-      const filled = !!t;
-      el.className = `cc-cat-slot ${filled ? "cc-cat-slot--p1" : ""}`.trim();
-      el.setAttribute("data-slot", String(i));
-      el.setAttribute("data-slot-state", filled ? "shipped" : "empty");
-      if (filled) {
-        const glyph = catTierGlyph(t.purity);
-        el.innerHTML =
-          `<span class="cc-cat-slot-label">${t.residual ? "res" : t.tier}</span>` +
-          `<span class="cc-cat-slot-glyph">${glyph}</span>` +
-          `<span class="cc-cat-slot-purity">${t.purity}</span>`;
-        el.title = t.residual
-          ? `residual \u00B7 ${t.tier} ${t.purity}p`
-          : `${t.tier} ${t.purity}p`;
-      } else {
-        el.innerHTML = "<span class=\"cc-cat-slot-glyph dim\">·</span>";
-      }
-      refineSubmitGridEl.appendChild(el);
-    }
-  }
-
-  function updateRefineSubmitMeta() {
-    const pv = _refinePreview();
-    const set = (id, val) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = String(val);
-    };
-    set("cc-refine-submit-meta-inputs", pv.n);
-    set(
-      "cc-refine-submit-meta-grade",
-      pv.tier ? `${pv.tier} \u2192 ${pv.target}` : "\u2014",
-    );
-    set("cc-refine-submit-meta-cost", `${pv.cost} blue`);
-    set("cc-refine-submit-meta-sum", pv.S);
-    let outText = "\u2014";
-    if (pv.n > 0) {
-      outText = `${pv.outFull}\u00D7${pv.target} + ${pv.residual} res`;
-      // Threshold hint: how much more pooled purity is needed to mint
-      // the NEXT full target-tier parcel (M − residual).
-      if (pv.M > 0) {
-        const need = pv.M - pv.residual;
-        if (need > 0 && need <= pv.M) {
-          outText += ` \u00B7 +\u03A3${need} \u2192 ${pv.target}`;
-        }
-      }
-    }
-    set("cc-refine-submit-meta-out", outText);
-    if (refineSubmitOkBtn) {
-      // A refine that promotes nothing (outFull == 0) just burns blue
-      // to hand the same purity back as residual — let the house do it
-      // (sometimes useful to consolidate), but flag it so it's a
-      // deliberate choice, not a surprise.
-      refineSubmitOkBtn.toggleAttribute("disabled", pv.n <= 0);
-    }
-  }
-
-  function _refineSubmitConfirm() {
-    const ids = refineSubmitState.parcels
-      .filter((p) => refineSubmitState.selectedIds.has(_catSubmitParcelId(p)))
-      .map((p) => _catSubmitParcelId(p));
-    if (!ids.length) return;
-    if (orbitQueue.length >= orbitActionCap()) {
-      if (orbitErr) {
-        orbitErr.textContent = `! orbit queue capped at ${orbitActionCap()} actions`;
-        orbitErr.hidden = false;
-      }
-      closeRefineSubmit();
-      return;
-    }
-    orbitQueue.push({ a: "refine", inputs: ids });
-    renderOrbitQueue();
-    closeRefineSubmit();
-  }
-
-  refineSubmitCloseBtn?.addEventListener("click", () => closeRefineSubmit());
-  refineSubmitBackdrop?.addEventListener("click", () => closeRefineSubmit());
-  refineSubmitCancelBtn?.addEventListener("click", () => closeRefineSubmit());
-  refineSubmitOkBtn?.addEventListener("click", () => _refineSubmitConfirm());
-
   // ── v0.8.0 ORBIT phase replay overlay ────────────────────────────
   //
   // The overlay reuses the per-day ``catapult_by_day`` blob attached
@@ -13505,39 +12305,32 @@
 
   /** Build & display the ORBIT modal for the given day. */
   /** v0.9.9 — does this catapult_history blob represent something
-   *  worth surfacing? Every orbit phase appends a blob even when no
-   *  one shipped or jettisoned, so the auto-pop logic + replay
-   *  timeline insertion need an activity gate to avoid popping a
-   *  blank modal on "quiet orbit" days.
+   *  worth surfacing? Every orbit phase appends a blob even when both
+   *  vaults were empty, so the auto-pop logic + replay timeline
+   *  insertion need an activity gate to avoid popping a blank modal on
+   *  a quiet day.
    *
-   *  Returns true if ANY seat submitted a catapult bid, OR shipped
-   *  anything, OR jettisoned anything. Empty bids that the engine
-   *  dropped at parse time also count (so the user sees their
-   *  failed action in the modal).
+   *  v1.13 — "activity" used to include intent as well as outcome: a
+   *  submitted-but-losing bid was worth showing, because being outbid
+   *  was a thing that happened *to* you. Settlement is unconditional
+   *  now, so intent and outcome are the same thing and the gate is
+   *  simply "did anything move".
    *
    *  @param {any} blob — single ``catapult_history`` entry
    *  (``{day, catapult, jettison}``). */
   function orbitBlobHasActivity(blob) {
     if (!blob || typeof blob !== "object") return false;
-    const cat = blob.catapult || {};
-    if (Number(cat.slots_awarded || 0) > 0) return true;
-    const seats = cat.seats || {};
-    for (const seat of Object.keys(seats)) {
-      const s = seats[seat] || {};
-      if (s.submitted) return true;
-      if (Number(s.awarded ?? s.shipped_count ?? 0) > 0) return true;
-      if (Number(s.failed_slots || 0) > 0) return true;
-      if (Number(s.credits_committed || 0) > 0) return true;
-    }
-    const jet = blob.jettison || {};
-    if (Number(jet.slots_used ?? jet.slots_awarded ?? 0) > 0) return true;
-    const jseats = jet.seats || {};
-    for (const seat of Object.keys(jseats)) {
-      const s = jseats[seat] || {};
-      if (s.submitted) return true;
-      if (Number(s.awarded || 0) > 0) return true;
-      if (Number(s.fuel_spent ?? s.budget ?? 0) > 0) return true;
-      if (Number(s.green_committed || 0) > 0) return true;
+    const shipped = blob.catapult?.slot_assignments;
+    if (Array.isArray(shipped) && shipped.length) return true;
+    const dumped = blob.jettison?.slot_assignments;
+    if (Array.isArray(dumped) && dumped.length) return true;
+    // Fall back to the per-seat counts for blobs written before the
+    // manifest existed, so old replays still open their briefing.
+    for (const section of [blob.catapult, blob.jettison]) {
+      const seats = (section && section.seats) || {};
+      for (const seat of Object.keys(seats)) {
+        if (Number(seats[seat]?.awarded ?? 0) > 0) return true;
+      }
     }
     return false;
   }
@@ -13950,27 +12743,21 @@
     renderStorageGrid(host, rows, rows.length, { ownerBorders: true });
   }
 
-  /** Final-orbit UI: banner + grey out blocked orbit actions. Driven
-   *  off the live /status ``final_orbit`` flag. */
-  const FINAL_ORBIT_BLOCKED = new Set([
-    "build_harvester", "build_probe", "repair",
-    "build_emp", "build_mine", "build_chaff",
-  ]);
+  /** Final-orbit UI. Driven off the live /status ``final_orbit`` flag.
+   *
+   *  v1.13 — this used to grey out every build and repair, leaving only
+   *  refine / ship / flush, because those were the last-turn moves that
+   *  still paid. All three are gone and settlement happens on its own,
+   *  so there is nothing left to protect the player from except wasting
+   *  their own credits — which the banner warns about and the engine
+   *  now permits. The buttons stay live; we only clear any lock a
+   *  previous version of this code may have left on them. */
   function updateFinalOrbitUi(isFinal) {
     const banner = document.getElementById("final-orbit-banner");
     if (banner) banner.hidden = !isFinal;
     document.querySelectorAll("[data-orbit-action]").forEach((btn) => {
-      const act = btn.getAttribute("data-orbit-action") || "";
-      const blocked = isFinal && FINAL_ORBIT_BLOCKED.has(act);
-      btn.classList.toggle("orbit-btn--locked", !!blocked);
-      if (blocked) {
-        btn.setAttribute("disabled", "disabled");
-      } else if (btn.classList.contains("orbit-btn--locked") === false) {
-        // Only clear the disabled flag we set; leave engine-driven
-        // disables (e.g. unaffordable) to their own logic by removing
-        // ours when not in final orbit.
-        if (!isFinal) btn.removeAttribute("disabled");
-      }
+      btn.classList.remove("orbit-btn--locked");
+      btn.removeAttribute("disabled");
     });
   }
 
@@ -14994,27 +13781,32 @@
     return `p${m[1]}`;
   }
 
-  /** Render the interactive 4×5 catapult slot grid from the engine's
-   *  ``slot_assignments`` ledger. Each cell gets a per-seat edge
-   *  variant + a mouseover tooltip via the existing
-   *  ``cc-vault-tooltip`` host system. */
+  /** Render the catapult slot grid from the engine's ``slot_assignments``
+   *  manifest. Each cell gets a per-seat edge variant + a mouseover
+   *  tooltip via the existing ``cc-vault-tooltip`` host system.
+   *
+   *  v1.13 — the grid was a fixed 4×5 because 20 slots were what seats
+   *  bid over, and a cell could be empty (nobody wanted it) or "failed"
+   *  (outbid). Shipping is unconditional now: the manifest is exactly
+   *  what flew, every cell is filled, and it can run past 20 on a night
+   *  when both vaults empty. Rounded up to a whole row of five, with a
+   *  20-cell resting size so an idle catapult still reads as one. */
   function _orbitFlashRenderCatGrid(slotAssignments) {
     const grid = document.createElement("div");
     grid.className = "cc-cat-grid";
     const SEAT_TO_TIER_MULT = window.__SOC_QUALITY_MULT__
       || { trace: 0.75, vein: 1.0, mass: 1.5, pure: 3.0 };
-    for (let i = 0; i < 20; i++) {
+    const n = Array.isArray(slotAssignments) ? slotAssignments.length : 0;
+    const cells = Math.max(20, Math.ceil(n / 5) * 5);
+    for (let i = 0; i < cells; i++) {
       const a = slotAssignments[i] || {};
       const seat = a.seat || null;
       const cell = document.createElement("div");
-      let state = "empty";
-      if (a.shipped) state = "shipped";
-      else if (a.disposition) state = a.disposition;
-      else if (seat) state = "failed_row";
+      const state = a.shipped ? "shipped" : (a.disposition || "empty");
       cell.className =
         `cc-cat-slot ${seat ? `cc-cat-slot--${seat}` : ""}`.trim();
       cell.setAttribute("data-slot-state", state);
-      cell.setAttribute("data-row", String(a.row ?? Math.floor(i / 5)));
+      cell.setAttribute("data-row", String(Math.floor(i / 5)));
       cell.setAttribute("data-slot", String(i));
       if (seat) cell.setAttribute("data-seat", seat);
       const purityNum = Number(a.effective_purity ?? 0);
@@ -15036,16 +13828,15 @@
       // block. Using effective_purity here meant a trace parcel taxed to
       // 0 fell through catTierGlyph to the solid ██ "pure" block.
       const glyphPurity = rawPurity != null ? Number(rawPurity) : purityNum;
-      const glyph = a.shipped ? catTierGlyph(glyphPurity) : (seat ? "x" : "\u00B7");
-      // v0.9.13 — surface the per-slot CREDIT bid (the priority signal,
-      // RULEBOOK §4.4) on the slot face for every occupied slot. Shown
-      // top-right so it doesn't collide with the row label (top-left) or
-      // the effective-purity readout (bottom-right).
-      const bidCr = Number(a.credits ?? 0);
+      const glyph = a.shipped ? catTierGlyph(glyphPurity) : "\u00B7";
+      // v1.13 — the top-right corner used to carry the credit bid that
+      // won the slot. There is no bid; it now carries the score the
+      // parcel actually banked, which is the number a player is
+      // reading the grid for.
       cell.innerHTML =
-        `<span class="cc-cat-slot-label">${a.row != null ? `r${a.row + 1}` : ""}</span>` +
-        (seat
-          ? `<span class="cc-cat-slot-bid">${bidCr}c</span>`
+        `<span class="cc-cat-slot-label">${a.shipped ? tier : ""}</span>` +
+        (a.shipped && score != null
+          ? `<span class="cc-cat-slot-bid">+${score}</span>`
           : "") +
         `<span class="cc-cat-slot-glyph">${glyph}</span>` +
         (a.shipped
@@ -15062,12 +13853,6 @@
         cell.setAttribute("data-tooltip-eff", String(purityNum));
         cell.setAttribute("data-tooltip-mult", String(mult ?? ""));
         cell.setAttribute("data-tooltip-score", String(score ?? ""));
-        cell.setAttribute("data-tooltip-bid", String(bidCr));
-      } else if (seat) {
-        cell.setAttribute("data-tooltip-kind", "cat-slot-failed");
-        cell.setAttribute("data-tooltip-seat", seat);
-        cell.setAttribute("data-tooltip-state", state);
-        cell.setAttribute("data-tooltip-bid", String(bidCr));
       } else {
         cell.setAttribute("data-tooltip-kind", "cat-slot-empty");
       }
@@ -15099,36 +13884,33 @@
     return legend;
   }
 
-  /** v0.9.x — GREEN CATAPULT settlement section for the post-orbital
-   *  briefing. Always rendered (public, like the RED catapult), even on
-   *  a quiet night when no house flushed. Reads the ``jettison`` blob
-   *  (12 shared slots, diminishing RED-fuel cost): ``slots_total``,
-   *  ``slots_used``, ``slot_assignments`` and per-seat ``seats``. */
+  /** v1.13 — GREEN disposal section for the post-orbital briefing.
+   *
+   *  Was a 12-slot shared lattice with a diminishing RED-fuel cost ramp
+   *  that houses drafted for. Disposal is now automatic and flat-priced,
+   *  so there is no lane to draw and no scarcity to show: this renders
+   *  the manifest of what each house dumped and what it cost them.
+   *  Still always rendered, even on a night nobody held green, because
+   *  its absence is itself the information (a clean vault). */
   function _orbitFlashRenderGreenSection(jet, allSeats) {
     const section = document.createElement("div");
     section.className = "cc-orbit-flash-green";
-    const cfg = _greenCfg();
-    const slotsTotal = Number(jet?.slots_total ?? cfg.slots) || 12;
-    const slotsUsed = Number(jet?.slots_used ?? 0) || 0;
-    const head = document.createElement("div");
-    head.className = "cc-orbit-flash-section-head";
-    head.textContent =
-      `GREEN CATAPULT \u00B7 ${slotsUsed}/${slotsTotal} flushed`;
-    section.appendChild(head);
-
     const assignments = Array.isArray(jet?.slot_assignments)
       ? jet.slot_assignments
       : [];
-    // Always render the lattice — like the RED catapult, the GREEN lane
-    // shows its full slot grid (with the diminishing cost ramp) even on a
-    // quiet night when nobody flushed.
-    section.appendChild(
-      _orbitFlashRenderGreenGrid(assignments, slotsTotal, cfg),
-    );
+    const head = document.createElement("div");
+    head.className = "cc-orbit-flash-section-head";
+    head.textContent = assignments.length
+      ? `SOLAR CATAPULT \u00B7 ${assignments.length} dumped`
+      : "SOLAR CATAPULT \u00B7 nothing held";
+    section.appendChild(head);
+    // Always draw the lane, even on a night nobody held green — an idle
+    // catapult is information too, and it keeps the briefing's shape
+    // stable between days.
+    section.appendChild(_orbitFlashRenderGreenGrid(assignments));
     section.appendChild(_orbitFlashRenderLegend(assignments, allSeats));
 
-    // Per-seat green totals for ALL seats (mirrors the RED totals row):
-    // parcels flushed + RED fuel spent/committed.
+    // Per-seat totals for ALL seats, mirroring the RED row.
     const totals = document.createElement("div");
     totals.className = "cc-orbit-flash-totals";
     for (const seat of allSeats) {
@@ -15140,11 +13922,11 @@
       tag.textContent = playerTag(seat);
       tag.style.color = ownerColor(seat);
       const val = document.createElement("span");
-      const flushed = Number(sb.awarded || 0);
-      const spent = Number(sb.fuel_spent || 0);
-      const budget = Number(sb.fuel_forfeit ?? sb.budget ?? 0);
-      val.textContent =
-        `${flushed} flushed \u00B7 ${spent}/${budget} RED`;
+      const dumped = Number(sb.awarded || 0);
+      const penalty = Number(sb.penalty || 0);
+      val.textContent = dumped
+        ? `${dumped} dumped \u00B7 \u2212${penalty}`
+        : "clean";
       row.append(tag, val);
       totals.appendChild(row);
     }
@@ -15152,45 +13934,48 @@
     return section;
   }
 
-  function _orbitFlashRenderGreenGrid(slotAssignments, slotsTotal, cfg) {
+  /** One cell per disposed parcel, padded out to a 12-cell resting lane
+   *  (see ``_orbitFlashRenderCatGrid`` for why the size floats). */
+  function _orbitFlashRenderGreenGrid(slotAssignments) {
     const grid = document.createElement("div");
     grid.className = "cc-cat-grid cc-cat-grid--green";
-    const total = Number(slotsTotal) || 12;
-    const gc = cfg || _greenCfg();
-    for (let i = 0; i < total; i++) {
-      const a = slotAssignments[i] || {};
-      const seat = a.seat || null;
-      const flushed = !!a.flushed;
-      // Use the settled slot cost when present, else fall back to the
-      // config cost ramp (50/45/40… diminishing) so an empty lane still
-      // shows the cost ladder.
-      const cost = a.cost != null ? Number(a.cost) : _greenSlotCost(i, gc);
+    const rows = Array.isArray(slotAssignments) ? slotAssignments : [];
+    const cells = Math.max(12, Math.ceil(rows.length / 5) * 5);
+    for (let i = 0; i < cells; i++) {
+      const a = rows[i] || null;
+      const seat = a?.seat || null;
+      const penalty = Number(a?.penalty ?? 0);
       const cell = document.createElement("div");
-      // v0.9.13 — GREEN shipping is unsealed + public, so a flushed slot
-      // shows the parcel as a plain green block (██) exactly like the
-      // vault's green hold square — no sealed/hazard glyph. The border is
-      // the OWNING seat's colour (cc-cat-slot--pN); the green fill still
-      // comes from the grid-scoped ``.cc-cat-grid--green`` shipped rule.
-      cell.className =
-        `cc-cat-slot ${flushed && seat ? `cc-cat-slot--${seat}` : ""}`.trim();
-      cell.setAttribute("data-slot", String(i));
-      cell.setAttribute("data-slot-state", flushed ? "shipped" : "empty");
-      if (seat) cell.setAttribute("data-seat", seat);
-      const glyph = flushed ? "\u2588\u2588" : "\u00B7";
-      cell.innerHTML =
-        `<span class="cc-cat-slot-label">s${i + 1}</span>` +
-        `<span class="cc-cat-slot-glyph${flushed ? "" : " dim"}">${glyph}</span>` +
-        `<span class="cc-cat-slot-purity${flushed ? "" : " dim"}">${cost}</span>`;
-      const sid = a?.parcel?.square_id || a?.parcel?.site_id || "";
-      if (flushed && seat) {
-        cell.setAttribute("data-tooltip-kind", "green-slot");
-        cell.setAttribute("data-tooltip-seat", seat);
-        cell.setAttribute("data-tooltip-sid", String(sid));
-        cell.setAttribute("data-tooltip-cost", String(cost));
-      } else {
+      if (!a) {
+        cell.className = "cc-cat-slot";
+        cell.setAttribute("data-slot", String(i));
+        cell.setAttribute("data-slot-state", "empty");
+        cell.innerHTML =
+          `<span class="cc-cat-slot-label">${i + 1}</span>` +
+          `<span class="cc-cat-slot-glyph dim">\u00B7</span>`;
         cell.setAttribute("data-tooltip-kind", "green-slot-empty");
-        cell.setAttribute("data-tooltip-cost", String(cost));
+        grid.appendChild(cell);
+        continue;
       }
+      // v0.9.13 — GREEN is unsealed + public, so a dumped parcel shows as
+      // a plain green block (██) exactly like the vault's green hold
+      // square — no sealed/hazard glyph. The border is the OWNING seat's
+      // colour (cc-cat-slot--pN); the green fill comes from the
+      // grid-scoped ``.cc-cat-grid--green`` shipped rule.
+      cell.className =
+        `cc-cat-slot ${seat ? `cc-cat-slot--${seat}` : ""}`.trim();
+      cell.setAttribute("data-slot", String(i));
+      cell.setAttribute("data-slot-state", "shipped");
+      if (seat) cell.setAttribute("data-seat", seat);
+      cell.innerHTML =
+        `<span class="cc-cat-slot-label">${i + 1}</span>` +
+        `<span class="cc-cat-slot-glyph">\u2588\u2588</span>` +
+        `<span class="cc-cat-slot-purity">\u2212${penalty}</span>`;
+      const sid = a?.parcel?.square_id || a?.parcel?.site_id || "";
+      cell.setAttribute("data-tooltip-kind", "green-slot");
+      cell.setAttribute("data-tooltip-seat", String(seat || ""));
+      cell.setAttribute("data-tooltip-sid", String(sid));
+      cell.setAttribute("data-tooltip-cost", String(penalty));
       grid.appendChild(cell);
     }
     bindCatSlotTooltip(grid);
@@ -15242,7 +14027,6 @@
       const eff = slot.getAttribute("data-tooltip-eff") || "";
       const mult = slot.getAttribute("data-tooltip-mult") || "";
       const score = slot.getAttribute("data-tooltip-score") || "";
-      const bid = slot.getAttribute("data-tooltip-bid") || "";
       rows.push(
         `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--coord">${esc(
           playerTag(seat),
@@ -15250,22 +14034,7 @@
         `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--hash">${esc(sid)}</div>`,
         `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">origin (${esc(ox)},${esc(oy)})</div>`,
         `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">tier ${esc(tier)} \u00B7 purity ${esc(eff)}${raw && raw !== eff ? ` (raw ${esc(raw)})` : ""}</div>`,
-        `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">bid ${esc(bid)}cr \u00B7 \u00D7 ${esc(mult)} = score ${esc(score)}</div>`,
-      );
-    } else if (kind === "cat-slot-failed") {
-      const state = slot.getAttribute("data-tooltip-state") || "failed_row";
-      const bid = slot.getAttribute("data-tooltip-bid") || "";
-      const label = state === "cannibalised_as_fuel"
-        ? "cannibalised \u2192 fuel"
-        : state === "overflow_jettisoned"
-          ? "overflow \u2192 jettisoned"
-          : "row failed \u00B7 fuel paid, no ship";
-      rows.push(
-        `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--coord">${esc(
-          playerTag(seat),
-        )}</div>`,
-        `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">${esc(label)}</div>`,
-        `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">bid ${esc(bid)}cr</div>`,
+        `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">${esc(eff)} \u00D7 ${esc(mult)} = score ${esc(score)}</div>`,
       );
     } else if (kind === "green-slot") {
       const sid = slot.getAttribute("data-tooltip-sid") || "";
@@ -15273,14 +14042,9 @@
       rows.push(
         `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--coord">${esc(
           playerTag(seat),
-        )} \u00B7 GREEN FLUSHED</div>`,
+        )} \u00B7 GREEN DUMPED</div>`,
         `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--hash">${esc(sid)}</div>`,
-        `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">slot cost ${esc(cost)} RED \u00B7 avoided \u2212100</div>`,
-      );
-    } else if (kind === "green-slot-empty") {
-      const cost = slot.getAttribute("data-tooltip-cost") || "";
-      rows.push(
-        `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">empty slot \u00B7 cost ${esc(cost)} RED</div>`,
+        `<div class="cc-vault-tooltip-row cc-vault-tooltip-row--meta">\u2212${esc(cost)} score \u00B7 automatic, no fuel</div>`,
       );
     } else {
       rows.push(
@@ -16292,6 +15056,35 @@
   };
   const NGM_SEAT_IDS = ["p1", "p2", "p3", "p4"];
   const NGM_SEAT_LABELS = { p1: "WHITE", p2: "YELLOW", p3: "MAGENTA", p4: "CYAN" };
+
+  // v1.12 — the selectable-agent roster, served from the binding
+  // registry at /api/meta/agents. Kept as a module-level cache so
+  // renderNewGameSeats() stays synchronous; the fallback is the shipped
+  // roster, so the modal still works if the fetch fails.
+  let _AGENT_ROSTER = null;
+  const _AGENT_ROSTER_FALLBACK = [
+    { value: "human", label: "HUMAN — pilot from this browser" },
+    { value: "red_harvest_lite", label: "RED_HARVEST_LITE — heuristic bot, no weapons (start here)" },
+    { value: "red_harvest", label: "RED_HARVEST — heuristic bot, weapons on" },
+    { value: "tabula_v12", label: "V12 — LLM agent (needs a Snowflake PAT · slow)" },
+  ];
+
+  function agentRoster() {
+    return (_AGENT_ROSTER && _AGENT_ROSTER.length)
+      ? _AGENT_ROSTER
+      : _AGENT_ROSTER_FALLBACK;
+  }
+
+  /** Refresh the roster from the server. Called before the New Game
+   *  modal opens so a freshly-registered fork appears without a reload. */
+  async function loadAgentRoster() {
+    try {
+      const r = await fetch("/api/meta/agents", { cache: "no-store" });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && Array.isArray(j.agents) && j.agents.length) _AGENT_ROSTER = j.agents;
+    } catch (_e) { /* keep the fallback */ }
+  }
   
   // v0.9.18 — color palette for player customization (fetched from /api/game/palette)
   // The fallback mirrors SEAT_COLOR_PALETTE in session.py so the picker is
@@ -16417,15 +15210,16 @@
       const sel = document.createElement("select");
       sel.className = "cc-newgame-seat-select";
       sel.setAttribute("aria-label", `${sid} agent`);
-      for (const [val, label] of [
-        ["human", "HUMAN — pilot from this browser"],
-        ["red_harvest_lite", "RED_HARVEST_LITE — heuristic bot, no weapons (start here)"],
-        ["red_harvest", "RED_HARVEST — heuristic bot, weapons on"],
-        ["tabula_v12", "V12 — LLM agent (needs a Snowflake PAT · slow)"],
-      ]) {
+      // v1.12 — roster comes from /api/meta/agents (the binding
+      // registry), not a list here. A hackathon fork that registers a
+      // binding shows up in this dropdown with no frontend edit; the
+      // hardcoded version meant teams shipped an agent they couldn't
+      // select. _AGENT_ROSTER is the last fetched copy, with the
+      // shipped roster as a cold-start fallback.
+      for (const entry of agentRoster()) {
         const opt = document.createElement("option");
-        opt.value = val;
-        opt.textContent = label;
+        opt.value = entry.value;
+        opt.textContent = entry.label;
         sel.appendChild(opt);
       }
       // Default rivals to the no-weapons bot: a first-timer shouldn't be
@@ -16565,6 +15359,12 @@
     if (!modal) return;
     const status = document.getElementById("new-game-modal-status");
     if (status) status.textContent = "";
+
+    // Refresh every open, not once per page load: a team registering a
+    // fork restarts the server, and expecting them to also hard-refresh
+    // the tab is the kind of papercut that reads as "my agent didn't
+    // work".
+    await loadAgentRoster();
     
     // v0.9.18 — fetch color palette if not already loaded
     if (__SOC_COLOR_PALETTE__.length === 0) {
@@ -17058,6 +15858,15 @@
     const u = new URL(originUrl || window.location.href);
     u.hash = "";
     u.search = "";
+    // v1.12 — pin the path. This used to inherit whatever path the
+    // caller's URL had, which was fine for same-origin links (you are
+    // already on /play) but silently wrong for LAN links: fetchLanOrigin
+    // returns a bare origin like http://192.168.1.42:8000, whose path is
+    // "/" — the landing page, which ignores ?session/?player entirely.
+    // So every QR a phone scanned opened the title screen instead of the
+    // game. Setting it explicitly makes the link correct no matter what
+    // the caller passes in.
+    u.pathname = "/play";
     u.searchParams.set("session", sid);
     u.searchParams.set("player", seat);
     return u.toString();
@@ -17264,39 +16073,11 @@
       row.appendChild(top);
       row.appendChild(qr);
 
-      // Mobile sub-row (below desktop link/QR)
-      const mobileDivider = document.createElement("div");
-      mobileDivider.style.cssText = "border-top:1px solid rgba(255,255,255,0.08);margin:6px 0 4px;";
-      const mobileTag = document.createElement("span");
-      mobileTag.style.cssText = "font-size:10px;letter-spacing:0.08em;opacity:0.50;flex:0 0 auto;padding:4px 8px;border:1px solid rgba(255,255,255,0.12);border-radius:2px;";
-      mobileTag.textContent = "MOBILE ▶";
-      const mobileInput = document.createElement("input");
-      mobileInput.className = "cc-share-input";
-      mobileInput.readOnly = true;
-      const mobileUrl = (() => { const u = new URL(link); u.pathname = "/mobile"; return u.toString(); })();
-      mobileInput.value = mobileUrl;
-      const mobileCopyBtn = document.createElement("button");
-      mobileCopyBtn.type = "button";
-      mobileCopyBtn.className = "cli-btn cc-share-copy";
-      mobileCopyBtn.textContent = "[ COPY ]";
-      mobileCopyBtn.addEventListener("click", async () => {
-        try { await navigator.clipboard.writeText(mobileInput.value); } catch (_e) { mobileInput.select(); try { document.execCommand("copy"); } catch (_e2) {} }
-        mobileCopyBtn.textContent = "[ COPIED ]";
-        setTimeout(() => { mobileCopyBtn.textContent = "[ COPY ]"; }, 1500);
-      });
-      const mobileTop = document.createElement("div");
-      mobileTop.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
-      mobileTop.appendChild(mobileTag);
-      mobileTop.appendChild(mobileInput);
-      mobileTop.appendChild(mobileCopyBtn);
-      const mobileQr = document.createElement("div");
-      mobileQr.className = "cc-share-qr";
-      renderQrInto(mobileQr, mobileUrl);
-      row.appendChild(mobileDivider);
-      row.appendChild(mobileTop);
-      row.appendChild(mobileQr);
+      // v1.13 — the second "MOBILE ▶" link/QR pointing at /mobile is
+      // gone with that fork. /play is responsive, so one link per seat
+      // works on every device and there's nothing to pick between.
       card.appendChild(row);
-      return { seat, input, qr, mobileInput, mobileQr };
+      return { seat, input, qr };
     });
 
     const lanNote = document.createElement("div");
@@ -17322,15 +16103,10 @@
       lanNote.textContent = "↻ resolving your network address…";
       void fetchLanOrigin().then((origin) => {
         if (origin) {
-          rows.forEach(({ seat, input, qr, mobileInput, mobileQr }) => {
+          rows.forEach(({ seat, input, qr }) => {
             const lanUrl = buildSeatUrl(origin, sid, seat);
             input.value = lanUrl;
             renderQrInto(qr, lanUrl);
-            if (mobileInput && mobileQr) {
-              const mu = new URL(lanUrl); mu.pathname = "/mobile";
-              mobileInput.value = mu.toString();
-              renderQrInto(mobileQr, mu.toString());
-            }
           });
           lanNote.textContent = `Links point at ${origin} — phones must be on the same Wi-Fi. For remote players, run a tunnel and open the laptop on its URL.`;
         } else {
@@ -17741,7 +16517,7 @@
   }
 
   // ── Agent-thinking indicator ("who is being waited on" + live timer) ──
-  // A Cortex/harness seat (e.g. pilot_v2) takes ~30-80s per turn. The
+  // An LLM harness seat (e.g. tabula_v12) takes ~30-80s per turn. The
   // server pre-fires it in the background while the human deliberates and
   // reports the in-flight turn via ``status.bot_turn`` (seat + elapsed_ms).
   // We surface that as a small pill with a client-ticked seconds counter so

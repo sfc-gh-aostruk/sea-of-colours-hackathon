@@ -140,8 +140,39 @@ pip install -r requirements-snowflake.txt
 > `--dry-run` check above before pointing this at a deployment whose
 > history you care about.
 
-See `README.md`'s "Web + Snowflake" section for the full flag reference
-and cost notes on this path.
+### Deploy flags
+
+| Flag | Effect |
+| ---- | ------ |
+| `--schema-only` | Stop after `soc_schema.sql` + `soc_views.sql`. |
+| `--no-procs`    | Skip `soc_procedures.sql` (procedures will be missing). |
+| `--config FILE` | Use a different Snowflake config (default: `~/.ssh/sf_config`). |
+| `--dry-run`     | Print the resolved database / schema / warehouse and exit without connecting. |
+
+The deploy also builds and uploads the engine package zip
+(`build/sea_of_colours.zip`) to `@SOC_PY_STAGE`, so every stored
+procedure's `IMPORTS =` clause resolves to live code.
+
+### What it costs
+
+- Every executed move writes one row to `SOC_REPLAY_FRAME` (plus a
+  per-night `[opening]` and `[dawn]` row). A full 25-move night caps at
+  ~27 rows; a 30-night season is roughly 750 VARIANT rows.
+- Stored procedures run on the warehouse resolved by
+  [`naming.py`](../sea_of_colours/snowpark/naming.py) — by default a
+  dedicated XSMALL `SOC_HACKATHON_WH` with `AUTO_SUSPEND = 60`. Point
+  `SOC_WAREHOUSE` at an existing warehouse if you'd rather not have
+  another one.
+- **V12 doesn't use a warehouse at all.** It bills Cortex inference
+  tokens per turn, calling the chat-completions endpoint directly with
+  a PAT. That cost applies whether or not you deploy this schema.
+
+### One season at a time
+
+`init_session` wipes every `SOC_*` row — including the previous
+season's replay frames, agent invocations and log lines — then writes
+the new season as the only row. Nothing accumulates across seasons, on
+any backend. Archiving seasons before the wipe is deliberately deferred.
 
 ## Troubleshooting
 

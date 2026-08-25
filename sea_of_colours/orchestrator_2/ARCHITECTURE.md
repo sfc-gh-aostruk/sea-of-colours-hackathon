@@ -68,19 +68,32 @@ orchestrator_2 splits the responsibilities cleanly:
 
 The registry checks, in order:
 
+0. **Seat label** from the New Game menu, looked up in
+   `AGENT_LABEL_BINDINGS`. This is how live games route and the path
+   almost everything takes. It deliberately outranks the env vars: a
+   host with `SOC_CORTEX_AGENT` exported shouldn't have it silently
+   override what a player picked in the menu.
 1. **`SOC_BINDING_<PLAYER>` env var** — explicit override, format
-   `kind:locator[:label]`. Used by eval CLIs.
+   `kind:locator[#label]`. The label separator is `#`, not a third
+   colon, because `harness_in_process` locators contain a colon
+   (`module:callable`) and colon-splitting mangled them.
 2. **`SOC_CORTEX_AGENT` env var + `KNOWN_AGENT_BINDINGS` map** — lets
-   legacy callers keep setting `SOC_CORTEX_AGENT` and the registry
-   maps the name to the right binding kind. Today maps PILOT_V2.
+   headless callers name an agent by its registry key. Today maps
+   `SOC_RED_REAPER_TABULA_V12` plus any hackathon forks.
 3. **`runtime_override="cortex"` + unknown agent name** — falls back to
-   `kind=cortex_agent` so callers can talk to any deployed Cortex
-   agent without registering it.
+   `kind=cortex_agent`. Vestigial: no Cortex agent objects ship any
+   more, since V12 talks to Cortex *inference* over REST.
 4. **`SOC_AGENT_RUNTIME=heuristic` (or unset)** — `kind=heuristic`.
 5. **Default** — `kind=heuristic`.
 
-The `SOC_AGENT_BINDING` Snowflake table (Phase 5 schema) is a future
-deliverable; today the env-var path covers all use cases.
+Unrecognised labels resolve to the heuristic rather than raising, so a
+typo produces a bot that plays instead of a crashed turn. Convenient in
+a live game, confusing while developing — if your agent seems to have
+been replaced by RED_HARVEST, check the label spelling first.
+
+The `SOC_AGENT_BINDING` Snowflake table is authored in
+`snowflake/orchestrator_v2_schema.sql` but not consulted yet; the
+in-process registry covers every current use case.
 
 ## What's "universal" vs what's per-agent
 
@@ -92,9 +105,9 @@ deliverable; today the env-var path covers all use cases.
 | Policy-queue reconciliation | yes | no |
 | Heuristic fallback on miss | yes | no |
 | Audit row write | yes | no |
-| Candidate compilation | NO | yes (PILOT_V2 only) |
-| Threat brief | NO | yes (PILOT_V2 only) |
-| Season memory | NO | yes (PILOT_V2 only) |
+| Option-menu compilation | NO | yes (V12 and its forks) |
+| Threat brief | NO | yes (V12 and its forks) |
+| Season memory | NO | yes (V12 and its forks) |
 | Custom prompt format | NO | yes |
 | Inner Cortex Agent invocation | NO | yes |
 | Wall-clock cap | mechanism yes, value per-agent | value yes |
