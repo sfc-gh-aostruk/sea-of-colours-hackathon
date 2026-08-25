@@ -39,7 +39,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from sea_of_colours.agent.runtime import run_agent_turn
@@ -317,6 +317,10 @@ def _kick_bots(game_id: str) -> None:
 _HEURISTIC_RUNTIMES = ("heuristic", "red_harvest_lite")
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_MANUAL_DIR = _REPO_ROOT / "manual"
+_GUIDE_DIR = _REPO_ROOT / "guide"
+_DOCS_DIR = _REPO_ROOT / "docs"
 _INDEX_HTML = _STATIC_DIR / "index.html"
 _EVALS_HTML = _STATIC_DIR / "evals.html"
 _MOBILE_HTML = _STATIC_DIR / "mobile.html"
@@ -396,7 +400,62 @@ class _NoCacheStatic(StaticFiles):
         return response
 
 
+class _DocsStatic(_NoCacheStatic):
+    """Static files, but Markdown is served as text the browser will show.
+
+    Starlette types ``.md`` as ``text/markdown``, which browsers download
+    rather than render — so a doc link would silently produce a file in
+    ~/Downloads instead of a page. Markdown is designed to read fine as
+    plain text, so overriding the type is enough; rendering it properly
+    would mean adding a Markdown dependency for a handful of links.
+    """
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        if path.lower().endswith(".md"):
+            response.headers["Content-Type"] = "text/plain; charset=utf-8"
+        return response
+
+
 app.mount("/static", _NoCacheStatic(directory=_STATIC_DIR), name="static")
+
+# v1.12 — serve the two reader-facing document trees over HTTP as well.
+# They were built as self-contained file:// pages and still work that
+# way, but that meant the only way to share them was "clone the repo and
+# open a folder". Mounting them lets a host hand out a URL — including
+# over the multiplayer tunnel — and costs nothing, since both are plain
+# static assets. `html=True` makes /guide/ and /manual/ serve index.html.
+if _MANUAL_DIR.is_dir():
+    app.mount(
+        "/manual", _NoCacheStatic(directory=_MANUAL_DIR, html=True), name="manual",
+    )
+if _GUIDE_DIR.is_dir():
+    app.mount(
+        "/guide", _NoCacheStatic(directory=_GUIDE_DIR, html=True), name="guide",
+    )
+if _DOCS_DIR.is_dir():
+    app.mount("/docs", _DocsStatic(directory=_DOCS_DIR), name="docs")
+
+
+@app.get("/{name:path}.md", include_in_schema=False)
+def api_root_markdown(name: str) -> Response:
+    """Serve the root-level Markdown the guide links to (README, RULEBOOK).
+
+    Restricted to a fixed set rather than resolving arbitrary paths: this
+    route sits at the URL root, so anything looser would be a directory
+    traversal waiting to happen.
+    """
+    allowed = {"README", "RULEBOOK", "AGENTS"}
+    if name not in allowed:
+        raise HTTPException(status_code=404, detail="not found")
+    path = _REPO_ROOT / f"{name}.md"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    return Response(
+        content=path.read_text(encoding="utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 def _rgb(triple: tuple[int, int, int]) -> str:

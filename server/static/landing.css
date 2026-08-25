@@ -212,6 +212,27 @@ body::before {
 }
 .landing-hint.is-error { color: var(--off); }
 
+/* Doc links — deliberately quiet. They sit under the actions so someone
+   handed a URL can find the guide, without competing with the buttons. */
+.landing-docs {
+  margin: 18px 0 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+.landing-docs a {
+  color: var(--dim);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.landing-docs a:hover,
+.landing-docs a:focus-visible {
+  color: var(--fg, #f3f3fa);
+  border-bottom-color: currentColor;
+}
+.landing-docs span { margin: 0 8px; opacity: 0.5; }
+
 /* Bottom-right status badge */
 .status-badge {
   position: fixed;

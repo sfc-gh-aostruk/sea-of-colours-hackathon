@@ -59,6 +59,15 @@
       </button>
     </nav>
     <p id="landing-hint" class="landing-hint" role="status" aria-live="polite"></p>
+    <!-- Reader-facing docs, served by the app so a shared URL (including
+         a tunnel origin) carries them too. -->
+    <p class="landing-docs">
+      <a href="/guide/">guide</a>
+      <span aria-hidden="true">·</span>
+      <a href="/manual/">manual</a>
+      <span aria-hidden="true">·</span>
+      <a href="/manual/agent.html">agent &amp; harness</a>
+    </p>
   </main>
 
   <!-- Bottom-right server-status badge (polls /api/meta/status). -->

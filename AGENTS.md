@@ -18,6 +18,10 @@ This file is always-on context for AI agents; keep it lean and current.
  `#tab=<name>`). It quotes concrete commands, expected output and the
  pytest baseline, so **it's a fan-out surface**: if you change install
  steps, env vars, agent names or the new-game modal, reconcile it.
+ Both `guide/` and `manual/` still open off disk (that's the point —
+ they work before Python does) and are **also** mounted by the server
+ at `/guide/` and `/manual/`, so keep their cross-links relative
+ (`../manual/index.html`) — those resolve correctly under both.
 - `manual/agent.html` — the agent & harness guide: one real V12 turn
  taken apart (percept → prompt → reply → sanitiser → engine). Its data
  is **generated**, not hand-written — regenerate via

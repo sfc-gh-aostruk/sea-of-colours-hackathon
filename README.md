@@ -13,6 +13,12 @@ an illustrated walkthrough from downloading this repo to finishing your
 first season, including the Snowflake setup for the LLM agent. The rest
 of this file is the reference version of the same ground.
 
+It opens straight off disk, before you install anything. Once the server
+is up it is also served at <http://127.0.0.1:8000/guide/>, alongside the
+manual at `/manual/` and the agent & harness guide at
+`/manual/agent.html` — so a host can share one URL and everything is
+reachable from it.
+
 Needs Python 3.10+. No Snowflake account, no config, no build step.
 
 ```bash
