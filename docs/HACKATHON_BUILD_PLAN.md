@@ -89,7 +89,7 @@ weapons decision for the attendee to make.
 | 1 | Port to this clean repo; BYO-Snowflake docs; re-apply RED_HARVEST_LITE fresh | ✅ done |
 | 1.5 | Re-sync from the dev repo (engine/rulebook/manual/UI), bring V12 across, delete V11 | ✅ done (2026-08-25) — see audit below |
 | 2 | Trim the agent roster to exactly `RED_HARVEST` / `RED_HARVEST_LITE` / `V12` | ✅ done (2026-08-25) — legacy Cortex Agents-API path removed, all retired harnesses deleted, V12 flattened off `tabula_v7` and now self-contained |
-| 3 | Easy install & first-run verification pass — **the north-star phase**; untangle the two Snowflake dependencies, preserve the multiplayer/tunnel suite. Treat it as a product goal, not a checkbox | pending |
+| 3 | Easy install & first-run verification pass — **the north-star phase**; untangle the two Snowflake dependencies, preserve the multiplayer/tunnel suite. Treat it as a product goal, not a checkbox | 🟢 substantially done (2026-08-25, v1.12) — backend auto-detects, boot probe + actionable errors, `quickstart_check.py`, one-click Quick game, docs reconciled; verified from a fresh venv on base requirements. Remaining: a walk-through against a genuinely fresh **trial account** (all Snowflake checks so far were offline or against an existing account) |
 | 4 | Simplify the Orbital phase down to purchasing + weapons buying (drop refine/catapult/jettison); re-teach all three agents the new orbit | pending — shape agreed, **confirm the open questions with the user before any implementation** |
 | 5 | Finish/polish the interactive manual (`manual/`) | pending |
 | 6 | Hackathon Guide (onboarding, sibling to `manual/`) | 🟡 first cut landed (2026-08-25) — `guide/index.html`; revisit after Phases 3/4 change the install story and the orbit |
@@ -773,12 +773,21 @@ first move.
   "for persistence:" hint is deliberately *not* labelled "fix" on the
   auto→memory path — landing on memory is the supported outcome, and
   calling it a fix tells a first-timer their working install is broken.
-- **`scripts/quickstart_check.py`** becomes load-bearing rather than a
-  nice-to-have: Python version, deps importable, config found, Snowpark
-  session opens, schema present, PAT reachable, `cloudflared` on PATH
-  (see multiplayer below), `pytest` green — one pass/fail line each
-  with the fix command beside any failure. This is what turns "it
-  doesn't work" into a support-free hackathon.
+- ✅ (DONE, v1.12) **`scripts/quickstart_check.py`** — it didn't exist;
+  now it does. Python version, virtualenv, base deps, engine imports,
+  resolved backend, agent roster, Cortex credentials, Snowpark
+  readiness, `cloudflared`, and `pytest` behind `--tests`. One
+  pass/fail line each with the fix beside any failure, so the output is
+  self-contained.
+  - **Only the base install can fail the run.** Snowflake, Cortex and
+    `cloudflared` report `skip`, not `fail` — a green run means nothing
+    is broken, not that you configured Snowflake. Reporting optional
+    capability as failure trains people to ignore the output.
+  - **Offline by default** (`--network` opts in), because opening a
+    Snowpark session costs seconds and resumes a warehouse.
+  - The `--tests` line reports `warn`, not `fail`, on the known
+    `two_seams_choose_one` failure — same reasoning as the guide's
+    pytest checkpoint.
 - ✅ (DONE, v1.12) **Fix the docs' story.** Every surface that told
   people to prefix `SOC_BACKEND=memory` now just says `python
   run_web.py`: `README.md` (quickstart + backend table + hosting note),
@@ -794,11 +803,14 @@ first move.
   fresh clone**, walking the doc literally as a first-time reader
   would — not from this already-configured machine. Re-verify after
   Phase 2's edits land, since deletions are easy to over-reach.
-- Count the steps between launching the server and the first move —
-  seat selection, map choice, opponent choice. Every one is a place a
-  first-timer stalls. A one-click "quick game vs `RED_HARVEST_LITE`"
-  from the landing page is probably the highest-leverage single change
-  in this phase.
+- ✅ (DONE, v1.12) **One-click quick game.** A `Quick game` button on the
+  landing page goes to `/play?new=quick`, which spawns you vs
+  `RED_HARVEST_LITE` on the standard map and lands on the board — no
+  launcher. Every field in that modal has a right answer for a
+  first-timer and no way to know it, so those four decisions were pure
+  stall. `Play` still opens the launcher for anyone who wants to change
+  something. Reuses the existing `?new=multi` deep-link convention
+  rather than adding a second mechanism.
 - Keep `SOC_BACKEND=memory` working and tested — it's what `pytest`
   uses and the offline fallback.
 - ✅ (DONE, Phase 2) **`pytest.ini` collected only `tests`**, so the

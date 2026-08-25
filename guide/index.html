@@ -765,12 +765,30 @@
           </p>
         </div>
 
+        <div class="gd-note">
+          <b class="tag">Something not right?</b>
+          <p>
+            <code>python scripts/quickstart_check.py</code> checks your
+            Python version, dependencies, backend, agent roster, Snowflake
+            credentials and <code>cloudflared</code>, and prints the fix
+            next to anything that fails. Add <code>--network</code> to also
+            contact Snowflake, <code>--tests</code> to run the suite.
+            Optional things report <em>skip</em>, not failure &mdash; a
+            clean run means nothing is broken, not that you set up
+            Snowflake.
+          </p>
+        </div>
+
         <div class="gd-check">
           <span class="mark">&#10003;</span>
           <span>
-            <b>Checkpoint.</b> You should see a dark terminal-style interface
-            with a fogged board and a
-            <code>[ &gt; NEW GAME ]</code> button in the header.
+            <b>Checkpoint.</b> You should see the title screen with
+            <code>Quick game</code>, <code>Play</code>,
+            <code>Multiplayer</code> and <code>Replay</code>. Hit
+            <code>Quick game</code> and you are on the board against
+            <code>RED_HARVEST_LITE</code> immediately &mdash; skip to
+            <a href="#night">04</a> if you'd rather start playing than read
+            about the launcher.
           </span>
         </div>
       </section>
@@ -780,8 +798,14 @@
         <p class="gd-kicker">03 &middot; First game</p>
         <h2>Spawn a session</h2>
         <p class="gd-lede">
-          Hit <code>[ &gt; NEW GAME ]</code>. The launcher asks four things; the
-          defaults are already the right answer for a first game.
+          <code>Quick game</code> already did this for you &mdash; it spawns
+          the exact setup below. Read on when you want a different map, more
+          seats, or V12 in the other chair; hit <code>Play</code> instead of
+          <code>Quick game</code> to get the launcher.
+        </p>
+        <p>
+          The launcher asks four things, and the defaults are the right
+          answer for a first game.
         </p>
 
         <div class="gd-frame">

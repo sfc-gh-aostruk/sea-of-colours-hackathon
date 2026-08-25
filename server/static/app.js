@@ -19117,6 +19117,17 @@
         newGameModalState.agents.p1 = "human";
         newGameModalState.agents.p2 = "human";
         openNewGameModal();
+      } else if (_np === "quick" && typeof newGame === "function") {
+        // v1.12 — landing-page "Quick game": skip the launcher entirely
+        // and spawn the standard first game (you vs RED_HARVEST_LITE).
+        // Every field in that modal has a right answer for a first-timer
+        // and no way to know it, so the four decisions between launching
+        // the server and the first move were pure stall. The launcher is
+        // still there for anyone who wants to change something.
+        newGame({
+          players: ["p1", "p2"],
+          agents: { p1: "human", p2: "red_harvest_lite" },
+        });
       }
     } catch (_e) { /* non-fatal */ }
   }

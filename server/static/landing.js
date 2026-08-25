@@ -117,6 +117,7 @@
     });
   })();
 
+  var btnQuick = $("btn-quick");
   var btnPlay = $("btn-play");
   var btnMulti = $("btn-multiplayer");
   var btnReplay = $("btn-replay");
@@ -199,6 +200,7 @@
     var currentInterval = null;
 
     var buttonDescriptions = {
+      "btn-quick": "start immediately against RED_HARVEST_LITE, no setup",
       "btn-play": "play against agents and algorithms for supremacy",
       "btn-multiplayer": "play with other human friends as well as agents",
       "btn-replay": "relive past games and learn new strategies"
@@ -260,7 +262,7 @@
     }
 
     // Button text scramble
-    var buttons = [btnPlay, btnMulti, btnReplay];
+    var buttons = [btnQuick, btnPlay, btnMulti, btnReplay];
     buttons.forEach(function (btn) {
       if (!btn) return;
       var textEl = btn.querySelector(".landing-btn-text");
@@ -318,6 +320,14 @@
   })();
 
   // ── navigation ────────────────────────────────────────────────────
+  // v1.12 — "Quick game" spawns you vs RED_HARVEST_LITE and lands on the
+  // board. "Play" still goes to the launcher for anyone who wants to
+  // choose seats, map size or opponent.
+  if (btnQuick) {
+    btnQuick.addEventListener("click", function () {
+      window.location.href = "/play?new=quick";
+    });
+  }
   if (btnPlay) {
     btnPlay.addEventListener("click", function () {
       window.location.href = "/play";

@@ -20,8 +20,14 @@ pip install -r requirements.txt
 python run_web.py
 ```
 
-Open <http://127.0.0.1:8000>, hit **NEW GAME**, leave your seat as
-**HUMAN** and set a rival to **RED_HARVEST_LITE**, and play.
+Open <http://127.0.0.1:8000> and hit **Quick game** — that spawns you vs
+`RED_HARVEST_LITE` and drops you straight on the board. **Play** opens
+the launcher instead, if you want to choose the map, the seats or the
+opponent.
+
+If anything looks wrong, `python scripts/quickstart_check.py` prints one
+line per check with the fix beside any failure (`--network` to also
+contact Snowflake, `--tests` to run the suite).
 
 > Where game state lives is auto-detected: with no Snowflake setup the
 > server uses the in-process `memory` store, which needs nothing and
