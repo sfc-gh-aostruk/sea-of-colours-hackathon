@@ -9,9 +9,9 @@ collision, crash-guard pickups).
 
 from __future__ import annotations
 
-from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import probe_hints as ph
-from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import move_sanitizer as ms
-from sea_of_colours.orchestrator_2.harnesses.tabula_v7.prompt import (
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import probe_hints as ph
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import move_sanitizer as ms
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7.prompt import (
     _euclidean_drop_rows,
     format_supersede_hints_block,
     format_last_night_block,
@@ -663,7 +663,7 @@ def test_sanitizer_deploy_all_truncates_noncontiguous_chain():
 
 
 def test_plan_red_value_counts_only_visible_red():
-    from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import harness as hn
+    from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import harness as hn
     view = _view(live=[(10, 10), (11, 10)], red=[(10, 10, 94)])
     moves = [
         {"a": "drop", "unit": "h1", "at": [10, 10]},   # p94 vein -> 94
@@ -675,7 +675,7 @@ def test_plan_red_value_counts_only_visible_red():
 
 
 def test_plan_red_value_zero_for_unmapped_wander():
-    from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import harness as hn
+    from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import harness as hn
     view = _view(live=[(10, 10)], red=[(10, 10, 94)])
     moves = [
         {"a": "drop", "unit": "h1", "at": [20, 20]},   # not red
@@ -689,7 +689,7 @@ def test_plan_red_value_zero_for_unmapped_wander():
 
 
 def test_continuation_prompt_includes_board_facts():
-    from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import harness as hn
+    from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import harness as hn
     prompt = hn._continuation_prompt(
         "...analysis with no committed moves...",
         day=7, day_cap=7,
@@ -738,7 +738,7 @@ def test_reflect_block_names_chaff_and_crush_losses():
 
 
 def test_continuation_prompt_lists_supersede_targets():
-    from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import harness as hn
+    from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import harness as hn
     prompt = hn._continuation_prompt(
         "draft", day=7, day_cap=7,
         orbit_harvesters=["harvester_p1"],

@@ -506,6 +506,61 @@ def test_launch_onto_opponent_echo_still_surfaces_as_new_launch():
     )
 
 
+def test_launch_onto_opponent_echo_stamps_a_visible_map_glyph():
+    """v1.11 (RULEBOOK §3.15) regression. The v0.9.7 FIX above made a
+    probe merged onto a richer terrain echo surface in the agent-facing
+    intel feed, but never gave the MAP a drawable glyph — the general
+    ghost-glyph path is gated on the terrain echo's own (deliberately
+    un-bumped) ``day_seen``, so the probe sat in ``occupants`` only.
+    Found while diagnosing missing rival probes in a live replay
+    (season V12_HEUR3_SNAP2_s69, seed 69 — the SAME seed as the
+    original v0.9.7 E2 incident this merge branch was named after).
+    """
+    sess = _fresh()
+    # p2 already holds a rich (non-launch) terrain echo at (9,3), just
+    # like the v0.9.7 regression test above.
+    sess.probe_intel["p2"]["9:3"] = {
+        "day_seen": 1, "tile": 0, "purity": 0,
+        "paint": {"bg": "x", "ch": "..", "fg": "y"}, "occupants": [],
+    }
+    sess.day = 5  # well past day_seen=1, so glyph_fresh would be False
+    ok, _ = sess.spawn_probe("p1", 9, 3)
+    assert ok
+
+    merged = sess.probe_intel["p2"]["9:3"]
+    glyph = merged.get("probe_launch_glyph")
+    assert isinstance(glyph, dict) and glyph.get("ch"), (
+        "merge must stamp a dedicated, day_seen-independent glyph marker"
+    )
+    probe_id = glyph["probe_id"]
+
+    # End-to-end: the rendered per-seat dense view must show a drawable
+    # ``entity`` on this cell for p2, even though the terrain echo is
+    # 4 days stale (glyph_fresh would otherwise be False).
+    dense = sess.player_dense_view("p2")
+    cell = dense[3 * sess.width + 9]  # (x=9, y=3)
+    assert cell.get("kind") == "terrain" and cell.get("stale") is True
+    assert cell.get("entity", {}).get("ch") == glyph["ch"], (
+        f"rival probe on a stale echo must still render a glyph: {cell!r}"
+    )
+
+    # Cleanup on death (v1.11): the merged occupant + glyph must be
+    # pruned like any other probe-death site, or they'd be permanent
+    # ghosts (unlike the day_seen-decayed general echo glyph path).
+    sess._clear_probe_launch_markers(probe_id, 9, 3)
+    merged_after = sess.probe_intel["p2"]["9:3"]
+    assert merged_after.get("probe_launch_glyph") is None
+    assert not any(
+        isinstance(o, dict) and o.get("id") == probe_id
+        for o in merged_after.get("occupants") or []
+    )
+    # The terrain snapshot itself is untouched by the cleanup.
+    assert merged_after.get("paint") == {"bg": "x", "ch": "..", "fg": "y"}
+    dense_after = sess.player_dense_view("p2")
+    cell_after = dense_after[3 * sess.width + 9]
+    assert "entity" not in cell_after
+
+
 def test_last_night_my_orders_round_trips_illegal_outcome():
     """An error-level recent_log row attributed to this player must end
     up in last_night.my_orders with outcome='illegal' + reason."""

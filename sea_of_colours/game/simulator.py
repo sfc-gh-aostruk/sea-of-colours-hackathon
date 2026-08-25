@@ -418,6 +418,11 @@ class NightSimulator:
                 delattr(sess, "_preempted_seats_this_hour")
             except AttributeError:
                 pass
+        if hasattr(sess, "_emp_established_cells_this_hour"):
+            try:
+                delattr(sess, "_emp_established_cells_this_hour")
+            except AttributeError:
+                pass
 
         destroyed_at_dawn = sess.dawn_strand_harvesters()
         for line in destroyed_at_dawn:
@@ -691,8 +696,10 @@ class NightSimulator:
             return True
 
         attempted = _describe_move(move)
+        emp_blocked_cells = getattr(sess, "_emp_established_cells_this_hour", None)
         caption, tag, side = self._apply_one(
             sess, owner, move, hour=hour, live_override=live_override,
+            emp_blocked_cells=emp_blocked_cells,
         )
         if tag == "waste":
             # v0.9.9 — illegal-at-runtime move (legal shape, but the
@@ -788,6 +795,18 @@ class NightSimulator:
         #    won't be ticked yet (they enter the list below with
         #    ``hours_remaining`` snapshotted from the constants).
         sess.tick_emp_clouds()
+
+        # v1.10 — snapshot the "established" cloud footprint: clouds
+        # that survived the decay above, i.e. were already active
+        # BEFORE this hour's own launches (resolved next, step 2). A
+        # drop/step landing on one of these cells this hour does NOT
+        # auto-harvest (RULEBOOK §4.9.3) — the cloud was already known
+        # / avoidable going into the hour. A cloud freshly spawned by
+        # THIS hour's launch is deliberately excluded from this set so
+        # a same-hour "missile lands the same hour a harvester does"
+        # coincidence still harvests once before the unit goes empd
+        # from the following hour on.
+        established_cloud_cells = sess.cells_in_any_emp_cloud()
 
         # 2. Peek + pre-empt chaff / EMP for each seat.
         preempted: set[str] = set()
@@ -890,11 +909,13 @@ class NightSimulator:
                         str(ent.id), str(ent.owner), str(_atk0), int(hour),
                     )
 
-        # 4. Stash preempted seats on a transient attr so the main
-        #    loop's seat iteration can skip them. We can't easily
-        #    return both values without changing the call signature
-        #    everywhere; the attr is cleared at end of night.
+        # 4. Stash preempted seats — and the established-cloud snapshot
+        #    from step 1 — on transient attrs so the main loop's seat
+        #    iteration (and the harvest-gate in ``_apply_one``) can read
+        #    them without changing every call signature in between.
+        #    Both are cleared at end of night.
         sess._preempted_seats_this_hour = preempted  # type: ignore[attr-defined]
+        sess._emp_established_cells_this_hour = established_cloud_cells  # type: ignore[attr-defined]
 
         return disabled
 
@@ -1248,12 +1269,21 @@ class NightSimulator:
         *,
         hour: int = 0,
         live_override: Optional[set] = None,
+        emp_blocked_cells: Optional[set] = None,
     ) -> tuple[str, str, List[str]]:
         """Apply one move; return ``(caption, tag, side_messages)``.
 
         ``side_messages`` carries auxiliary info (crushed probes, hoard
         deposits) that the caller logs as ``info`` when the action was
         valid; on ``waste`` it's discarded.
+
+        ``emp_blocked_cells`` (v1.10, RULEBOOK §4.9.3) is the set of
+        cells inside an EMP cloud that was already active BEFORE this
+        hour's own launches resolved. A drop/step landing on one of
+        these cells still lands (it isn't bounced like a mine) but
+        does not auto-harvest — the cell was already "hot" going into
+        the hour. A cloud freshly spawned this same hour is excluded,
+        so a same-hour launch+landing coincidence still harvests once.
         """
         side: List[str] = []
 
@@ -1281,6 +1311,7 @@ class NightSimulator:
             ok, msg, _harvested = sess.try_drop_unit(
                 owner, move.unit, move.at[0], move.at[1],
                 live_override=live_override,
+                emp_blocked_cells=emp_blocked_cells,
             )
             if not ok:
                 return msg, "waste", side
@@ -1295,6 +1326,7 @@ class NightSimulator:
         if isinstance(move, StepMove):
             ok, msg, _harvested = sess.try_step_unit(
                 owner, move.unit, move.to[0], move.to[1],
+                emp_blocked_cells=emp_blocked_cells,
             )
             if not ok:
                 return msg, "waste", side

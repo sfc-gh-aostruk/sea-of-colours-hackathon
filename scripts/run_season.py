@@ -2,17 +2,22 @@
 """Headless season runner — CLI orchestrator for Sea of Colours.
 
 Drives a full season end-to-end without any frontend in the loop. Each
-seat is assigned an agent runtime (``heuristic`` → ``RED_HARVEST`` or
-``cortex`` → one of the ``AI_AGENTS`` declared in
-``sea_of_colours.agent.runtime``), and the loop tickets every planning
-day through :func:`sea_of_colours.agent.runtime.run_agent_turn` until
+seat is assigned a deterministic agent runtime (``heuristic`` →
+``RED_HARVEST``, or ``red_harvest_lite`` → the no-weapons variant), and
+the loop tickets every planning day through
+:func:`sea_of_colours.agent.runtime.run_agent_turn` until
 :data:`Phase.SEASON_COMPLETE` is reached.
+
+For **LLM seats use** :file:`scripts/run_matchup_v12.py` — V12 is an
+orchestrator harness, not a runtime label this script understands.
 
 The persistence model is the same one the live FastAPI server uses:
 ``soc_backend.get_store()`` returns either the in-memory store (offline
 dev) or the Snowpark-backed store (default). Snowflake-backed runs land
-in ``UMAN_SIM_DB.SEA_OF_COLOURS`` under the auto-generated season name
-so the Phase C watcher frontend can list and replay them.
+in the deployment named by ``sea_of_colours/snowpark/naming.py``
+(``SOC_HACKATHON_DB.SEA_OF_COLOURS`` unless overridden) under the
+auto-generated season name so the Phase C watcher frontend can list and
+replay them.
 
 Examples::
 
@@ -20,8 +25,8 @@ Examples::
     # deterministic ``LatinWord_EnglishNoun`` season name.
     python scripts/run_season.py --seed 42
 
-    # Cortex (p1) vs heuristic (p2), 24×16 grid, custom season name.
-    python scripts/run_season.py --p1 cortex --p2 heuristic \\
+    # RED_HARVEST (p1) vs the no-weapons bot (p2), 24×16 grid.
+    python scripts/run_season.py --p1 heuristic --p2 red_harvest_lite \\
         --seed 7 --width 24 --height 16 --season-name "Demo_Match"
 
     # Offline / unit-test mode — no Snowflake required, no replay
@@ -30,8 +35,7 @@ Examples::
 
 Exit codes:
   0 — season completed naturally (phase reached SEASON_COMPLETE)
-  2 — preflight / configuration error (e.g. cortex requested with
-      SOC_BACKEND=memory; cortex requires Snowflake-backed sessions)
+  2 — preflight / configuration error
   3 — aborted (deadlock detected / safety loop budget exhausted)
 """
 
@@ -49,7 +53,7 @@ from typing import Any, Dict, List, Optional
 # Self-bootstrap the repo root onto ``sys.path`` so ``python
 # scripts/run_season.py`` Just Works without ``PYTHONPATH=.`` or a
 # ``pip install -e .``. Matches the convention used by other scripts in
-# this repo (e.g. ``smoke_cortex.py`` relies on being run from the root,
+# this repo (several scripts rely on being run from the root,
 # but this runner is meant to be invoked headlessly from anywhere —
 # cron, CI, `nohup` from a different cwd).
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -61,7 +65,7 @@ if str(_REPO_ROOT) not in sys.path:
 # two seats per day, the natural budget is 10 ``run_agent_turn`` calls.
 # Anything past 4× that almost certainly indicates a deadlock — the
 # heuristic always submits, so the only stall is a buggy custom agent
-# or a Cortex turn that fails AND fallback fails too.
+# or a turn that fails AND its fallback fails too.
 MAX_TURN_ITERATIONS = 200
 
 
@@ -78,31 +82,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--p1",
-        choices=("heuristic", "red_harvest_lite", "cortex"),
+        choices=("heuristic", "red_harvest_lite"),
         default="heuristic",
         help=(
             "Agent runtime for seat p1 (default: heuristic). "
             "'heuristic' = RED_HARVEST in-process; 'red_harvest_lite' = "
             "same playbook with chaff/EMP disabled (hackathon easy "
-            "opponent); 'cortex' = the Snowflake Cortex agent named by "
-            "--cortex-agent (default SOC_RED_REAPER_GRID_FAST)."
+            "opponent). For an LLM seat see scripts/run_matchup_v12.py."
         ),
     )
     p.add_argument(
         "--p2",
-        choices=("heuristic", "red_harvest_lite", "cortex"),
+        choices=("heuristic", "red_harvest_lite"),
         default="heuristic",
         help="Agent runtime for seat p2 (default: heuristic).",
     )
     p.add_argument(
         "--p3",
-        choices=("heuristic", "red_harvest_lite", "cortex"),
+        choices=("heuristic", "red_harvest_lite"),
         default=None,
         help="Agent runtime for seat p3 (default: seat absent).",
     )
     p.add_argument(
         "--p4",
-        choices=("heuristic", "red_harvest_lite", "cortex"),
+        choices=("heuristic", "red_harvest_lite"),
         default=None,
         help="Agent runtime for seat p4 (default: seat absent).",
     )
@@ -148,21 +151,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--cortex-agent",
-        default=None,
-        help=(
-            "Cortex agent name when --p1 or --p2 is 'cortex' (default: the "
-            "SOC_CORTEX_AGENT env var, falling back to SOC_RED_REAPER). "
-            "Sets SOC_CORTEX_AGENT for the duration of the run."
-        ),
-    )
-    p.add_argument(
         "--backend",
         choices=("snowflake", "memory", "file"),
         default=None,
         help=(
             "Storage backend (default: whatever SOC_BACKEND env is set to, "
-            "or 'snowflake' if unset). Cortex agents REQUIRE 'snowflake' "
+            "or 'snowflake' if unset)."
             "since they reach the game state via the SOC_GET_VIEW stored "
             "procedure — a memory-backed session is invisible to them. "
             "'file' persists one JSON file per season under --store-dir so "
@@ -238,49 +232,14 @@ def _configure_backend(arg_backend: Optional[str]) -> str:
     return os.environ["SOC_BACKEND"].lower()
 
 
-def _configure_cortex_agent(cortex_agent: Optional[str]) -> str:
-    """Pin the Cortex agent name when explicitly given."""
-    if cortex_agent:
-        os.environ["SOC_CORTEX_AGENT"] = cortex_agent
-    # Match runtime._cortex_agent_name() default so the banner reflects
-    # the agent that will actually be invoked.
-    from sea_of_colours.agent.runtime import CORTEX_AGENT_DEFAULT
-    return os.environ.get("SOC_CORTEX_AGENT", CORTEX_AGENT_DEFAULT).strip()
-
-
-def _preflight_cortex_backend(p1: str, p2: str, backend: str) -> None:
-    """Cortex needs the Snowflake backend — fail loudly if it doesn't.
-
-    Prints the diagnostic to stderr and exits with status ``2`` (the
-    documented "preflight / configuration error" code) rather than
-    raising ``SystemExit(msg)`` because the latter exits with status
-    ``1``, which would collide with the generic Python exception code.
-    """
-    if backend == "snowflake":
-        return
-    if p1 == "cortex" or p2 == "cortex":
-        print(
-            "preflight error: --p1/--p2 set to 'cortex' but SOC_BACKEND="
-            f"'{backend}'. Cortex agents reach the game state via the "
-            "SOC_GET_VIEW stored procedure and cannot see an in-memory "
-            "session. Re-run with --backend snowflake (or unset "
-            "SOC_BACKEND so it defaults to snowflake).",
-            file=sys.stderr,
-            flush=True,
-        )
-        sys.exit(2)
-
-
 def _slug(name: Optional[str]) -> str:
     """Mirror season_names.season_name_to_slug for URL-safe linking."""
     from sea_of_colours.game.season_names import season_name_to_slug
     return season_name_to_slug(name or "")
 
 
-def _agent_label(runtime: str, cortex_agent_name: str) -> str:
+def _agent_label(runtime: str) -> str:
     """Human-friendly label for the startup banner."""
-    if runtime == "cortex":
-        return f"cortex ({cortex_agent_name})"
     if runtime == "red_harvest_lite":
         return "heuristic (RED_HARVEST_LITE — no weapons)"
     return "heuristic (RED_HARVEST)"
@@ -407,13 +366,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     # before get_store() builds the FileSocStore below.
     if args.store_dir:
         os.environ["SOC_STORE_DIR"] = args.store_dir
-    cortex_agent_name = _configure_cortex_agent(args.cortex_agent)
-    _preflight_cortex_backend(args.p1, args.p2, backend)
 
     # Import here so the env-var configuration above is honoured by the
     # ``SOC_BACKEND`` capture at the top of ``soc_backend``.
     from sea_of_colours.agent.runtime import (
-        CORTEX_AGENT_DEFAULT,
         HEURISTIC_AGENT_NAME,
         run_agent_turn,
     )
@@ -441,11 +397,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     # colors (seeded by the game seed). The per-turn runtime is still
     # forced via run_agent_turn(runtime_override=...) below; this map only
     # drives identity/colour generation, not turn execution. "heuristic"
-    # → RED_HARVEST strategy slug; "cortex" → the generic cortex slug.
+    # → RED_HARVEST strategy slug.
     _STRATEGY_SLUG = {
         "heuristic": "red_harvest",
         "red_harvest_lite": "red_harvest_lite",
-        "cortex": "cortex",
     }
     seats = ["p1", "p2"]
     if getattr(args, "p3", None):
@@ -473,7 +428,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # ``init_session`` builds that haven't been redeployed yet.
     season_day_cap = int(info.get("season_day_cap") or SEASON_DAY_CAP)
 
-    seat_labels = {s: _agent_label(runtime_for[s], cortex_agent_name) for s in seats}
+    seat_labels = {s: _agent_label(runtime_for[s]) for s in seats}
     _print_banner(
         season_name=season_name,
         session_id=session_id,
@@ -493,7 +448,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(
                 f"\n[abort] safety budget exhausted "
                 f"({MAX_TURN_ITERATIONS} agent turns) — bailing out. "
-                "Likely a deadlocked seat (cortex failure + heuristic "
+                "Likely a deadlocked seat (heuristic "
                 "fallback also empty?). Check Snowflake logs.",
                 flush=True,
             )
@@ -571,9 +526,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         seat_labels=seat_labels,
     )
     print(f"  wall time    : {elapsed:.1f}s", flush=True)
-    # Touch the unused defaults so static analysers don't drop them when
-    # the module is imported for help-text generation in tooling.
-    _ = (HEURISTIC_AGENT_NAME, CORTEX_AGENT_DEFAULT)
+    # Touch the unused default so static analysers don't drop it when the
+    # module is imported for help-text generation in tooling.
+    _ = HEURISTIC_AGENT_NAME
     return 0
 
 

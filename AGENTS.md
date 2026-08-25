@@ -14,7 +14,7 @@ This file is always-on context for AI agents; keep it lean and current.
   with root cause + fix.
 - `README.md` — CLI map generator + web/Snowflake setup and flags.
 - `docs/SNOWFLAKE_SETUP.md` — BYO-Snowflake-trial-account walkthrough
-  (PAT for the V11 agent; optional schema deploy for persistent
+  (PAT for the V12 agent; optional schema deploy for persistent
   sessions). Playing/testing against `RED_HARVEST` / `RED_HARVEST_LITE`
   needs none of this — `SOC_BACKEND=memory` is fully offline.
 - `docs/HACKATHON_BUILD_PLAN.md` — **read this first if you're picking
@@ -46,6 +46,8 @@ sea_of_colours/
   agent/         RED_HARVEST heuristic + Cortex AI agent runtime/invoker
   evals/         Scenario/eval harness
   orchestrator_2/  Newer agent orchestration (pilot_v2 harness) — migration in progress
+    harnesses/tabula_v12/  current Red-Reaper agent — see its README.md, and
+                           ENGINE_INTERFACE.md for the engine boundary it must obey
 server/
   app.py         FastAPI thin proxy (/, /api/game/*); static mounted no-cache
   static/        Web UI — app.js, styles.css, station.js, index.html
@@ -96,14 +98,15 @@ Checklist for any rule/constant/formula change:
    then add a `### vX.Y — YYYY-MM-DD` **changelog** entry at the top and bump the
    header version. **Never edit past changelog entries** (they're history) — add a
    new one. Keep `§` section refs stable; code/comments cite them.
-3. **Agent prompts** (agents act on what they're told):
-   - `sea_of_colours/agent/runtime.py` (harness prompt) and
-     `docs/AGENT_PROMPT_SAMPLES.md` (its mirror).
-   - `snowflake/soc_create_agent*.sql` and
-     `sea_of_colours/orchestrator_2/snowflake/soc_create_agent_pilot_v*.sql`.
-     ⚠️ Editing the `.sql` does **not** update the live agent — it must be
-     **re-run in Snowflake** to redeploy. Don't redeploy a `pilot_v*` agent a
-     human is mid-game against (see `orchestrator_2/harnesses/PILOT_VERSIONING_GUIDE.md`).
+3. **Agent prompts** (agents act on what they're told). All live prompt text
+   is now **in Python**, under
+   `sea_of_colours/orchestrator_2/harnesses/tabula_v12/` — that's the shipped
+   LLM agent, and it builds its prompt in-process each turn.
+   - ⚠️ There are no longer any deployed Cortex *agent objects*. The
+     `soc_create_agent*.sql` specs and the `runtime=cortex` code path were
+     deleted; V12 talks to Cortex **inference** over REST with a PAT, so a
+     prompt edit takes effect on the next turn with no redeploy step.
+   - `sea_of_colours/agent/runtime.py` is heuristic-only and has no prompt.
    - **Prefer dynamic values:** read `meta.rules` (`drop_mode`, `probe_radius`,
      `probe_lifetime_nights`) and `hud.season_day_cap` from the view instead of
      hardcoding, so future retunes don't require prompt edits.

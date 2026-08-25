@@ -5,21 +5,28 @@ Default behaviour (NON-DESTRUCTIVE):
   1. snowflake/soc_schema.sql       — CREATE TABLE IF NOT EXISTS
   2. snowflake/soc_views.sql        — CREATE OR REPLACE VIEW
   3. snowflake/soc_procedures.sql   — Snowpark Python stored procs (Phase 2)
-  4. snowflake/soc_create_agent*.sql — every Cortex agent spec (Phase 5,
-                                       including orchestrator-config A/B
-                                       variants like _list / _grid).
 
-Tables are NEVER dropped here. Phase 2/5 files are deployed only when
-they exist on disk, so this script is safe to run after Phase 1 alone.
+Tables are NEVER dropped here. Phase 2 files are deployed only when they
+exist on disk, so this script is safe to run after Phase 1 alone.
+
+There are no Cortex *agent objects* to deploy: the `soc_create_agent*.sql`
+specs were removed with the Agents-API runtime. V12 reaches Cortex
+inference over REST with a PAT, so nothing about the LLM agent needs a
+Snowflake deploy step — see docs/SNOWFLAKE_SETUP.md.
 
 Flags:
   --schema-only   Stop after soc_schema.sql + soc_views.sql.
-  --procs         Also deploy soc_procedures.sql (default).
-  --agent         Also deploy every soc_create_agent*.sql (default).
   --no-procs      Skip soc_procedures.sql.
-  --no-agent      Skip every soc_create_agent*.sql file.
   --config FILE   Path to Snowflake config (defaults to ~/.ssh/sf_config or
                   whatever SF_CONFIG_FILE points to).
+
+Target objects (database / schema / warehouse) come from
+``sea_of_colours/snowpark/naming.py`` — override with ``SOC_DATABASE``,
+``SOC_SCHEMA``, ``SOC_WAREHOUSE``. The defaults are hackathon-scoped
+(``SOC_HACKATHON_DB`` / ``SOC_HACKATHON_WH``) so deploying into an
+account that already runs SOC cannot clobber the existing install. Both
+the database and the warehouse are created if absent, so this works on a
+brand-new trial account.
 
 Reads credentials from a Snowflake config file with these keys (matches
 AA4 convention):
@@ -27,9 +34,9 @@ AA4 convention):
   account=<account>
   user=<user>
   private_key_file=<path to PEM>
-  warehouse=<warehouse>            # optional, defaults below
-  database=UMAN_SIM_DB
-  schema=SEA_OF_COLOURS
+  warehouse=<warehouse>            # optional, overrides SOC_WAREHOUSE
+  database=<database>              # optional, overrides SOC_DATABASE
+  schema=<schema>                  # optional, overrides SOC_SCHEMA
 """
 
 from __future__ import annotations
@@ -40,10 +47,11 @@ import sys
 from pathlib import Path
 from typing import List
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-DEFAULT_WAREHOUSE = "SOC_WH"  # dedicated XSMALL warehouse, AUTO_SUSPEND=60s
-DEFAULT_DATABASE = "UMAN_SIM_DB"
-DEFAULT_SCHEMA = "SEA_OF_COLOURS"
+from sea_of_colours.snowpark import naming
+
+
 DEFAULT_ROLE = os.environ.get("SF_ROLE", "ACCOUNTADMIN")
 
 HERE = Path(__file__).resolve().parent.parent
@@ -64,8 +72,14 @@ def _load_sf_props(path: str) -> dict:
     return props
 
 
-def create_snowpark_session(config_file: str):
-    """Build a Snowpark session from a sf_config-style file."""
+def create_snowpark_session(config_file: str, *, with_context: bool = True):
+    """Build a Snowpark session from a sf_config-style file.
+
+    ``with_context=False`` connects without pinning database / schema.
+    The deploy path needs that: on a fresh account the database does not
+    exist yet, and Snowflake refuses the connection if you name a
+    missing database up front.
+    """
     from snowflake.snowpark import Session
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.backends import default_backend
@@ -93,14 +107,16 @@ def create_snowpark_session(config_file: str):
         encryption_algorithm=serialization.NoEncryption(),
     )
 
-    return Session.builder.configs({
+    cfg = {
         "account": props.get("account"),
         "user": props.get("user"),
         "private_key": private_key_bytes,
-        "warehouse": props.get("warehouse", DEFAULT_WAREHOUSE),
-        "database": props.get("database", DEFAULT_DATABASE),
-        "schema": props.get("schema", DEFAULT_SCHEMA),
-    }).create()
+        "warehouse": props.get("warehouse", naming.warehouse()),
+    }
+    if with_context:
+        cfg["database"] = props.get("database", naming.database())
+        cfg["schema"] = props.get("schema", naming.schema())
+    return Session.builder.configs(cfg).create()
 
 
 def build_engine_zip() -> Path:
@@ -221,7 +237,23 @@ def deploy_sql_file(session, filepath: Path, *, label: str | None = None) -> Non
         print(f"  (skipped — file does not exist)")
         return
 
-    statements = _split_statements(filepath.read_text())
+    rendered = naming.render_sql(filepath.read_text())
+
+    # Isolation guard. A file that still names a database literally would
+    # quietly write outside the resolved target — which is precisely the
+    # cross-deployment clobber this indirection exists to prevent. Fail
+    # loudly and name the file instead.
+    stray = naming.stray_literals(rendered)
+    if stray:
+        raise RuntimeError(
+            f"{filepath.name} hard-codes {', '.join(sorted(stray))} instead "
+            f"of the {{{{SOC_DATABASE}}}} / {{{{SOC_SCHEMA}}}} placeholders. "
+            f"Deploying it would target a database other than "
+            f"{naming.describe()}. Template the file (or delete it if it "
+            f"belongs to a retired agent)."
+        )
+
+    statements = _split_statements(rendered)
     for i, stmt in enumerate(statements, 1):
         preview = stmt[:200] + ("..." if len(stmt) > 200 else "")
         print(f"\n[{i}/{len(statements)}] {preview}")
@@ -261,34 +293,37 @@ def main() -> int:
         help="Skip soc_procedures.sql (default: include if file exists).",
     )
     ap.add_argument(
-        "--no-agent",
-        action="store_true",
-        help="Skip soc_create_agent.sql (default: include if file exists).",
-    )
-    ap.add_argument(
-        "--agents-only",
+        "--dry-run",
         action="store_true",
         help=(
-            "Skip schema / views / procedures and deploy ONLY the "
-            "soc_create_agent*.sql files. Useful when iterating on a "
-            "Cortex agent spec under SF_ROLE=SYSADMIN, which typically "
-            "lacks CREATE TABLE on the schema (owned by ACCOUNTADMIN) "
-            "but does have CREATE AGENT."
-        ),
-    )
-    ap.add_argument(
-        "--agent-name",
-        action="append",
-        help=(
-            "Restrict --agents-only deploys to a specific spec filename "
-            "stem (e.g. 'soc_create_agent_grid_v2'). Repeatable. When "
-            "omitted, every soc_create_agent*.sql is deployed."
+            "Print the resolved target (database / schema / warehouse) "
+            "and exit without connecting. Use this to confirm you are "
+            "not about to deploy over another install."
         ),
     )
     args = ap.parse_args()
 
+    try:
+        db, sch, wh = naming.database(), naming.schema(), naming.warehouse()
+    except ValueError as e:
+        # Misconfigured target name — a stack trace here just buries the
+        # one line that tells you which env var to fix.
+        print(f"error: {e}", file=sys.stderr)
+        print(
+            "       set SOC_DATABASE / SOC_SCHEMA / SOC_WAREHOUSE to a "
+            "plain Snowflake identifier (letters, digits, _ and $).",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"Target: {naming.describe()}")
+    if args.dry_run:
+        print("(--dry-run: no connection opened, nothing deployed)")
+        return 0
+
     print("Creating Snowpark session...")
-    session = create_snowpark_session(args.config)
+    # No database context on connect — it may not exist yet.
+    session = create_snowpark_session(args.config, with_context=False)
 
     # Pin role / warehouse / database / schema before anything else fires.
     role = DEFAULT_ROLE
@@ -296,36 +331,29 @@ def main() -> int:
         session.sql(f"USE ROLE {role}").collect()
     except Exception as e:  # pragma: no cover - depends on live SF
         print(f"  (could not USE ROLE {role}: {e}; continuing with session default)")
-    session.sql(f"USE DATABASE {DEFAULT_DATABASE}").collect()
 
-    # ``--agents-only`` skips everything except CREATE OR REPLACE AGENT.
-    # The schema is already in place under ACCOUNTADMIN-owned objects;
-    # SYSADMIN typically can't re-run it but CAN replace agents. We
-    # still need USE SCHEMA so the agent specs (which start with
-    # ``USE SCHEMA``) inherit the right context, but skip the
-    # CREATE TABLE / CREATE VIEW / proc-zip steps entirely.
-    if args.agents_only:
-        try:
-            session.sql(f"USE SCHEMA {DEFAULT_SCHEMA}").collect()
-        except Exception as e:  # pragma: no cover - depends on live SF
-            print(f"  (warning: USE SCHEMA {DEFAULT_SCHEMA} failed: {e})")
-        agent_specs = sorted(SNOWFLAKE_DIR.glob("soc_create_agent*.sql"))
-        if args.agent_name:
-            allowed = set(args.agent_name)
-            agent_specs = [s for s in agent_specs if s.stem in allowed]
-            missing = allowed - {s.stem for s in agent_specs}
-            for m in missing:
-                print(f"  warning: --agent-name {m!r} matched no file on disk")
-        if not agent_specs:
-            print("  (no agent specs to deploy — exiting)")
-            return 0
-        for spec in agent_specs:
-            deploy_sql_file(session, spec, label=f"agent · {spec.name}")
-        print()
-        print("=" * 60)
-        print(f"Deployed {len(agent_specs)} agent spec(s).")
-        print("=" * 60)
-        return 0
+    # Bootstrap the container objects. Both are IF NOT EXISTS, so this is
+    # a no-op against an established deployment and the whole path works
+    # on a brand-new trial account that has neither.
+    print(f"\nEnsuring warehouse {wh} ...")
+    session.sql(
+        f"CREATE WAREHOUSE IF NOT EXISTS {wh} "
+        f"WAREHOUSE_SIZE = XSMALL "
+        f"AUTO_SUSPEND = 60 "
+        f"AUTO_RESUME = TRUE "
+        f"INITIALLY_SUSPENDED = TRUE "
+        f"COMMENT = 'Sea of Colours — XSMALL, idles down after 60s.'"
+    ).collect()
+    session.sql(f"USE WAREHOUSE {wh}").collect()
+
+    print(f"Ensuring database {db} ...")
+    session.sql(
+        f"CREATE DATABASE IF NOT EXISTS {db} "
+        f"COMMENT = 'Sea of Colours game state.'"
+    ).collect()
+    session.sql(f"USE DATABASE {db}").collect()
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {sch}").collect()
+    session.sql(f"USE SCHEMA {sch}").collect()
 
     deploy_sql_file(session, SNOWFLAKE_DIR / "soc_schema.sql", label="schema")
     deploy_sql_file(session, SNOWFLAKE_DIR / "soc_views.sql", label="views")
@@ -339,18 +367,6 @@ def main() -> int:
                 SNOWFLAKE_DIR / "soc_procedures.sql",
                 label="procedures",
             )
-        if not args.no_agent:
-            # Deploy every `soc_create_agent*.sql` file we can find.
-            # The legacy `soc_create_agent.sql` is the canonical default
-            # (kept for back-compat); newer per-variant specs land as
-            # `soc_create_agent_<variant>.sql` (e.g. _list, _grid for the
-            # Phase 1 orchestrator-config A/B). Stable ordering — alphabetical —
-            # so the deploy log is reproducible across runs.
-            agent_specs = sorted(SNOWFLAKE_DIR.glob("soc_create_agent*.sql"))
-            if not agent_specs:
-                print("\n  (no soc_create_agent*.sql files found — skipping agents)")
-            for spec in agent_specs:
-                deploy_sql_file(session, spec, label=f"agent · {spec.name}")
 
     print()
     print("=" * 60)

@@ -15,11 +15,16 @@
 --     standalone ALTER scripts in snowflake/migrations/ — running this
 --     file by itself will NOT pick them up after the first deploy.
 --     Views live in soc_views.sql and use CREATE OR REPLACE.
+--
+-- ⚠️ TEMPLATED.  {{SOC_DATABASE}} / {{SOC_SCHEMA}} are substituted by
+--     scripts/deploy_soc_schema.py (see sea_of_colours/snowpark/naming.py).
+--     Deploy through that script; pasting this file raw into Snowsight
+--     will fail on the placeholders.
 -- ============================================================================
 
-USE DATABASE UMAN_SIM_DB;
-CREATE SCHEMA IF NOT EXISTS SEA_OF_COLOURS;
-USE SCHEMA SEA_OF_COLOURS;
+USE DATABASE {{SOC_DATABASE}};
+CREATE SCHEMA IF NOT EXISTS {{SOC_SCHEMA}};
+USE SCHEMA {{SOC_SCHEMA}};
 
 -- --------------------------------------------------------------------------
 -- 1) Game session — canonical row per game

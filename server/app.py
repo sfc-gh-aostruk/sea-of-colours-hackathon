@@ -2,8 +2,8 @@
 
 Every game route delegates to :mod:`sea_of_colours.snowpark.engine`, with
 the storage backend selected via the ``SOC_BACKEND`` environment variable
-(``memory`` by default; ``snowflake`` for live SOC_* tables — see
-:mod:`sea_of_colours.snowpark.backend`).
+(``snowflake`` by default, writing live SOC_* tables; ``memory`` for the
+zero-setup offline store — see :mod:`sea_of_colours.snowpark.backend`).
 
 Routes::
 
@@ -308,6 +308,11 @@ def _kick_bots(game_id: str) -> None:
         t.start()
 
 
+# Runtime labels the /agent/think route accepts. Mirrors
+# ``agent.runtime._SUPPORTED_RUNTIMES`` — the engine raises on anything
+# else, but rejecting at the API boundary gives a 400 instead of a 500.
+_HEURISTIC_RUNTIMES = ("heuristic", "red_harvest_lite")
+
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 _INDEX_HTML = _STATIC_DIR / "index.html"
 _EVALS_HTML = _STATIC_DIR / "evals.html"
@@ -315,24 +320,26 @@ _MOBILE_HTML = _STATIC_DIR / "mobile.html"
 _LANDING_HTML = _STATIC_DIR / "landing.html"
 
 # ── Boot banner ────────────────────────────────────────────────────────
-# The single most painful failure mode of this server is starting with
-# SOC_BACKEND=memory inherited from a stale shell — every Cortex call
-# silently fails with "session not found" because the Cortex stored
-# procs query Snowflake but the FastAPI proxy only wrote to RAM. So we
-# log the resolved backend conspicuously on every startup; if you see
-# "memory" here and didn't intend it, kill this process and re-launch
-# without the override.
+# Log the resolved backend conspicuously on every startup — a stale
+# SOC_BACKEND inherited from another shell is otherwise invisible until
+# something fails mid-game.
 print(
     f"[soc] FastAPI starting · SOC_BACKEND={SOC_BACKEND!r}",
     file=sys.stderr,
     flush=True,
 )
 if SOC_BACKEND == "memory":
+    # Be precise about what memory does and doesn't cost you. It is the
+    # supported zero-setup path: human seats, both heuristics, and the
+    # in-process LLM harness (V12 / ``harness_in_process``, which reaches
+    # Cortex over REST with a PAT) all work fine. The ONLY thing it
+    # breaks is the legacy Cortex Agents-API path, whose stored procs
+    # query Snowflake and so can't see an in-RAM session.
     print(
-        "[soc] WARNING: memory backend — Cortex agent turns will be "
-        "rejected because Cortex stored procs cannot see in-memory "
-        "sessions. Set SOC_BACKEND=snowflake (or unset it) to enable "
-        "Cortex.",
+        "[soc] memory backend — sessions live in this process only and "
+        "are lost on restart. Human seats, RED_HARVEST/_LITE and the "
+        "V12 harness all work. (Only the legacy stored-proc Cortex "
+        "runtime needs SOC_BACKEND=snowflake.)",
         file=sys.stderr,
         flush=True,
     )
@@ -397,6 +404,47 @@ def _game_has_slow_bot(agents: dict[str, Any]) -> bool:
     return any(
         str(v).strip().lower() not in _HEURISTIC_AGENT_LABELS
         for v in (agents or {}).values()
+    )
+
+
+def _llm_seats(agents: dict[str, Any]) -> list[str]:
+    """Seats bound to an in-process LLM harness (V12 and friends)."""
+    from sea_of_colours.orchestrator_2.binding_registry import (
+        AGENT_LABEL_BINDINGS,
+    )
+
+    out = []
+    for seat, label in (agents or {}).items():
+        binding = AGENT_LABEL_BINDINGS.get(str(label).strip().lower())
+        if binding is not None and binding.kind == "harness_in_process":
+            out.append(str(seat))
+    return sorted(out)
+
+
+def _preflight_llm_credentials(agents: dict[str, Any]) -> None:
+    """Refuse to start a game whose LLM seat could never think.
+
+    Without a PAT the harness doesn't error — it falls back and passes
+    every night with zero moves, so the player watches "V12" sit still
+    and concludes the agent is broken. Catch it at creation, where we
+    can name the fix, rather than letting it look like a game bug.
+    """
+    seats = _llm_seats(agents)
+    if not seats:
+        return
+    from sea_of_colours.orchestrator_2.cortex_chat import credentials_status
+
+    ready, reason = credentials_status()
+    if ready:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Seat(s) {', '.join(seats)} are set to an LLM agent, but "
+            f"Snowflake credentials are missing: needs {reason}. "
+            f"See docs/SNOWFLAKE_SETUP.md. To play right now with no "
+            f"setup, pick RED_HARVEST_LITE or RED_HARVEST instead."
+        ),
     )
 
 
@@ -558,6 +606,7 @@ def api_game_new(
     if isinstance(raw_agents, dict):
         for k, v in raw_agents.items():
             agents[str(k)] = str(v).strip().lower() or "human"
+    _preflight_llm_credentials(agents)
     visibility_mode = str(body.get("visibility_mode") or "hidden").strip().lower()
     if visibility_mode not in ("hidden", "open"):
         visibility_mode = "hidden"
@@ -1337,50 +1386,43 @@ def api_agent_think(
     runtime: str | None = Query(
         None,
         description=(
-            "Optional per-call runtime override. "
-            "'heuristic' forces RED_HARVEST, 'cortex' forces an AI agent. "
-            "When omitted, falls back to SOC_AGENT_RUNTIME (default: heuristic)."
+            "Optional per-call runtime override: 'heuristic' (RED_HARVEST) "
+            "or 'red_harvest_lite' (RED_HARVEST_LITE, weapons disabled). "
+            "Defaults to 'heuristic'."
         ),
     ),
 ) -> dict[str, Any]:
-    """Run one agent turn for ``player`` end-to-end.
+    """Run one deterministic agent turn for ``player`` end-to-end.
 
-    Fetches the player view, hands it to the configured agent runtime:
+    Fetches the player view, runs the in-process heuristic, submits the
+    resulting policy through the SOC engine, and writes an audit row to
+    ``SOC_AGENT_INVOCATION``. The envelope includes ``agent_id`` so the
+    caller knows who played.
 
-    * **RED_HARVEST** (default) — the in-process Python heuristic.
-    * An **AI agent** (Snowflake Cortex agent such as ``SOC_RED_REAPER``)
-      when ``SOC_AGENT_RUNTIME=cortex`` and a PAT is present.
-
-    The chosen agent submits its policy through the SOC engine and an
-    audit row lands in ``SOC_AGENT_INVOCATION``. The response envelope
-    includes ``agent_id`` so the caller knows who actually played
-    (Cortex failures gracefully fall back to RED_HARVEST).
-
-    Pass ``?runtime=heuristic|cortex`` to override the server-wide
-    setting for a single call — this is what powers the "agent vs
-    RED_HARVEST" UI button (one seat heuristic, one seat cortex).
+    This route is heuristic-only. **LLM seats do not come through here**
+    — seat the player as ``tabula_v12`` at game creation and the
+    orchestrator dispatches V12 automatically, on any storage backend.
     """
     if not _is_valid_seat_slug(player):
         raise HTTPException(status_code=400, detail="unknown player slug")
-    if runtime is not None and runtime not in ("heuristic", "cortex"):
+    if runtime == "cortex":
+        # Explicit, actionable 410 rather than a generic 400: the old
+        # Agents-API runtime was a documented part of this route, so
+        # callers still asking for it deserve to be told where it went.
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "The 'cortex' runtime was removed along with the Cortex "
+                "Agents-API specs. The LLM agent is now V12: seat a "
+                "player as 'tabula_v12' when creating the game and the "
+                "orchestrator dispatches it (works on any SOC_BACKEND; "
+                "needs SNOWFLAKE_PAT). Use 'heuristic' for RED_HARVEST."
+            ),
+        )
+    if runtime is not None and runtime not in _HEURISTIC_RUNTIMES:
         raise HTTPException(
             status_code=400,
-            detail="runtime must be 'heuristic' or 'cortex'",
-        )
-    # Hard guard: Cortex stored procs read SOC_GAME_SESSION from Snowflake,
-    # but the in-memory backend never writes that row. Without this fast
-    # rejection, every Cortex call silently degrades to a RED_HARVEST
-    # fallback (the tell-tale "[fallback] cortex did not submit; ...
-    # session not found" log line). Surface the misconfiguration instead.
-    if runtime == "cortex" and SOC_BACKEND != "snowflake":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Cortex agent requires SOC_BACKEND=snowflake "
-                f"(currently {SOC_BACKEND!r}). Restart the server "
-                f"without the SOC_BACKEND override, or run with "
-                f"`runtime=heuristic` for RED_HARVEST only."
-            ),
+            detail=f"runtime must be one of {sorted(_HEURISTIC_RUNTIMES)}",
         )
     try:
         return run_agent_turn(_store(), game_id, player, runtime_override=runtime)

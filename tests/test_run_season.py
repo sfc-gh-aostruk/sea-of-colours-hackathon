@@ -87,19 +87,19 @@ def test_heuristic_vs_heuristic_completes_full_season(
     assert "watch URL   : /watch.html?season=tempus-falcon" in out
 
 
-def test_cortex_with_memory_backend_fails_preflight(
+def test_cortex_seat_is_rejected(
     memory_backend, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Cortex agents need Snowflake; the runner must refuse loudly."""
+    """The 'cortex' runtime was removed with the Agents-API specs. This
+    runner only drives deterministic seats now; LLM seasons go through
+    scripts/run_matchup_v12.py."""
     runner = _import_runner()
     with pytest.raises(SystemExit) as excinfo:
         runner.main(["--seed", "1", "--p1", "cortex"])
     assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    err = captured.err
-    assert "preflight error" in err
-    assert "SOC_BACKEND='memory'" in err
-    assert "--backend snowflake" in err
+    err = capsys.readouterr().err
+    assert "invalid choice: 'cortex'" in err
+    assert "red_harvest_lite" in err
 
 
 def test_season_name_deterministic_from_seed(

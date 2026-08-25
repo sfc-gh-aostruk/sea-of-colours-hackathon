@@ -197,3 +197,69 @@ def test_snowflake_session_store_roundtrip(client):
 
     latest = store.latest()
     assert latest is not None
+
+
+# ── LLM-seat credential preflight ────────────────────────────────────
+# Without a PAT the V12 harness does not raise: its per-turn fallback
+# absorbs the miss and the seat passes every night with zero moves,
+# reporting ok=True / error=None. That reads as "the AI is broken"
+# rather than "you never set a PAT", so game creation refuses up front.
+
+
+def _no_cortex_creds(monkeypatch):
+    monkeypatch.delenv("SNOWFLAKE_PAT", raising=False)
+    monkeypatch.setenv("SF_CONFIG_FILE", "/nonexistent/sf_config")
+
+
+def _with_cortex_creds(monkeypatch, tmp_path):
+    cfg = tmp_path / "sf_config"
+    cfg.write_text("account=TESTACCT\n")
+    monkeypatch.setenv("SNOWFLAKE_PAT", "test-token")
+    monkeypatch.setenv("SF_CONFIG_FILE", str(cfg))
+
+
+def test_new_game_refuses_llm_seat_without_credentials(client, monkeypatch):
+    _no_cortex_creds(monkeypatch)
+    r = client.post(
+        "/api/game/new",
+        json={
+            "seed": 3, "width": 16, "height": 10,
+            "players": ["p1", "p2"],
+            "agents": {"p1": "human", "p2": "tabula_v12"},
+        },
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    # Must name the seat, the missing credential, and a way to play now.
+    assert "p2" in detail
+    assert "SNOWFLAKE_PAT" in detail
+    assert "RED_HARVEST_LITE" in detail
+
+
+def test_new_game_allows_llm_seat_with_credentials(client, monkeypatch, tmp_path):
+    _with_cortex_creds(monkeypatch, tmp_path)
+    r = client.post(
+        "/api/game/new",
+        json={
+            "seed": 3, "width": 16, "height": 10,
+            "players": ["p1", "p2"],
+            "agents": {"p1": "human", "p2": "tabula_v12"},
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["agents"]["p2"] == "tabula_v12"
+
+
+def test_new_game_heuristic_seats_never_need_credentials(client, monkeypatch):
+    """The zero-setup path must stay zero-setup."""
+    _no_cortex_creds(monkeypatch)
+    for label in ("red_harvest_lite", "red_harvest", "human"):
+        r = client.post(
+            "/api/game/new",
+            json={
+                "seed": 3, "width": 16, "height": 10,
+                "players": ["p1", "p2"],
+                "agents": {"p1": "human", "p2": label},
+            },
+        )
+        assert r.status_code == 200, f"{label} should not need credentials"

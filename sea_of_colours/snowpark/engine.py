@@ -386,7 +386,11 @@ def _hydrate_session(store: SocStore, session_id: str) -> GameSession:
         raise ValueError(
             f"session {session_id} has no json_state — was init_session run?"
         )
-    if isinstance(blob, str):
+    # Unwrap repeatedly: snapshots written before the double-encode fix stored
+    # the blob as a JSON string INSIDE the JSON column, so one decode yields
+    # another string. Looping costs nothing on a well-formed row and keeps those
+    # frozen boards readable rather than stranding them.
+    while isinstance(blob, str):
         blob = json.loads(blob)
     return GameSession.from_dict(blob)
 
@@ -2131,6 +2135,21 @@ def get_session_status(
     }
 
 
+def _session_kind(session_id: str, season_name: Optional[str]) -> str:
+    """Classify a session row for the picker.
+
+    Both markers are set at write time by
+    :mod:`sea_of_colours.snowpark.snapshot` — fixtures take an id prefix,
+    clones take a season-name prefix — so this is a read of intent, not a
+    guess about shape.
+    """
+    if str(session_id or "").startswith(("SNAP_", "FIX_")):
+        return "fixture"
+    if str(season_name or "").startswith("REPLAY:"):
+        return "replay"
+    return "season"
+
+
 def list_sessions(store: SocStore) -> Dict[str, Any]:
     """Surface every persisted session for the watcher frontend.
 
@@ -2152,6 +2171,11 @@ def list_sessions(store: SocStore) -> Dict[str, Any]:
       datetime under Snowflake and we don't want JSON ordering / TZ
       surprises in the picker. The list is already returned in
       ``last_touched_at DESC`` order by the store.
+    - ``kind`` — ``season`` | ``fixture`` | ``replay``. Test fixtures
+      (frozen nights, see :mod:`sea_of_colours.snowpark.snapshot`) and
+      their throwaway clones live in the same table as real seasons and
+      outnumber them, so the picker needs to tell them apart. They read
+      as permanently mid-flight because nothing ever advances them.
     """
     from sea_of_colours.game.season_names import season_name_to_slug
 
@@ -2176,6 +2200,7 @@ def list_sessions(store: SocStore) -> Dict[str, Any]:
                 "session_id": sid,
                 "season_name": season_name,
                 "season_slug": slug,
+                "kind": _session_kind(sid, season_name),
                 "day": r.get("day"),
                 "phase": r.get("phase"),
                 "width": r.get("width"),

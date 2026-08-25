@@ -205,3 +205,36 @@ class CortexChatInvoker:
             "usage": body.get("usage"),
             "elapsed_ms": elapsed_ms,
         }
+
+
+def credentials_status() -> tuple[bool, str]:
+    """Can an LLM seat actually reach Cortex? If not, say what's missing.
+
+    Exists because the failure is otherwise **invisible**. A seat bound
+    to an LLM harness with no credentials doesn't raise: the harness's
+    per-turn fallback absorbs the miss and the agent passes the night
+    with zero moves, reporting ``ok=True`` and ``error=None``. To a
+    player that reads as "the AI is broken", not "I never set a PAT".
+
+    The per-turn fallback is right for a call that fails *mid-game*; it
+    is the wrong answer for a seat that could never have worked. So
+    callers use this as a **creation-time preflight** and refuse the
+    game up front, leaving the in-game fallback untouched.
+
+    Returns ``(ready, reason)`` — ``reason`` is empty when ready.
+    """
+    probe = CortexChatInvoker()
+    if probe.is_ready():
+        return True, ""
+    missing = []
+    if not probe.pat_token:
+        missing.append(
+            f"a PAT (set the {SNOWFLAKE_PAT_ENV} env var, or add "
+            f"'pat=<token>' to {probe.config_file})"
+        )
+    if not probe.account:
+        missing.append(
+            f"a Snowflake account (add 'account=<account>' to "
+            f"{probe.config_file})"
+        )
+    return False, " and ".join(missing)

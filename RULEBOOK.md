@@ -1,7 +1,7 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.9
-Last updated: 2026-07-14
+Version: 1.11
+Last updated: 2026-08-23
 
 This is the single source of truth for the world, the fiction, and how
 play resolves. Every change is recorded in the [Changelog](#changelog) at
@@ -1216,6 +1216,21 @@ Cover).
       switch).
     Once an echo clears, the cell returns to genuine fog for the
     opposing House, unless they had their own prior echo or memory.
+  - **Landing on a cell the opponent already has richer intel for
+    (v1.11).** If the target `(x, y)` isn't fog to the opponent — they
+    already hold an older terrain echo there (their own probe/harvester
+    saw it before) — the probe-launch marker does not overwrite that
+    richer terrain snapshot; it merges the probe occupant onto it
+    instead, so the opponent keeps the terrain they legitimately
+    observed. This merge is stamped with its own launch day/owner (so
+    it still surfaces as a fresh `enemy_probe_launch`, v0.9.7) **and**
+    carries its own dedicated map glyph, independent of the terrain
+    echo's own staleness — a probe that publicly lands on
+    already-explored ground is exactly as visible on the map as one
+    that lands on fog. (v1.11 fixed a bug where this merge updated the
+    agent-facing intel feed but never actually rendered a glyph, so a
+    probe landing on the explored core of the map was invisible on the
+    board even though the launch itself is public.)
   - The probe's **ongoing sensor readings** remain private to the
     deploying House — telemetry doesn't transit the magnetic cover.
 - **Harvester landing locations are private; launch/recovery counts
@@ -1891,6 +1906,19 @@ seconds.
   current cell sits inside an active cloud has that hour's action
   replaced by a `tag="empd"` no-op (the slot is still consumed).
   Friendly fire is on: the launcher's own harvesters are not immune.
+- **Landing-harvest denial (v1.10):** a drop or step whose *destination*
+  cell was already inside an active cloud **at the start of the hour**
+  (i.e. a cloud that survived this hour's decay tick, before this
+  hour's own launches are resolved) still lands normally — the
+  harvester is not bounced, unlike a caltrop mine — but does **not**
+  auto-harvest that cell. It then goes `empd` from the following hour
+  on, same as any other unit caught standing in a cloud. A cloud
+  **freshly spawned by a launch resolved this same hour** does not
+  count as "already active" for this check, so a harvester that lands
+  the very hour a missile hits still banks that one parcel before
+  going `empd` next hour — EMP can no longer be "farmed through" by
+  repeatedly walking fresh drops into a standing cloud, but a
+  same-hour coincidence isn't retroactively punished.
 - **Cross-system kill (v0.9.x):** any **probe** caught in a cloud is
   destroyed and any **caltrop mine** caught in a cloud is neutralized
   — at formation AND on each subsequent hour's cloud tick (so a probe
@@ -2077,7 +2105,9 @@ vision pulse so the region carries its precise discovery hour.
 ## 5. Snowflake architecture (v0.4)
 
 Sea of Colours is a Snowflake-first product as of v0.4: the engine is
-durable inside `UMAN_SIM_DB.SEA_OF_COLOURS`, the FastAPI surface is a
+durable inside the deployment named by `SOC_DATABASE` / `SOC_SCHEMA`
+(default `SOC_HACKATHON_DB.SEA_OF_COLOURS` — see
+`sea_of_colours/snowpark/naming.py`), the FastAPI surface is a
 thin proxy, and either a deterministic Python agent (`RED_HARVEST`) or
 one of the Snowflake Cortex AI agents (first one: `SOC_RED_REAPER`) can
 play a seat end-to-end.
@@ -2127,7 +2157,8 @@ through `IMPORTS = '@SOC_PY_STAGE/sea_of_colours.zip'`.
 ### 5.3 Backend switch & cost guard
 
 - `SOC_BACKEND=snowflake` (**default**) — `SnowparkSocStore` against
-  the live `UMAN_SIM_DB.SEA_OF_COLOURS` schema. Credentials come from
+  the live schema named by `SOC_DATABASE` / `SOC_SCHEMA` (default
+  `SOC_HACKATHON_DB.SEA_OF_COLOURS`). Credentials come from
   `SF_CONFIG_FILE` (default `~/.ssh/sf_config`). Every season — whether
   driven by `RED_HARVEST` or by a Cortex AI agent — persists here.
 - `SOC_BACKEND=memory` — pure-Python `InMemorySocStore`. Used by tests
@@ -2174,22 +2205,35 @@ active.
 
 - Lives in [`sea_of_colours/agent/heuristic_agent.py`](sea_of_colours/agent/heuristic_agent.py).
 - Pure Python, deterministic, no Snowflake / Cortex dependency.
-- Default agent — runs whenever `SOC_AGENT_RUNTIME != cortex` or when
-  Cortex is configured but fails (graceful fallback).
+- The default agent, and the only one `/agent/think` can run.
 - Identifies itself as `agent_id = "RED_HARVEST"` in the audit row
   (`SOC_AGENT_INVOCATION`) and in the LOG panel.
+- **`RED_HARVEST_LITE`** is the same playbook with weapons
+  (chaff / EMP) disabled — the hackathon's first opponent. Select it
+  with `runtime_override="red_harvest_lite"` (or `?runtime=` on the
+  route).
 
-**AI agents — Snowflake Cortex agents**
+**AI agents — V12**
 
-- Spec template: [`snowflake/soc_create_agent.sql`](snowflake/soc_create_agent.sql).
-- First registered AI agent: **`SOC_RED_REAPER`**. Additional Cortex
-  agents register in
-  [`sea_of_colours/agent/runtime.py`](sea_of_colours/agent/runtime.py)
-  via the `AI_AGENTS` map.
-- Select an AI agent by exporting `SOC_AGENT_RUNTIME=cortex`
-  (optionally `SOC_CORTEX_AGENT=<name>` to pick a specific one).
-- The AI agent identifies itself in the audit row with its actual name
-  (e.g. `SOC_RED_REAPER`), so logs make it clear who played.
+- The shipped LLM agent is **V12**
+  ([`sea_of_colours/orchestrator_2/harnesses/tabula_v12/`](sea_of_colours/orchestrator_2/harnesses/tabula_v12/)).
+  It runs **in-process** and reaches Cortex over the inference REST
+  endpoint with a PAT, so it needs no deployed Snowflake agent object
+  and works on any `SOC_BACKEND`.
+- Seat it by naming a player `tabula_v12` at game creation; the
+  orchestrator
+  ([`orchestrator_2/runtime.py`](sea_of_colours/orchestrator_2/runtime.py))
+  dispatches it. It is **not** reachable via `?runtime=` on
+  `/agent/think`.
+
+> ⚠️ **Retired path.** An earlier generation of AI agents were Snowflake
+> Cortex *Agents-API* objects (`SOC_RED_REAPER` and friends), deployed
+> from `snowflake/soc_create_agent*.sql` and selected with
+> `SOC_AGENT_RUNTIME=cortex`. Those specs, the `AI_AGENTS` registry and
+> the `runtime=cortex` code path were all removed from this
+> distribution; `/agent/think?runtime=cortex` now returns **410**.
+> Changelog entries below that reference them are history, not current
+> behaviour.
 
 **Shared contract (both families)**
 
@@ -2206,13 +2250,16 @@ active.
 As of v0.5 the orchestrator is no longer a passive dispatch tier — it
 acts as a **harness** that pre-resolves the per-turn world state into a
 rich user prompt before the AI agent is invoked. The agent itself has
-no read tools; its surface is action-only. The reframe lives in
-`_build_cortex_prompt` in
-[`sea_of_colours/agent/runtime.py`](sea_of_colours/agent/runtime.py).
+no read tools; its surface is action-only. This principle still governs
+V12, whose prompt compiler lives in
+[`orchestrator_2/harnesses/tabula_v12/`](sea_of_colours/orchestrator_2/harnesses/tabula_v12/).
+(The original implementation, `_build_cortex_prompt` in
+`sea_of_colours/agent/runtime.py`, was removed with the Agents-API
+path; that module is heuristic-only now.)
 
-- **AI agent tools (only two).** The Cortex agent spec
-  ([`snowflake/soc_create_agent.sql`](snowflake/soc_create_agent.sql))
-  declares **only** `soc_submit_policy` and `soc_save_rationale`. The
+- **AI agent tools (only two).** The Cortex agent spec (formerly
+  `snowflake/soc_create_agent.sql`, since removed)
+  declared **only** `soc_submit_policy` and `soc_save_rationale`. The
   previous read tools (`soc_get_view`, `soc_get_inventory`,
   `soc_get_log`, `soc_get_leaderboard`) were deliberately stripped when
   the harness took over their job — keeping them would have invited
@@ -2369,6 +2416,82 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.11 — 2026-08-23
+
+**Bugfix — rival probes invisible on the map once landed on already-explored
+terrain (§3.15).** Probe launches are documented as public (every seat sees
+the launch), and a v0.9.7 fix ("§3.15 FIX, seed-69 E2") already patched the
+case where a probe lands on a cell the opponent has an older terrain echo
+for — but that fix only made the launch surface in the agent-facing intel
+feed (`enemy_probe_launch`); it never gave the **map** a drawable glyph.
+Discovered while diagnosing a replay report on season `V12_HEUR3_SNAP2_s69`
+(day 6, p4 view — the same seed as the original E2 incident) where most
+rival probes were missing from the board: any probe landing inside the
+explored core of the map (a stale terrain echo, not fog) never got an
+`entity` glyph, because the merge only ever touched `occupants` /
+`probe_launch_day` / `launched_by`, and the general ghost-glyph renderer is
+gated on the terrain echo's own `day_seen` — which the merge deliberately
+does NOT bump (bumping it would falsely tell the seat "you just re-observed
+this terrain," §3.15 FIX comment). Only probes landing on genuine fog (no
+prior echo) rendered correctly.
+
+- **Fix:** the merge now also stamps a dedicated `probe_launch_glyph`
+  (glyph char + the launching seat's colour, keyed by `probe_id`) onto the
+  existing echo — independent of the terrain's own `day_seen`/staleness.
+  The renderer prioritises this marker over the general ghost-glyph path,
+  so a publicly-launched probe is visible on the map whether it lands on
+  fog or on already-explored terrain.
+- **Cleanup:** `_clear_probe_launch_markers` (called on every probe death —
+  EMP, expiry, collision, crush) previously only pruned pure `via:
+  "probe_launch"` markers; the merged-onto-richer-echo case was silently
+  skipped, which — once the glyph fix above lit it up — would have left a
+  **permanent** ghost glyph after the probe died. Now prunes the merged
+  occupant + `probe_launch_glyph` too, regardless of `via`.
+- **Non-retroactive by construction**, same as v1.10 — this only changes
+  how live sessions render going forward; already-resolved replay frames in
+  `SOC_REPLAY_FRAME` are historical fact and are not rewritten.
+- **Engine:** `session.py::_pulse_probe_launch` (merge branch),
+  `session.py::player_dense_view` (stale-terrain-echo render branch),
+  `session.py::_clear_probe_launch_markers`. Covered by
+  `tests/test_v0_7_0.py` (glyph present after merge; glyph pruned on
+  probe death).
+
+### v1.10 — 2026-08-22
+
+**EMP no longer rewards landing inside an already-active cloud (§4.9.3).**
+Previously a drop or step into an EMP cloud always auto-harvested the
+landing tile — EMP only disabled the harvester's *next* action, never the
+landing itself. This let a seat treat a standing enemy (or even friendly)
+cloud as a free one-time harvest before eating the disable, undercutting
+EMP's value as an area-denial weapon.
+
+- **New rule:** the disable check now also gates the landing's harvest,
+  not just subsequent actions. A drop or step whose destination cell was
+  already inside an active cloud **at the start of the hour** no longer
+  harvests — the harvester still lands/steps onto the cell (it isn't
+  bounced like a mine), but the tile-colour conversion is skipped.
+- **Same-hour grace preserved.** A cloud formed by a launch resolved
+  *this* hour does not yet count as "already active" for this check — a
+  harvester landing the same hour a missile lands still harvests once,
+  and only becomes `empd` from the following hour onward (unchanged).
+  This keeps the existing "hot EMP into an incoming drop" interaction
+  intact.
+- **Pickup remains exempt** (§3.9.13, unchanged) — the orblift can always
+  extract a harvester through an EMP cloud.
+- **Non-retroactive by construction.** Nox resolution is append-only
+  (`SOC_REPLAY_FRAME`); already-resolved nights, whether the season is
+  finished or mid-flight, keep their original recorded outcomes. The new
+  check only applies to nights resolved after this patch ships — an
+  in-progress season simply cuts over on its next unresolved Nox.
+- **Engine:** `simulator.py::_pre_hour_phase` snapshots the pre-launch
+  "established" cloud-cell footprint (`sess._emp_established_cells_this_hour`,
+  cleared at end of night); `session.py::try_drop_unit` /
+  `try_step_unit` gain an `emp_blocked_cells` gate ahead of
+  `_harvest_at`. Covered by `tests/test_agent.py` /
+  `tests/test_night_simulator.py` (established-cloud landing denies
+  harvest; same-hour launch+landing still harvests once; pickup
+  unaffected).
 
 ### v1.9 — 2026-07-14
 

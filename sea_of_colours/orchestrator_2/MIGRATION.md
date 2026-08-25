@@ -97,7 +97,7 @@ This is **not yet implemented**. When it lands, the port steps will be:
    ```sql
    INSERT INTO SOC_AGENT_BINDING (session_id, player, kind, locator, agent_label, notes)
    VALUES ('*', 'p1', 'harness_proc',
-           'UMAN_SIM_DB.SEA_OF_COLOURS.SOC_FOO_HARNESS_RUN',
+           'SOC_HACKATHON_DB.SEA_OF_COLOURS.SOC_FOO_HARNESS_RUN',
            'FOO', 'comp registration');
    ```
 4. Run the orchestrator. The dispatcher will route by procedure call.

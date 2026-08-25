@@ -10,8 +10,10 @@
 -- only side effect is into our schema.
 -- ============================================================================
 
-USE DATABASE UMAN_SIM_DB;
-USE SCHEMA SEA_OF_COLOURS;
+-- ⚠️ TEMPLATED — deploy via scripts/deploy_soc_schema.py, which fills in
+--     {{SOC_DATABASE}} / {{SOC_SCHEMA}} from sea_of_colours/snowpark/naming.py.
+USE DATABASE {{SOC_DATABASE}};
+USE SCHEMA {{SOC_SCHEMA}};
 
 CREATE STAGE IF NOT EXISTS SOC_PY_STAGE
     DIRECTORY = (ENABLE = TRUE)

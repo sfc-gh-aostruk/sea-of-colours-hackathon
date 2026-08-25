@@ -1,7 +1,57 @@
-# sea_of_colours
+# Sea of Colours
 
-A small, dependency-free Python CLI that generates topographical color grids
-and prints them as ANSI squares in your terminal.
+A turn-based, fog-of-war strategy game. You run a mining house: harvest
+colour from a hidden map at night, spend the proceeds in orbit each
+morning, and out-think the other houses. It ships with bot opponents
+and an LLM agent, and the hackathon exercise is to build a better agent
+than the one in the box.
+
+## Quickstart — play a game in two minutes
+
+Needs Python 3.10+. No Snowflake account, no config, no build step.
+
+```bash
+pip install -r requirements.txt
+SOC_BACKEND=memory python run_web.py
+```
+
+Open <http://127.0.0.1:8000>, hit **NEW GAME**, leave your seat as
+**HUMAN** and set a rival to **RED_HARVEST_LITE**, and play.
+
+> `SOC_BACKEND=memory` keeps the whole game in the server process — no
+> external services. It is required for now: the backend defaults to
+> `snowflake` and will fail on your first move without a deployed
+> schema. See [`docs/SNOWFLAKE_SETUP.md`](docs/SNOWFLAKE_SETUP.md) if
+> you want persistence or the LLM agent.
+
+### Where to go next
+
+| I want to… | Go to |
+| --- | --- |
+| Learn the rules interactively | `manual/index.html` — open it in a browser |
+| Read the canonical rules | [RULEBOOK.md](RULEBOOK.md) |
+| Win a harder game | Set the rival to `RED_HARVEST` (weapons on) |
+| Play a friend | [`docs/MULTIPLAYER.md`](docs/MULTIPLAYER.md) — one-click tunnel + QR invite |
+| Face or fork the LLM agent | [`docs/SNOWFLAKE_SETUP.md`](docs/SNOWFLAKE_SETUP.md) — a PAT is all you need |
+
+### The opponents
+
+- **`RED_HARVEST_LITE`** — the deterministic heuristic with weapons
+  switched off. Start here; it won't mine or EMP you while you're still
+  learning what a parcel is.
+- **`RED_HARVEST`** — the same playbook with the full weapons economy.
+  The real baseline.
+- **`V12`** (`tabula_v12`) — the LLM agent, thinking via Snowflake
+  Cortex. Needs a PAT. It's strong, and it has one deliberate blind
+  spot for you to exploit or fix.
+
+---
+
+## The map generator CLI
+
+The game's terrain comes from a standalone generator you can also run on
+its own — a dependency-free Python CLI that generates topographical
+colour grids and prints them as ANSI squares in your terminal.
 
 Each tile is one of four states:
 
@@ -254,7 +304,7 @@ full table layout, view list, and procedure surface.
 
 **New to this repo / setting up your own Snowflake account?** See
 [`docs/SNOWFLAKE_SETUP.md`](docs/SNOWFLAKE_SETUP.md) for the from-scratch
-BYO-trial-account walkthrough (getting a PAT for the V11 agent, and
+BYO-trial-account walkthrough (getting a PAT for the V12 agent, and
 optionally deploying the schema for persistent sessions). You don't
 need any Snowflake account at all to play against `RED_HARVEST` /
 `RED_HARVEST_LITE` — `SOC_BACKEND=memory` covers that fully offline.
@@ -295,8 +345,9 @@ Flags:
 | ---- | ------ |
 | `--schema-only` | Stop after `soc_schema.sql` + `soc_views.sql`. |
 | `--no-procs`    | Skip `soc_procedures.sql` (procedures will be missing). |
-| `--no-agent`    | Skip `soc_create_agent.sql` (the AI agents — first one: SOC_RED_REAPER — will be missing; RED_HARVEST still runs). |
+| `--no-agent`    | Skip any `soc_create_agent*.sql`. This distribution ships none, so it's a no-op — kept for BYO agent specs. |
 | `--config FILE` | Use a different Snowflake config (default: `~/.ssh/sf_config`). |
+| `--dry-run`     | Print the resolved target database / schema / warehouse and exit without connecting. |
 
 The deploy script also builds + uploads the engine package zip
 (`build/sea_of_colours.zip`) to `@SOC_PY_STAGE` so every stored
@@ -308,58 +359,59 @@ procedure's `IMPORTS =` clause resolves to live code.
   player action plus the per-night `[opening]` and `[dawn]` rows). A
   full 25-move night caps at ~27 rows; a 30-night season ≈ 750
   VARIANT rows per session — comfortably under any per-table limit.
-- All stored procedures run on the warehouse named in `sf_config`
-  (default: `SOC_WH` — a dedicated XSMALL warehouse the deploy script
-  creates on first run with `AUTO_SUSPEND = 60` seconds). Override via
-  `warehouse=<name>` in `sf_config` if you'd rather reuse an existing
-  warehouse.
-- AI agents (Snowflake Cortex agents, first one `SOC_RED_REAPER`) bill
-  tokens against the same warehouse; a typical turn uses ~6–12 tool
-  calls and ~6 short response lines (see `instructions: response:` in
-  [`soc_create_agent.sql`](snowflake/soc_create_agent.sql)).
+- All stored procedures run on the warehouse resolved by
+  [`sea_of_colours/snowpark/naming.py`](sea_of_colours/snowpark/naming.py)
+  (default: `SOC_HACKATHON_WH` — a dedicated XSMALL warehouse the deploy
+  script creates on first run with `AUTO_SUSPEND = 60` seconds).
+  Override via `SOC_WAREHOUSE` or `warehouse=<name>` in `sf_config` if
+  you'd rather reuse an existing warehouse.
+- The **V12** LLM agent bills Cortex inference tokens per turn and does
+  not use a warehouse at all — it calls the chat-completions endpoint
+  directly with a PAT. See
+  [`docs/SNOWFLAKE_SETUP.md`](docs/SNOWFLAKE_SETUP.md).
 
-### Agents — RED_HARVEST (mainstay) + AI agents
+### Agents — the bots + V12
 
-Sea of Colours ships two agent families that share the same view +
-move-queue contract. Either family can take a seat through one button.
+Sea of Colours ships three agents. They share the same view +
+move-queue contract, so any of them can take any seat.
 
-* **RED_HARVEST** — the pure-Python deterministic heuristic
+* **RED_HARVEST_LITE** — the deterministic heuristic with weapons
+  disabled. The recommended first opponent, and the default rival in
+  the NEW GAME menu.
+* **RED_HARVEST** — the same pure-Python heuristic with chaff and EMP
+  switched on
   ([`sea_of_colours/agent/heuristic_agent.py`](sea_of_colours/agent/heuristic_agent.py)).
-  No Snowflake / Cortex required, deterministic, fully tested. This is
-  the default behind the ORDERS panel's `[ >> LET THE AGENT PLAY ]`
-  button.
-* **AI agents** — Snowflake Cortex agents (RULEBOOK §5.5). First
-  registered AI agent: `SOC_RED_REAPER`. Additional AI agents can be
-  added to
-  [`sea_of_colours/agent/runtime.py`](sea_of_colours/agent/runtime.py)
-  → `AI_AGENTS`.
+  No Snowflake required, deterministic, fully tested. This is what the
+  ORDERS panel's `[ >> LET THE AGENT PLAY ]` button runs.
+* **V12** — the LLM agent
+  ([`sea_of_colours/orchestrator_2/harnesses/tabula_v12/`](sea_of_colours/orchestrator_2/harnesses/tabula_v12/)),
+  and the one you're here to beat. Runs in-process and calls Cortex
+  *inference* over REST, so it needs a `SNOWFLAKE_PAT` but **no**
+  deployed Snowflake agent object and no particular storage backend.
+
+The two heuristics are driven by the think route:
 
 ```text
-POST /api/game/{id}/agent/think?player=p1
-  → reads SOC_GET_VIEW
-  → runs the configured agent (RED_HARVEST by default; an AI agent
-                               when SOC_AGENT_RUNTIME=cortex + PAT present)
-  → submits the policy through SOC_SUBMIT_POLICY
+POST /api/game/{id}/agent/think?player=p1[&runtime=heuristic|red_harvest_lite]
+  → reads the player view
+  → runs the heuristic
+  → submits the policy
   → writes a row to SOC_AGENT_INVOCATION with rationale + tool calls
   → returns { agent_id, runtime, rationale, night_resolved, ... }
 ```
 
-Toggle the runtime via env var:
+V12 does **not** go through that route. Seat a player as `tabula_v12`
+when you create the game and the orchestrator dispatches it each night.
 
-```bash
-SOC_AGENT_RUNTIME=heuristic       # default — RED_HARVEST (pure Python, deterministic)
-SOC_AGENT_RUNTIME=cortex          # live AI agent (requires SNOWFLAKE_PAT or pat= in sf_config)
-SOC_CORTEX_AGENT=SOC_RED_REAPER   # optional override; pick a specific AI agent
-```
+> Removed in the hackathon distribution: the old Cortex *Agents-API*
+> runtime (`SOC_AGENT_RUNTIME=cortex`, the `soc_create_agent*.sql`
+> specs, `SOC_RED_REAPER` and friends). `?runtime=cortex` returns 410.
 
-If Cortex fails for any reason, the runtime gracefully falls back to
-RED_HARVEST so a botched AI run never deadlocks the night.
-
-Both families consume the same structured view payload
+All three consume the same structured view payload
 (`hud`, `grid_ascii`, `red_tiles`, `green_tiles`, `fog_clusters`,
 `entities.mine`, `entity_detail`, `recent_log`) and emit the same
-wire-format move queue, so RED_HARVEST is a faithful drop-in for any
-AI agent.
+wire-format move queue, so RED_HARVEST is a faithful drop-in for V12 —
+which is exactly what makes them comparable on a scoreboard.
 
 ## Parameter cheatsheet
 
@@ -406,8 +458,7 @@ sea_of_colours/
 ├── snowflake/
 │   ├── soc_schema.sql            SOC_* tables (CREATE TABLE IF NOT EXISTS)
 │   ├── soc_views.sql             Leaderboard / day-index / latest-frame views
-│   ├── soc_procedures.sql        Snowpark Python stored-proc declarations
-│   └── soc_create_agent.sql      AI agents (first one: SOC_RED_REAPER)
+│   └── soc_procedures.sql        Snowpark Python stored-proc declarations
 ├── sea_of_colours/
 │   ├── __init__.py
 │   ├── game/                     Pure-Python engine (session, simulator, ledgers)

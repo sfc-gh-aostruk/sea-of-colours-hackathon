@@ -18,9 +18,8 @@ from fastapi.testclient import TestClient
 
 from sea_of_colours.agent.heuristic_agent import HeuristicAgent, plan_moves
 from sea_of_colours.agent.runtime import (
-    AI_AGENTS,
-    CORTEX_AGENT_DEFAULT,
     HEURISTIC_AGENT_NAME,
+    HEURISTIC_LITE_AGENT_NAME,
     run_agent_turn,
 )
 from sea_of_colours.snowpark import backend as soc_backend
@@ -373,10 +372,7 @@ def test_run_agent_turn_logs_invocation(store, session):
     result = run_agent_turn(store, session, "p1")
     assert result["ok"]
     assert result["runtime"] == "heuristic"
-    # Heuristic runs identify themselves as RED_HARVEST — the AI
-    # agents catalogue (Cortex-backed) uses different names.
     assert result["agent_id"] == HEURISTIC_AGENT_NAME
-    assert result["agent_id"] not in AI_AGENTS, "heuristic must not collide with AI agent names"
     audit = store.list_agent_invocations(session)
     assert len(audit) == 1
     assert audit[0]["agent_id"] == HEURISTIC_AGENT_NAME
@@ -405,10 +401,8 @@ def test_agent_route_smoke(store, session):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"]
-    # Default runtime is heuristic → RED_HARVEST identifies itself in the
-    # envelope. Cortex would substitute a name from AI_AGENTS.
     assert body["agent_id"] == HEURISTIC_AGENT_NAME
-    assert body["runtime"] in {"cortex", "heuristic"}
+    assert body["runtime"] == "heuristic"
 
 
 def test_agent_resolves_night_when_partner_already_locked(store, session):
@@ -462,457 +456,48 @@ def test_agent_route_runtime_override_heuristic(store, session):
     assert body["agent_id"] == HEURISTIC_AGENT_NAME
 
 
-def test_cortex_runtime_does_not_double_submit(monkeypatch, store, session):
-    """When Cortex is the runtime, runtime.py MUST NOT re-submit the policy.
+def test_agent_route_runtime_override_lite(store, session):
+    """``?runtime=red_harvest_lite`` seats the no-weapons bot."""
+    soc_backend._memory_store = store
+    from server.app import app
 
-    Background: the original implementation always called
-    `soc_engine.submit_policy(..., moves=[])` after the agent ran. In
-    Cortex mode, `moves` stays empty because Cortex submits via the
-    `soc_submit_policy` tool itself — so the always-call would overwrite
-    Cortex's live queue with an empty list and brick the seat.
-    """
-    import sea_of_colours.agent.runtime as runtime_mod
-
-    # 1) Make the cortex path take over.
-    monkeypatch.setenv("SOC_AGENT_RUNTIME", "cortex")
-
-    # 2) Stub the invoker so we don't touch the network.
-    class _StubInvoker:
-        def __init__(self, *args, **kwargs):
-            # Runtime now passes ``agent_name=...`` so the stub has to
-            # accept arbitrary kwargs to stay drop-in.
-            self.agent_name = kwargs.get("agent_name") or CORTEX_AGENT_DEFAULT
-
-        def is_ready(self):
-            return True
-
-        def invoke(self, prompt):
-            # Simulate Cortex calling SOC_SUBMIT_POLICY out of band by
-            # writing a non-empty queue directly into the store the
-            # runtime sees. The runtime's status read will then observe
-            # the seat as ready, mirroring real Cortex behaviour.
-            soc_engine.submit_policy(
-                store,
-                session,
-                "p1",
-                [{"a": "probe", "at": [4, 4]}],
-            )
-            return {
-                "ok": True,
-                "response": "stub-rationale",
-                "tool_calls": [{"tool": "soc_submit_policy"}],
-            }
-
-    monkeypatch.setattr(runtime_mod, "CortexAgentInvoker", _StubInvoker)
-
-    # 3) Spy on submit_policy so we can count calls.
-    calls = []
-    real_submit = soc_engine.submit_policy
-
-    def _spy(s, sid, player, moves):
-        calls.append((player, list(moves)))
-        return real_submit(s, sid, player, moves)
-
-    monkeypatch.setattr(soc_engine, "submit_policy", _spy)
-    monkeypatch.setattr(runtime_mod.soc_engine, "submit_policy", _spy)
-
-    result = run_agent_turn(store, session, "p1")
-    assert result["ok"]
-    assert result["runtime"] == "cortex"
-    # The Cortex stub identifies as the default AI agent, NOT as RED_HARVEST.
-    assert result["agent_id"] == CORTEX_AGENT_DEFAULT
-    assert result["agent_id"] in AI_AGENTS
-
-    # The stub invoker submitted ONE non-empty queue. runtime.py MUST NOT
-    # have added a second submit.
-    submits_by_player = [c for c in calls if c[0] == "p1"]
-    assert len(submits_by_player) == 1, (
-        f"expected exactly one p1 submission (Cortex's own), got "
-        f"{len(submits_by_player)}: {submits_by_player}"
+    client = TestClient(app)
+    r = client.post(
+        f"/api/game/{session}/agent/think",
+        params={"player": "p1", "runtime": "red_harvest_lite"},
     )
-    assert submits_by_player[0][1], "Cortex's submitted queue should be non-empty"
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"]
+    assert body["agent_id"] == HEURISTIC_LITE_AGENT_NAME
 
 
-def test_cortex_failure_falls_back_to_heuristic_submit(monkeypatch, store, session):
-    """If Cortex says ok but never submits, runtime.py runs the heuristic fallback."""
-    import sea_of_colours.agent.runtime as runtime_mod
+def test_agent_route_rejects_retired_cortex_runtime(store, session):
+    """``?runtime=cortex`` is gone — the route must say so, and say where
+    the LLM agent moved to, rather than quietly running the heuristic."""
+    soc_backend._memory_store = store
+    from server.app import app
 
-    monkeypatch.setenv("SOC_AGENT_RUNTIME", "cortex")
-
-    class _SilentInvoker:
-        def __init__(self, *args, **kwargs):
-            self.agent_name = kwargs.get("agent_name") or CORTEX_AGENT_DEFAULT
-
-        def is_ready(self):
-            return True
-
-        def invoke(self, prompt):
-            # Cortex says ok but never actually called soc_submit_policy.
-            return {"ok": True, "response": "looked but didn't submit", "tool_calls": []}
-
-    monkeypatch.setattr(runtime_mod, "CortexAgentInvoker", _SilentInvoker)
-
-    result = run_agent_turn(store, session, "p1")
-    assert result["ok"]
-    # We should still see p1's seat now locked in the engine (the
-    # heuristic fallback submitted something on cortex's behalf).
-    status = soc_engine.get_session_status(store, session)
-    assert status["pending"]["p1"] is True
-    assert "fallback" in result["rationale"].lower() or result["submitted"]
-    # Because the heuristic carried the seat, the envelope reports the
-    # heuristic's name (not the failed Cortex agent's).
-    assert result["agent_id"] == HEURISTIC_AGENT_NAME
-    assert result["runtime"] == "heuristic"
-
-
-def test_runtime_override_pins_heuristic_even_when_env_says_cortex(
-    monkeypatch, store, session
-):
-    """An explicit ``runtime_override='heuristic'`` MUST win over the env.
-
-    This is the contract the "AI vs RED_HARVEST" button relies on:
-    one seat (p1) calls ``?runtime=cortex``, the other (p2) calls
-    ``?runtime=heuristic``, and we need each to take effect for that
-    single call regardless of ``SOC_AGENT_RUNTIME``.
-    """
-    import sea_of_colours.agent.runtime as runtime_mod
-
-    monkeypatch.setenv("SOC_AGENT_RUNTIME", "cortex")
-
-    invoker_built = {"count": 0}
-
-    class _ExplodingInvoker:
-        """Will fail the test if instantiated — the heuristic override
-        must short-circuit Cortex entirely."""
-
-        def __init__(self, *args, **kwargs):
-            invoker_built["count"] += 1
-
-        def is_ready(self):
-            return True
-
-        def invoke(self, prompt):
-            raise AssertionError("cortex must not be invoked when runtime_override='heuristic'")
-
-    monkeypatch.setattr(runtime_mod, "CortexAgentInvoker", _ExplodingInvoker)
-
-    result = run_agent_turn(store, session, "p1", runtime_override="heuristic")
-    assert result["ok"]
-    assert result["runtime"] == "heuristic"
-    assert result["agent_id"] == HEURISTIC_AGENT_NAME
-    assert invoker_built["count"] == 0, (
-        "Cortex invoker must not even be constructed when override pins heuristic"
+    client = TestClient(app)
+    r = client.post(
+        f"/api/game/{session}/agent/think",
+        params={"player": "p1", "runtime": "cortex"},
     )
+    assert r.status_code == 410
+    assert "tabula_v12" in r.json()["detail"]
 
 
-def test_runtime_override_picks_cortex_for_one_call_only(
-    monkeypatch, store, session
-):
-    """``runtime_override='cortex'`` takes one seat to an AI agent.
-
-    The env stays at the default ``heuristic`` (so the *server-wide*
-    setting is unchanged), and only the call that passes the override
-    routes through Cortex. Mirrors what the versus button does for p1.
-    """
-    import sea_of_colours.agent.runtime as runtime_mod
-
-    monkeypatch.delenv("SOC_AGENT_RUNTIME", raising=False)
-
-    invoked = {"count": 0}
-
-    class _StubInvoker:
-        def __init__(self, *args, **kwargs):
-            self.agent_name = kwargs.get("agent_name") or CORTEX_AGENT_DEFAULT
-
-        def is_ready(self):
-            return True
-
-        def invoke(self, prompt):
-            invoked["count"] += 1
-            soc_engine.submit_policy(
-                store, session, "p1", [{"a": "probe", "at": [3, 3]}]
-            )
-            return {"ok": True, "response": "cortex pick", "tool_calls": []}
-
-    monkeypatch.setattr(runtime_mod, "CortexAgentInvoker", _StubInvoker)
-
-    result = run_agent_turn(store, session, "p1", runtime_override="cortex")
-    assert result["ok"]
-    assert result["runtime"] == "cortex"
-    assert result["agent_id"] == CORTEX_AGENT_DEFAULT
-    assert invoked["count"] == 1
-
-
-# ── Harness reframe tests ────────────────────────────────────────────
-#
-# After the orchestrator was reframed as a harness layer (the Cortex
-# agent's tool surface shrank to soc_submit_policy + soc_save_rationale),
-# `_build_cortex_prompt` is the new contract. These tests pin the
-# envelope shape so the agent can rely on every section being present
-# for every turn, even when sub-sections are empty.
-
-
-def test_cortex_prompt_includes_v070_sections(store, session):
-    """v0.7.0 harness envelope: structured JSON with the new top-level keys.
-
-    The ASCII map / RED TILES / FOG CLUSTERS / MY ENTITIES / INVENTORY
-    / RECENT LOG / LEADERBOARD prose sections were retired when the
-    payload moved to the JSON-blob format. The new contract pins the
-    presence of: HEADER, CONTRACT, HARD RULES, READING THE WORLD
-    JSON primer, and the STATE JSON fence containing
-    meta / hud / last_night / competitor_intel / world / navigation /
-    my_assets.
-    """
-    import json as _json
-
-    from sea_of_colours.agent.runtime import _build_cortex_prompt
-
-    view = soc_engine.get_view(store, session, "p1")
-    prompt = _build_cortex_prompt(session, view)
-
-    assert "SESSION:" in prompt
-    assert "DAY:" in prompt and "SEASON:" in prompt
-    assert "POLICY BUDGET:" in prompt
-    assert "TWO tools" in prompt or "two tools" in prompt.lower()
-    assert "soc_submit_policy" in prompt
-    assert "soc_save_rationale" in prompt
-    # Anti-hallucination block (v0.7.1): the prompt MUST name the
-    # removed read tools as forbidden so the model stops inventing
-    # them. We assert each one appears AND that the FORBIDDEN marker
-    # precedes them — that proves they appear in the warning context,
-    # not as legitimate references.
-    forbidden_idx = prompt.find("FORBIDDEN TOOL NAMES")
-    assert forbidden_idx > 0, "FORBIDDEN TOOL NAMES block missing from prompt"
-    for hallucination in (
-        "soc_get_view",
-        "soc_get_inventory",
-        "soc_get_log",
-        "soc_get_leaderboard",
-        "soc_list_sessions",
-    ):
-        assert hallucination in prompt, f"forbidden tool {hallucination} not surfaced"
-        assert prompt.find(hallucination) > forbidden_idx, (
-            f"{hallucination} appears OUTSIDE the FORBIDDEN block — treat as a bug"
-        )
-    # v0.7.0 prose anchors.
-    assert "HARD RULES" in prompt
-    assert "READING THE WORLD JSON" in prompt
-    assert "STATE (JSON" in prompt
-    # v0.7.1 juicy-seam doctrine: the prompt should teach the agent
-    # that trace is the minimum-effort play, not the target. Pin a
-    # couple of low-friction anchors so the section can be reworded
-    # without breaking the test.
-    assert "JUICY SEAM DOCTRINE" in prompt
-    assert "trace" in prompt.lower() and "pure" in prompt.lower()
-    # The JSON fence must be parseable and carry the new top-level keys.
-    start = prompt.index("```json\n") + len("```json\n")
-    end = prompt.index("\n```", start)
-    parsed = _json.loads(prompt[start:end])
-    for key in (
-        "meta", "hud", "last_night", "competitor_intel",
-        "world", "navigation", "my_assets",
-    ):
-        assert key in parsed, f"v0.7.0 STATE JSON missing top-level key: {key}"
-    # The world section is partitioned into live/echo with a fog count.
-    world = parsed["world"]
-    for key in ("width", "height", "live", "echo", "fog_count"):
-        assert key in world, f"world.{key} missing"
-    # meta.policy_actions_max should be 21 (fleet-wide cap).
-    assert parsed["meta"].get("policy_actions_max") == 21
-
-
-def test_cortex_prompt_respects_size_cap_when_world_explodes(store, session):
-    """A pathological world (huge live/echo arrays) must still fit the cap.
-
-    Real Snowflake-backed sessions on later days surface hundreds of
-    visible + echoed cells. The prompt builder must never produce a
-    user message that exceeds ``PROMPT_PAYLOAD_CAP_CHARS``; if it
-    would, world.live / world.echo are sorted by proximity and
-    truncated to the top-N cells.
-    """
-    from sea_of_colours.agent.runtime import (
-        PROMPT_PAYLOAD_CAP_CHARS,
-        _build_cortex_prompt,
-    )
-
-    view = soc_engine.get_view(store, session, "p1")
-    av = view.setdefault("agent_view", {})
-    fake_cells = [
-        {
-            "x": i % 40,
-            "y": (i // 40) % 28,
-            "tile": "RED" if i % 7 == 0 else "EMPTY",
-            "purity": (i * 17) % 256,
-            "value": (i * 17) % 256,
-            "square_id": f"sq_{i:04d}",
-        }
-        for i in range(800)
-    ]
-    av["world"] = {
-        "width": 40,
-        "height": 28,
-        "live": list(fake_cells),
-        "echo": list(fake_cells),
-        "fog_count": 0,
-    }
-
-    prompt = _build_cortex_prompt(session, view)
-    assert len(prompt) <= PROMPT_PAYLOAD_CAP_CHARS, (
-        f"prompt size {len(prompt)} > cap {PROMPT_PAYLOAD_CAP_CHARS}"
-    )
-    assert "truncated_to_nearest" in prompt, (
-        "the size-cap fallback must annotate the truncation so the "
-        "agent knows the world view is partial"
-    )
-
-
-def test_cortex_prompt_handles_empty_view_gracefully(store, session):
-    """Day-1 with full fog: every required section still renders.
-
-    The harness must not raise just because there is no last_night
-    recap, no competitor activity, etc. Empty inner arrays / objects
-    are still legal — the agent relies on the envelope shape staying
-    stable.
-    """
-    import json as _json
-
-    from sea_of_colours.agent.runtime import _build_cortex_prompt
-
-    view = soc_engine.get_view(store, session, "p1")
-    av = view.setdefault("agent_view", {})
-    av["last_night"] = {
-        "day_ended": 0,
-        "my_orders": [],
-        "my_assets_destroyed": [],
-        "my_parcels_banked": [],
-    }
-    av["competitor_intel"] = {"new_this_day": [], "persistent_echoes": []}
-    av["recent_log"] = []
-
-    prompt = _build_cortex_prompt(session, view)
-    # The STATE JSON must still parse cleanly.
-    start = prompt.index("```json\n") + len("```json\n")
-    end = prompt.index("\n```", start)
-    parsed = _json.loads(prompt[start:end])
-    assert parsed["last_night"]["my_orders"] == []
-    assert parsed["competitor_intel"]["new_this_day"] == []
-
-
-def test_cortex_prompt_includes_hard_rules_block(store, session):
-    """The HARD RULES block must be present and crisp.
-
-    Pins the exact phrases that protect against the failure modes the
-    agent has demonstrated historically (multi-tile steps, made-up
-    unit ids, forgotten pickups) AND the v0.7.0 additions (probe
-    launch publicity, probe-on-probe destruction, the 21-action
-    fleet-wide cap).
-    """
-    from sea_of_colours.agent.runtime import _build_cortex_prompt
-
-    view = soc_engine.get_view(store, session, "p1")
-    prompt = _build_cortex_prompt(session, view)
-
-    # Move grammar appears verbatim.
-    assert '"a":"probe"' in prompt
-    assert '"a":"drop"' in prompt
-    assert '"a":"step"' in prompt
-    assert '"a":"pickup"' in prompt
-    # Single-tile step rule.
-    assert "Manhattan distance == 1" in prompt
-    # Dawn-destruction reminder.
-    assert "dawn" in prompt.lower()
-    assert "pickup" in prompt.lower()
-    # v0.7.0: fleet-wide policy budget = 21 (not 25).
-    assert "21 VALID actions" in prompt
-    assert "25 valid moves" not in prompt
-    # Per-harvester hold capacity.
-    assert "HOLD = 6 parcels" in prompt or "6 parcels per outing" in prompt
-    # v0.7.0: probe-on-probe collisions + magnetic cover lore.
-    assert "PROBE COLLISIONS" in prompt
-    assert "magnetic cover" in prompt.lower()
-    # Orbital publicity asymmetry.
-    assert "ORBITAL PUBLICITY" in prompt
-    assert "probe_launch" in prompt
-    # Vault tier ladder + adjacency rule still surface.
-    assert "VAULT TIER LADDER" in prompt
-    assert "Manhattan depth" in prompt
-
-
-def test_cortex_prompt_includes_world_json_primer(store, session):
-    """The READING THE WORLD JSON block must be present and complete.
-
-    Replaces the legacy "HOW TO READ THE MAP" block — the agent now
-    consumes structured JSON instead of an ASCII grid. The primer
-    must explain each top-level key + the filtering contract
-    (skip fog, scan navigation, check hud.hoard.warning) so a future
-    refactor cannot silently strip the agent's reading guide.
-    """
-    from sea_of_colours.agent.runtime import _build_cortex_prompt
-
-    view = soc_engine.get_view(store, session, "p1")
-    prompt = _build_cortex_prompt(session, view)
-
-    assert "READING THE WORLD JSON" in prompt
-    # Each top-level key gets a one-liner.
-    for key in (
-        "meta", "hud", "last_night", "competitor_intel",
-        "world.live", "world.echo", "navigation", "my_assets",
-    ):
-        assert key in prompt, f"reading primer must document `{key}`"
-    # Filtering contract.
-    assert "FILTERING CONTRACT" in prompt
-    assert "skip fog" in prompt.lower()
-    # The legacy block must NOT be in the prompt any more — drift here
-    # means we shipped a confusing hybrid.
-    assert "HOW TO READ THE MAP" not in prompt
-    assert "DENSE MAP" not in prompt
-
-
-def test_cortex_prompt_surfaces_last_night_illegal_orders(store, session):
-    """When last_night.my_orders contains illegal items, the agent must see
-    them in the STATE JSON with outcome='illegal' + reason.
-
-    The dedicated "your moves were REJECTED" prose header from v0.6
-    was retired with the prompt rewrite; the agent now reads its own
-    rejected orders directly from the structured last_night recap.
-    """
-    import json as _json
-
-    from sea_of_colours.agent.runtime import _build_cortex_prompt
-
-    view = soc_engine.get_view(store, session, "p1")
-    av = view.setdefault("agent_view", {})
-    av["last_night"] = {
-        "day_ended": 0,
-        "my_orders": [
-            {
-                "idx": 0,
-                "text": "p1: step harvester_p1 (5,5)->(8,8) — not adjacent",
-                "outcome": "illegal",
-                "reason": "p1: step harvester_p1 (5,5)->(8,8) — not adjacent",
-            },
-            {
-                "idx": 1,
-                "text": "p1 deployed probe_p1_1 at (10,7)",
-                "outcome": "ok",
-            },
-        ],
-        "my_assets_destroyed": [],
-        "my_parcels_banked": [],
-    }
-
-    prompt = _build_cortex_prompt(session, view)
-    start = prompt.index("```json\n") + len("```json\n")
-    end = prompt.index("\n```", start)
-    parsed = _json.loads(prompt[start:end])
-    orders = parsed["last_night"]["my_orders"]
-    assert any(
-        o.get("outcome") == "illegal" and "not adjacent" in (o.get("reason") or "")
-        for o in orders
-    ), "illegal orders must round-trip into the structured prompt"
+def test_run_agent_turn_raises_on_retired_cortex_runtime(store, session):
+    """Silently degrading an LLM seat to the heuristic is the failure mode
+    that hid past regressions, so the engine raises instead."""
+    with pytest.raises(ValueError, match="tabula_v12"):
+        run_agent_turn(store, session, "p1", runtime_override="cortex")
 
 
 # ── Cortex invoker SSE diagnostics (v0.7.1) ──────────────────────────
+# NOTE: the invoker itself is NOT dead code — it is the shared SSE/PAT
+# transport that orchestrator_2 (and therefore V12) builds on. Only the
+# legacy Agents-API *runtime wiring* in agent/runtime.py was removed.
 #
 # After the Lux_Hollow post-mortem revealed that `soc_submit_policy`
 # failures were invisible to the orchestrator, we added tool-error and
@@ -1116,247 +701,6 @@ def test_cortex_invoker_enforces_walltime_cap(monkeypatch):
     # close the stream before it arrived.
     assert "chunk3" not in result["response"]
     assert fake.closed, "wall-clock cap must close the response stream"
-
-
-def test_runtime_preserves_cortex_submission_when_seat_locks(
-    monkeypatch, store, session
-):
-    """Cortex's submission must NOT be overwritten when the seat locked.
-
-    Mirrors the day-1 p1 of Lux_Hollow: Cortex calls soc_submit_policy
-    inside the SSE stream (here simulated by the stub calling
-    soc_engine.submit_policy directly), then returns ok with
-    submitted_policy=True. The runtime must NOT run the heuristic on
-    top, and the envelope must carry the Cortex agent name + runtime.
-    """
-    import sea_of_colours.agent.runtime as runtime_mod
-
-    monkeypatch.setenv("SOC_AGENT_RUNTIME", "cortex")
-
-    class _GoodInvoker:
-        def __init__(self, *a, **kw):
-            self.agent_name = kw.get("agent_name") or CORTEX_AGENT_DEFAULT
-
-        def is_ready(self):
-            return True
-
-        def invoke(self, prompt):
-            # Stand-in for the model's own soc_submit_policy call.
-            soc_engine.submit_policy(
-                store, session, "p1", [{"a": "probe", "at": [3, 3]}]
-            )
-            return {
-                "ok": True,
-                "response": "PLAN: probe (3,3). MOVES: 1. RATIONALE: scout edge.",
-                "tool_calls": [{"name": "soc_submit_policy"}],
-                "tool_errors": [],
-                "hallucinated_tools": [],
-                "submitted_policy": True,
-                "wallclock_capped": False,
-            }
-
-    monkeypatch.setattr(runtime_mod, "CortexAgentInvoker", _GoodInvoker)
-
-    submits = []
-    real_submit = soc_engine.submit_policy
-
-    def _spy(s, sid, player, moves):
-        submits.append((player, list(moves)))
-        return real_submit(s, sid, player, moves)
-
-    monkeypatch.setattr(runtime_mod.soc_engine, "submit_policy", _spy)
-
-    result = run_agent_turn(store, session, "p1")
-    assert result["agent_id"] == CORTEX_AGENT_DEFAULT
-    assert result["runtime"] == "cortex"
-    # Exactly one submission (Cortex's). The runtime must not have
-    # added a second one with a heuristic plan.
-    assert len(submits) == 1, (
-        f"runtime must not double-submit when Cortex locked the seat; "
-        f"got {submits}"
-    )
-    assert submits[0][1] == [{"a": "probe", "at": [3, 3]}]
-
-
-def test_runtime_does_not_overwrite_when_cortex_submit_was_rejected(
-    monkeypatch, store, session
-):
-    """When Cortex called soc_submit_policy but it was REJECTED, the
-    runtime must keep the Cortex name on the audit row and lock the
-    seat with an empty policy — NOT silently overwrite with a
-    heuristic plan.
-
-    This is the Lux_Hollow days-2-to-5 regression: Cortex was making
-    the tool call but the proc rejected the payload, the seat stayed
-    empty, and the runtime overrode it with RED_HARVEST output. The
-    fix preserves the failure under Cortex's name so it's visible.
-    """
-    import sea_of_colours.agent.runtime as runtime_mod
-
-    monkeypatch.setenv("SOC_AGENT_RUNTIME", "cortex")
-
-    class _RejectedInvoker:
-        def __init__(self, *a, **kw):
-            self.agent_name = kw.get("agent_name") or CORTEX_AGENT_DEFAULT
-
-        def is_ready(self):
-            return True
-
-        def invoke(self, prompt):
-            # Cortex called soc_submit_policy but the proc rejected
-            # the payload — the seat stays empty.
-            return {
-                "ok": True,
-                "response": "PLAN: harvest pure. MOVES: 3.",
-                "tool_calls": [{"name": "soc_submit_policy"}],
-                "tool_errors": [
-                    {
-                        "tool": "soc_submit_policy",
-                        "error": "p_policy must be a JSON string",
-                    }
-                ],
-                "hallucinated_tools": [],
-                "submitted_policy": True,
-                "wallclock_capped": False,
-            }
-
-    monkeypatch.setattr(runtime_mod, "CortexAgentInvoker", _RejectedInvoker)
-
-    result = run_agent_turn(store, session, "p1")
-    assert result["ok"]
-    # KEY ASSERTION: the audit row stays attributed to Cortex — the
-    # failure is the agent's, not the heuristic's.
-    assert result["agent_id"] == CORTEX_AGENT_DEFAULT
-    assert result["runtime"] == "cortex"
-    # The diagnostic tail surfaces the proc rejection.
-    rat = result["rationale"]
-    assert "soc_submit_policy" in rat and "JSON string" in rat
-    assert "DIAGNOSTICS" in rat
-    # The seat IS locked (we don't deadlock the night) but with an
-    # empty move queue.
-    assert result["moves"] == []
-    status = soc_engine.get_session_status(store, session)
-    assert status["pending"]["p1"] is True
-    # The envelope advertises the tool error so the watcher can render
-    # it in yellow.
-    assert result.get("tool_errors")
-    assert result["tool_errors"][0]["tool"] == "soc_submit_policy"
-
-
-def test_runtime_falls_back_when_cortex_made_no_submit_call(
-    monkeypatch, store, session
-):
-    """If Cortex returned without calling soc_submit_policy AT ALL, the
-    heuristic takes over and the audit row reflects that.
-
-    This is the only case where the heuristic SHOULD claim the seat —
-    Cortex produced no policy whatsoever, so something has to lock
-    the seat or the season deadlocks.
-    """
-    import sea_of_colours.agent.runtime as runtime_mod
-
-    monkeypatch.setenv("SOC_AGENT_RUNTIME", "cortex")
-
-    class _NoSubmitInvoker:
-        def __init__(self, *a, **kw):
-            self.agent_name = kw.get("agent_name") or CORTEX_AGENT_DEFAULT
-
-        def is_ready(self):
-            return True
-
-        def invoke(self, prompt):
-            return {
-                "ok": True,
-                "response": "Thinking but not submitting.",
-                "tool_calls": [{"name": "soc_save_rationale"}],
-                "tool_errors": [],
-                "hallucinated_tools": ["soc_get_view"],
-                "submitted_policy": False,
-                "wallclock_capped": False,
-            }
-
-    monkeypatch.setattr(runtime_mod, "CortexAgentInvoker", _NoSubmitInvoker)
-
-    result = run_agent_turn(store, session, "p1")
-    assert result["agent_id"] == HEURISTIC_AGENT_NAME
-    assert result["runtime"] == "heuristic"
-    # The hallucinated tool name still gets surfaced for visibility.
-    assert "soc_get_view" in (result.get("hallucinated_tools") or [])
-    # The rationale references the fallback so post-mortems are honest.
-    assert "fallback" in result["rationale"].lower()
-
-
-def test_runtime_repolls_on_apparent_race(monkeypatch, store, session):
-    """A first status check showing the seat empty must trigger a
-    short re-poll when Cortex's SSE stream reported a submission.
-
-    Mirrors the warehouse commit-visibility race we suspected on
-    Lux_Hollow's later turns. The first ``get_session_status`` call
-    sees an empty seat, but a second call ~200 ms later sees it
-    locked. The runtime must NOT fall back in that case.
-    """
-    import sea_of_colours.agent.runtime as runtime_mod
-
-    monkeypatch.setenv("SOC_AGENT_RUNTIME", "cortex")
-
-    submits = []
-
-    class _RacyInvoker:
-        def __init__(self, *a, **kw):
-            self.agent_name = kw.get("agent_name") or CORTEX_AGENT_DEFAULT
-
-        def is_ready(self):
-            return True
-
-        def invoke(self, prompt):
-            return {
-                "ok": True,
-                "response": "PLAN: probe. MOVES: 1.",
-                "tool_calls": [{"name": "soc_submit_policy"}],
-                "tool_errors": [],
-                "hallucinated_tools": [],
-                "submitted_policy": True,
-                "wallclock_capped": False,
-            }
-
-    monkeypatch.setattr(runtime_mod, "CortexAgentInvoker", _RacyInvoker)
-
-    # Patch get_session_status so the FIRST call returns p1 empty,
-    # and the SECOND call returns it locked (after a simulated commit
-    # arrival). The race-tolerant re-poll inside runtime.run_agent_turn
-    # is the only mechanism that should rescue this turn.
-    poll_count = {"n": 0}
-    real_get_status = soc_engine.get_session_status
-
-    def _flaky_status(s, sid):
-        poll_count["n"] += 1
-        if poll_count["n"] == 1:
-            # First check: pretend Cortex's commit hasn't landed yet.
-            base = real_get_status(s, sid)
-            base["pending"] = dict(base["pending"])
-            base["pending"]["p1"] = False
-            return base
-        # Second check: pretend the commit just arrived. We backfill
-        # the engine state to match by submitting an empty policy on
-        # Cortex's behalf so the real state is consistent.
-        submits.append("backfill")
-        soc_engine.submit_policy(s, sid, "p1", [{"a": "probe", "at": [2, 2]}])
-        return real_get_status(s, sid)
-
-    monkeypatch.setattr(runtime_mod.soc_engine, "get_session_status", _flaky_status)
-    monkeypatch.setattr(
-        runtime_mod, "time", type("t", (), {"sleep": lambda *_a: None, "time": __import__("time").time})
-    )
-
-    result = run_agent_turn(store, session, "p1")
-    # The re-poll succeeded — the seat appeared on the second check,
-    # so the runtime trusted Cortex and did not run the heuristic.
-    assert result["agent_id"] == CORTEX_AGENT_DEFAULT
-    assert result["runtime"] == "cortex"
-    assert poll_count["n"] == 2, (
-        "runtime must poll status TWICE on apparent race (was "
-        f"{poll_count['n']})"
-    )
 
 
 # ── v0.9.5 — Orbit playbook + multi-harvester planner ─────────────

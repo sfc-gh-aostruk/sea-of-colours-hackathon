@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 
-from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import (
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import (
     chat_schema,
     directive as dm,
     harness,

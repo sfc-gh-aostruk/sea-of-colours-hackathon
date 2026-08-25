@@ -4,8 +4,10 @@
 -- Cheap, idempotent. Re-runnable any time — views are pure queries.
 -- ============================================================================
 
-USE DATABASE UMAN_SIM_DB;
-USE SCHEMA SEA_OF_COLOURS;
+-- ⚠️ TEMPLATED — deploy via scripts/deploy_soc_schema.py, which fills in
+--     {{SOC_DATABASE}} / {{SOC_SCHEMA}} from sea_of_colours/snowpark/naming.py.
+USE DATABASE {{SOC_DATABASE}};
+USE SCHEMA {{SOC_SCHEMA}};
 
 -- --------------------------------------------------------------------------
 -- V1) Leaderboard — total red harvested per House per session

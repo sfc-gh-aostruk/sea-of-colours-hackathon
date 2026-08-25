@@ -1,11 +1,25 @@
 # Sea of Colours — Agent architecture & expansion plan
 
-> **Purpose.** This document explains how the current "haiku" agent
-> (`SOC_RED_REAPER_PILOT`) is built, how the orchestrator engages it (which
-> call it makes and what the data looks like), and where to extend it.
-> Companion file [`AGENT_PROMPT_SAMPLES.md`](./AGENT_PROMPT_SAMPLES.md) contains
-> the **exact** prompts the agent receives on different turns, auto-captured
-> from the live builders.
+> # ⚠️ HISTORICAL — describes a retired architecture
+>
+> This document describes the **Cortex Agents-API** generation of agents
+> (`SOC_RED_REAPER_PILOT` and friends): agents declared as Snowflake
+> *objects* in `soc_create_agent*.sql` specs, invoked through
+> `agent/runtime.py` with `SOC_AGENT_RUNTIME=cortex`.
+>
+> **All of that has been removed from this distribution.** The specs are
+> deleted, `agent/runtime.py` is heuristic-only, and
+> `/agent/think?runtime=cortex` returns 410.
+>
+> **The shipped LLM agent is V12** —
+> `sea_of_colours/orchestrator_2/harnesses/tabula_v12/` — which runs
+> in-process, builds its prompt in Python, and calls Cortex *inference*
+> over REST with a PAT. Start at that package's `README.md` and
+> `ENGINE_INTERFACE.md`.
+>
+> Kept because the **design reasoning** (harness pre-resolves world
+> state, agent gets an action-only tool surface, prompt-size discipline)
+> still governs V12. Treat every file path and env var below as stale.
 
 ---
 
@@ -97,8 +111,8 @@ tools:
 tool_resources:
   soc_submit_policy:
     type: procedure
-    identifier: UMAN_SIM_DB.SEA_OF_COLOURS.SOC_SUBMIT_POLICY
-    execution_environment: { type: warehouse, warehouse: SOC_WH, query_timeout: 60 }
+    identifier: {{SOC_DATABASE}}.{{SOC_SCHEMA}}.SOC_SUBMIT_POLICY
+    execution_environment: { type: warehouse, warehouse: {{SOC_WAREHOUSE}}, query_timeout: 60 }
 ```
 
 Key design choices baked into the spec:
@@ -171,7 +185,7 @@ run_agent_turn(store, session_id, player)
 - **Endpoint** (constructed from the SF config `account`):
   ```
   https://<account>.snowflakecomputing.com
-     /api/v2/databases/UMAN_SIM_DB/schemas/SEA_OF_COLOURS/agents/SOC_RED_REAPER_PILOT:run
+     /api/v2/databases/<SOC_DATABASE>/schemas/<SOC_SCHEMA>/agents/SOC_RED_REAPER_PILOT:run
   ```
 - **Auth:** `Authorization: Bearer <PAT>` — the PAT comes from `$SNOWFLAKE_PAT`
   or `pat=` / `access_token=` in `$SF_CONFIG_FILE` (default `~/.ssh/sf_config`).

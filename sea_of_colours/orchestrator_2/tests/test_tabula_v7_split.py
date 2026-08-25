@@ -11,7 +11,7 @@ runner; here we lock in the deterministic plumbing.
 
 from __future__ import annotations
 
-from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import (
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import (
     directive as dm,
     prompt as prompt_mod,
 )

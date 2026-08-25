@@ -77,6 +77,7 @@ def _patched_night_run(self, sess, queues):
 
 def _patched_try_drop(
     self, owner, harvester_id, x, y, harvest_budget=0, live_override=None,
+    emp_blocked_cells=None,
 ):
     """Bypass the v0.9.2 fog-of-war landing check for legacy tests.
 
@@ -87,6 +88,12 @@ def _patched_try_drop(
     implementation. Tests that explicitly assert the fog-of-war
     rule (``test_v092_*``) build their own session without going
     through this patch.
+
+    v1.10 — forwards the new ``emp_blocked_cells`` kwarg (RULEBOOK
+    §4.9.3) so :class:`NightSimulator` can still thread the
+    established-EMP-cloud harvest gate through this shim; without
+    this the monkeypatched signature would swallow the kwarg and
+    every drop in the legacy suite would raise a ``TypeError``.
     """
     from sea_of_colours.game.session import _xy_key, cell_to_paint
     if 0 <= x < self.width and 0 <= y < self.height:
@@ -101,6 +108,7 @@ def _patched_try_drop(
     return _orig_try_drop(
         self, owner, harvester_id, x, y, harvest_budget,
         live_override=live_override,
+        emp_blocked_cells=emp_blocked_cells,
     )
 
 

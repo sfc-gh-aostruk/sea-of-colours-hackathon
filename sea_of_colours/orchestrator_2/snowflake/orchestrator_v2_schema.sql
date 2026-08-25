@@ -21,8 +21,10 @@
 --      to SnowparkSocStore._SESSION_TABLES.
 -- ============================================================================
 
-USE DATABASE UMAN_SIM_DB;
-USE SCHEMA SEA_OF_COLOURS;
+-- ⚠️ TEMPLATED — deploy via scripts/deploy_soc_schema.py, which fills in
+--     {{SOC_DATABASE}} / {{SOC_SCHEMA}} from sea_of_colours/snowpark/naming.py.
+USE DATABASE {{SOC_DATABASE}};
+USE SCHEMA {{SOC_SCHEMA}};
 
 -- ----------------------------------------------------------------------------
 -- 1) SOC_AGENT_BINDING

@@ -3,14 +3,16 @@
 Selects the :class:`SocStore` implementation that the FastAPI proxy and
 the agent invoker share. The default is the **Snowflake-backed** store
 so every season — whether driven by ``RED_HARVEST`` or by a Cortex AI
-agent — persists in ``UMAN_SIM_DB.SEA_OF_COLOURS``. Set
+agent — persists into the deployment named by
+:mod:`sea_of_colours.snowpark.naming` (``SOC_DATABASE`` / ``SOC_SCHEMA``,
+defaulting to ``SOC_HACKATHON_DB.SEA_OF_COLOURS``). Set
 ``SOC_BACKEND=memory`` for fully-offline runs (unit tests, schema-less
 dev sandboxes) where the in-memory ``InMemorySocStore`` keeps the
 session state in process.
 
 The Snowpark session is created on first use and reused — Snowflake will
-auto-suspend the warehouse (``SOC_WH``) after the idle interval declared
-on the warehouse itself, so we don't need to keepalive / suspend manually
+auto-suspend the warehouse after the idle interval declared on the
+warehouse itself, so we don't need to keepalive / suspend manually
 (matches AA4's pattern in
 ``agent_arena_v4/orchestrator/snowflake_client.py``).
 """

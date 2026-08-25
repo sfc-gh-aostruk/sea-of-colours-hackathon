@@ -176,6 +176,8 @@
     /** @type {HTMLSelectElement | null} */ (document.getElementById("watch-season-picker"));
   const watchPickerMetaEl = document.getElementById("watch-picker-meta");
   const watchDeleteBtn = document.getElementById("watch-delete-btn");
+  const watchFixturesEl =
+    /** @type {HTMLInputElement | null} */ (document.getElementById("watch-show-fixtures"));
   /** @type {NodeListOf<HTMLButtonElement>} */
   const ccTabs = document.querySelectorAll(".cc-tab[data-cc-tab]");
   /** @type {NodeListOf<HTMLElement>} */
@@ -308,27 +310,35 @@
   const soloVersusP2 = document.getElementById("solo-versus-p2");
   const errSoloEl = document.getElementById("err-solo");
 
-  /** Read the runtime the user picked from the AGENT: dropdown.
-   *  "heuristic" (RED_HARVEST, ~10s/turn) is the default; "cortex" runs
-   *  the live Snowflake Cortex agent (~60-90s/turn). Falls back to
-   *  "heuristic" if the dropdown is missing for any reason. */
+  // The `/agent/think` route is heuristic-only: RED_HARVEST or
+  // RED_HARVEST_LITE. The retired "cortex" runtime now returns 410, so
+  // nothing below may ever produce it. LLM seats are not driven from
+  // here at all — seat a player as `tabula_v12` at game creation and the
+  // orchestrator dispatches V12 on the server side.
+  const HEURISTIC_RUNTIMES = ["heuristic", "red_harvest_lite"];
+
+  /** Read the runtime the user picked from the AGENT: dropdown, falling
+   *  back to RED_HARVEST when the dropdown isn't present. */
   function selectedAgentRuntime() {
     const v = soloAgentRuntime?.value;
-    return v === "cortex" ? "cortex" : "heuristic";
+    return HEURISTIC_RUNTIMES.includes(v) ? v : "heuristic";
   }
 
   /** Short label for a runtime — used in the versus button label. */
   function runtimeShortLabel(runtime) {
-    return runtime === "cortex" ? "AI AGENT" : "RED_HARVEST";
+    return runtime === "red_harvest_lite" ? "RED_HARVEST_LITE" : "RED_HARVEST";
   }
 
   /** Read the two VERSUS: dropdowns and return the matchup as
-   *  ``{ p1, p2 }``. Defaults to "cortex" vs "heuristic" — the original
-   *  hard-coded matchup — if either select is missing. */
+   *  ``{ p1, p2 }``. Defaults to RED_HARVEST vs RED_HARVEST_LITE when a
+   *  select is missing — the weapons-on bot against the weapons-off one. */
   function selectedVersusMatchup() {
-    const p1 = soloVersusP1?.value === "heuristic" ? "heuristic" : "cortex";
-    const p2 = soloVersusP2?.value === "cortex" ? "cortex" : "heuristic";
-    return { p1, p2 };
+    const pick = (sel, fallback) =>
+      HEURISTIC_RUNTIMES.includes(sel?.value) ? sel.value : fallback;
+    return {
+      p1: pick(soloVersusP1, "heuristic"),
+      p2: pick(soloVersusP2, "red_harvest_lite"),
+    };
   }
 
   /** Refresh the VERSUS button label so the user can see exactly which
@@ -16264,7 +16274,14 @@
    */
   const newGameModalState = {
     seatCount: 2,
-    agents: { p1: "human", p2: "human", p3: "red_harvest", p4: "red_harvest" },
+    // Default 2-seat game is human vs the no-weapons bot, so NEW GAME →
+    // START is a playable match with zero configuration.
+    agents: {
+      p1: "human",
+      p2: "red_harvest_lite",
+      p3: "red_harvest_lite",
+      p4: "red_harvest_lite",
+    },
     visibility: "hidden",
     player_profiles: {
       p1: { display_name: "", tag: "", color: "" },
@@ -16402,15 +16419,18 @@
       sel.setAttribute("aria-label", `${sid} agent`);
       for (const [val, label] of [
         ["human", "HUMAN — pilot from this browser"],
-        ["red_harvest", "RED_HARVEST — heuristic bot"],
-        ["pilot_v2", "PILOT_V2 — Cortex agent (slow · ~1 min/turn)"],
+        ["red_harvest_lite", "RED_HARVEST_LITE — heuristic bot, no weapons (start here)"],
+        ["red_harvest", "RED_HARVEST — heuristic bot, weapons on"],
+        ["tabula_v12", "V12 — LLM agent (needs a Snowflake PAT · slow)"],
       ]) {
         const opt = document.createElement("option");
         opt.value = val;
         opt.textContent = label;
         sel.appendChild(opt);
       }
-      sel.value = newGameModalState.agents[sid] || (i === 0 ? "human" : "red_harvest");
+      // Default rivals to the no-weapons bot: a first-timer shouldn't be
+      // mined and EMP'd before they know what a parcel is.
+      sel.value = newGameModalState.agents[sid] || (i === 0 ? "human" : "red_harvest_lite");
       newGameModalState.agents[sid] = sel.value;
       sel.addEventListener("change", () => {
         newGameModalState.agents[sid] = sel.value;
@@ -16671,7 +16691,17 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Surface the server's `detail` — it carries the actionable part
+        // (e.g. "seat p2 is an LLM agent but there's no PAT; here's how
+        // to fix it, or pick RED_HARVEST_LITE"). A bare "HTTP 400"
+        // strands the player with nothing to act on.
+        let detail = "";
+        try {
+          detail = (await res.json())?.detail || "";
+        } catch { /* non-JSON body — fall back to the status code */ }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
       const respBody = await res.json();
       sessionId = respBody.session_id;
       window.__SOC_LAST_NEWGAME__ = respBody;
@@ -16750,10 +16780,31 @@
   function renderSeasonPicker(sessions, activeId) {
     if (!watchPickerEl) return;
     watchPickerEl.innerHTML = "";
-    if (!sessions.length) {
+    // Test fixtures (frozen nights) and their clones share this table with
+    // real seasons and outnumber them several to one. They never advance,
+    // so they would otherwise fill the RESUME group forever. Hidden unless
+    // the checkbox asks for them — or unless one is the active selection,
+    // which happens when a fixture is opened by deep-link.
+    const showFixtures = !!(watchFixturesEl && watchFixturesEl.checked);
+    const isFixture = (row) => {
+      const kind = String(row.kind || "");
+      return kind === "fixture" || kind === "replay";
+    };
+    const visible = showFixtures
+      ? sessions
+      : sessions.filter((r) => !isFixture(r) || r.session_id === activeId);
+    const hiddenCount = sessions.length - visible.length;
+    if (watchFixturesEl) {
+      watchFixturesEl.parentElement?.toggleAttribute(
+        "hidden", !showFixtures && !hiddenCount,
+      );
+    }
+    if (!visible.length) {
       const opt = document.createElement("option");
       opt.value = "";
-      opt.textContent = "// no persisted seasons yet";
+      opt.textContent = hiddenCount
+        ? `// ${hiddenCount} fixture(s) hidden — tick "fixtures" to show`
+        : "// no persisted seasons yet";
       watchPickerEl.appendChild(opt);
       watchPickerEl.disabled = true;
       return;
@@ -16764,8 +16815,9 @@
     // ``season_complete``; everything else is still mid-flight and can
     // be re-entered as a human seat.
     const isFinished = (row) => String(row.phase || "") === "season_complete";
-    const resumable = sessions.filter((r) => !isFinished(r));
-    const replays = sessions.filter(isFinished);
+    const resumable = visible.filter((r) => !isFinished(r) && !isFixture(r));
+    const replays = visible.filter(isFinished);
+    const fixtures = visible.filter((r) => isFixture(r) && !isFinished(r));
 
     const buildOption = (row, playable) => {
       const opt = document.createElement("option");
@@ -16775,9 +16827,14 @@
         row.source === "snowflake" ? "\u2601 " :   // ☁
         row.source === "local" ? "\uD83D\uDCBE " : // 💾
         "";
+      // A season NAME is not unique — a sweep runs the same name many times,
+      // and the list then shows a dozen identical rows. The short session id
+      // is the only thing that tells them apart, and it is what every report,
+      // snapshot id and deep link refers to, so show it alongside.
+      const shortId = row.session_id.slice(0, 8);
       const label =
         srcGlyph +
-        (row.season_name || row.session_id.slice(0, 8)) +
+        (row.season_name ? `${row.season_name} · ${shortId}` : shortId) +
         ` · D${String(row.day || 0)}` +
         ` · ${formatSeasonScores(row)}` +
         (playable ? " · resume" : " · done");
@@ -16800,8 +16857,14 @@
       for (const row of replays) grp.appendChild(buildOption(row, false));
       watchPickerEl.appendChild(grp);
     }
+    if (fixtures.length) {
+      const grp = document.createElement("optgroup");
+      grp.label = "Fixtures — frozen test nights";
+      for (const row of fixtures) grp.appendChild(buildOption(row, true));
+      watchPickerEl.appendChild(grp);
+    }
     if (activeId) watchPickerEl.value = activeId;
-    if (watchDeleteBtn) watchDeleteBtn.hidden = !sessions.length;
+    if (watchDeleteBtn) watchDeleteBtn.hidden = !visible.length;
   }
 
   /** Resume an in-progress season as a playable human seat. Fetches the
@@ -17780,7 +17843,8 @@
       watchPickerMetaEl.textContent = "";
       return;
     }
-    const name = row.season_name || row.session_id.slice(0, 8);
+    const shortId = row.session_id.slice(0, 8);
+    const name = row.season_name ? `${row.season_name} · ${shortId}` : shortId;
     const day = String(row.day || 0);
     watchPickerMetaEl.textContent =
       `${name} · day ${day} · ${formatSeasonScores(row)}` +
@@ -17820,9 +17884,17 @@
     if (!targetId && sessions.length) {
       // No specific selection — default to the most recently played
       // (the list is sorted ``last_touched_at DESC`` by the backend).
-      targetId = sessions[0].session_id;
+      // Skip fixtures: a capture batch leaves hundreds of them at the top
+      // of the list and landing on one is never what a watcher wanted.
+      const firstReal = sessions.find((s) => String(s.kind || "season") === "season");
+      targetId = (firstReal || sessions[0]).session_id;
     }
     renderSeasonPicker(sessions, targetId);
+    if (watchFixturesEl) {
+      watchFixturesEl.addEventListener("change", () => {
+        renderSeasonPicker(sessions, watchPickerEl ? watchPickerEl.value : targetId);
+      });
+    }
     const activeRow = sessions.find((s) => s.session_id === targetId);
     renderWatcherMeta(activeRow || null);
     if (targetId) {

@@ -35,6 +35,7 @@ from sea_of_colours.orchestrator_2.binding_registry import (
 )
 from sea_of_colours.orchestrator_2.dispatcher import dispatch_turn
 from sea_of_colours.snowpark import engine as soc_engine
+from sea_of_colours.snowpark import snapshot as soc_snapshot
 
 
 def _seat_has_pending(store, session_id: str, player: str) -> bool:
@@ -134,6 +135,13 @@ def run_agent_turn(
     view = soc_engine.get_view(store, session_id, player)
     agent_view = view.get("agent_view") or {}
     day = int(view.get("day", agent_view.get("hud", {}).get("day", 0)))
+
+    # Freeze the board the instant before a seat plans, when SOC_SNAPSHOT_PREFIX
+    # is set. This is the only moment the pre-decision state exists — the
+    # session blob is overwritten as the night resolves.
+    soc_snapshot.maybe_take(
+        store, session_id, day, player, str(view.get("phase") or "")
+    )
 
     # ── Orbit phase: binding-aware dispatch. ──────────────────────────
     #

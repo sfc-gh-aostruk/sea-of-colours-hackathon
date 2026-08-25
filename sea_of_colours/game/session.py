@@ -2700,8 +2700,26 @@ class GameSession:
                         isinstance(ds, (int, float))
                         and (self.day - int(ds)) <= 1
                     )
-                    if glyph_fresh:
-                        occ = snap.get("occupants")
+                    occ = snap.get("occupants")
+                    # v1.11 (RULEBOOK §3.15) — a publicly-launched rival
+                    # probe merged onto this echo carries its OWN glyph
+                    # marker (stamped by :meth:`_pulse_probe_launch`),
+                    # independent of ``glyph_fresh``/``day_seen`` — those
+                    # track when THIS SEAT last actually observed the
+                    # terrain, not when a rival's probe publicly landed
+                    # on it, and must not be conflated. This takes
+                    # priority over the general ghost-glyph path below so
+                    # the probe stays visible for as long as the marker
+                    # exists (pruned on probe death/decay).
+                    plaunch_glyph = snap.get("probe_launch_glyph")
+                    if isinstance(plaunch_glyph, dict) and plaunch_glyph.get("ch"):
+                        if isinstance(occ, list) and occ:
+                            cell["occupants"] = occ
+                        cell["entity"] = {
+                            "ch": plaunch_glyph["ch"],
+                            "fg": plaunch_glyph.get("fg"),
+                        }
+                    elif glyph_fresh:
                         if isinstance(occ, list) and occ:
                             cell["occupants"] = occ
                         gh, gf = snap.get("glyph_ch"), snap.get("glyph_fg")
@@ -6116,9 +6134,11 @@ class GameSession:
         # we just launched, so harvesters / mines / other probes on
         # the same tile aren't leaked either.
         probe_occ = None
+        probe_ent_obj: Optional[Entity] = None
         for ent in self._entities_on_tile_sorted(x, y):
             if ent.id == probe_id:
                 probe_occ = occupant_wire(ent, self)
+                probe_ent_obj = ent
                 break
         snap: dict[str, Any] = {
             "via": "probe_launch",
@@ -6159,6 +6179,23 @@ class GameSession:
                 # ``day_seen`` (which would falsely age the fog terrain fresh).
                 existing["probe_launch_day"] = int(self.day)
                 existing["launched_by"] = owner
+                # v1.11 (RULEBOOK §3.15) — the FIX above made the launch
+                # surface in the agent-facing intel feed, but never gave
+                # the MAP a drawable glyph: the renderer's ghost-glyph
+                # path is gated on the terrain echo's own ``day_seen``
+                # (deliberately NOT bumped here — see above), so the
+                # newly-merged probe occupant sat in ``occupants`` but
+                # was never promoted to a visible ``entity``. Stamp a
+                # SEPARATE, dedicated glyph marker (independent of the
+                # terrain's staleness) so the public launch is always
+                # visible on the map too, exactly as RULEBOOK §3.15
+                # intends. Cleared by :meth:`_clear_probe_launch_markers`
+                # when this probe dies/decays.
+                if probe_occ and probe_ent_obj is not None:
+                    gh, gf = self._glyph_for_entity(probe_ent_obj)
+                    existing["probe_launch_glyph"] = {
+                        "ch": gh, "fg": gf, "probe_id": probe_id,
+                    }
                 continue
             self.probe_intel[cast(PlayerId, opp)][k] = dict(snap)
         try:
@@ -6184,25 +6221,49 @@ class GameSession:
         entries where the marker's ``probe_id`` field or its ``occupants``
         list matches ``probe_id`` — avoids collateral damage when a fresh
         probe later lands on the same cell and writes a new marker.
+
+        v1.11 (RULEBOOK §3.15) — a probe that got merged onto a RICHER
+        terrain echo (``via`` preserved as the echo's own, not
+        ``"probe_launch"``) previously skipped this cleanup entirely: its
+        ``occupants`` entry AND the dedicated ``probe_launch_glyph`` this
+        fix now stamps (see :meth:`_pulse_probe_launch`) would otherwise
+        linger forever as a permanent ghost, since that path isn't gated
+        by the day-based glyph decay the general echo path uses. Every
+        bucket's entry at ``(x, y)`` is now pruned by ``probe_id``
+        regardless of ``via``.
         """
         k = _xy_key(x, y)
         for bucket in self.probe_intel.values():
             entry = bucket.get(k)
-            if entry is None or entry.get("via") != "probe_launch":
+            if entry is None:
                 continue
-            if entry.get("probe_id") == probe_id:
-                del bucket[k]
+            if entry.get("via") == "probe_launch":
+                if entry.get("probe_id") == probe_id:
+                    del bucket[k]
+                    continue
+                occ = entry.get("occupants") or []
+                if any(isinstance(o, dict) and o.get("id") == probe_id for o in occ):
+                    remaining = [
+                        o for o in occ
+                        if not (isinstance(o, dict) and o.get("id") == probe_id)
+                    ]
+                    if remaining:
+                        entry["occupants"] = remaining
+                    else:
+                        del bucket[k]
                 continue
+            # Merged-onto-richer-echo case (v1.11): prune the occupant
+            # AND the dedicated glyph marker, but leave the terrain
+            # snapshot itself untouched.
             occ = entry.get("occupants") or []
             if any(isinstance(o, dict) and o.get("id") == probe_id for o in occ):
-                remaining = [
+                entry["occupants"] = [
                     o for o in occ
                     if not (isinstance(o, dict) and o.get("id") == probe_id)
                 ]
-                if remaining:
-                    entry["occupants"] = remaining
-                else:
-                    del bucket[k]
+            pg = entry.get("probe_launch_glyph")
+            if isinstance(pg, dict) and pg.get("probe_id") == probe_id:
+                entry.pop("probe_launch_glyph", None)
 
     def lifter_for(self, owner: PlayerId) -> Optional[Entity]:
         for e in self.entities.values():
@@ -6218,16 +6279,23 @@ class GameSession:
         y: int,
         harvest_budget: int = 0,  # back-compat; no longer used (v0.6.0)
         live_override: Optional[Set[Tuple[int, int]]] = None,
+        emp_blocked_cells: Optional[Set[Tuple[int, int]]] = None,
     ) -> Tuple[bool, str, bool]:
         """Drop a berthed harvester onto the surface.
 
-        A harvester always harvests the coloured square it lands on
+        A harvester harvests the coloured square it lands on
         (RULEBOOK §3.12 — v0.6.0). RED→GREEN, GREEN→EMPTY, BLUE→EMPTY.
         There is no per-color cap; the natural limit is the
         6-parcel hold (drop + 5 steps). Returns
         ``(ok, message, harvested)`` to match :meth:`try_step_unit`.
         The ``harvest_budget`` parameter is preserved for back-compat
         with v0.5 callers but is no longer consulted.
+
+        v1.10 (RULEBOOK §4.9.3) — ``emp_blocked_cells`` is the set of
+        cells inside an EMP cloud that was already active before this
+        hour's own launches resolved (passed by the night simulator).
+        The harvester still lands on such a cell — the drop itself is
+        unaffected — but the auto-harvest is denied.
         """
         del harvest_budget  # unused — kept for signature compat
         hh = self.entities.get(harvester_id)
@@ -6360,6 +6428,19 @@ class GameSession:
         )
 
         origin_tile = self.grid[y][x].tile
+        # v1.10 (RULEBOOK §4.9.3) — landing inside an ALREADY-established
+        # EMP cloud denies the auto-harvest outright. The harvester still
+        # lands (it isn't bounced like a mine) and will go empd starting
+        # next hour; it just banks nothing on this landing.
+        if emp_blocked_cells and (x, y) in emp_blocked_cells:
+            return (
+                True,
+                (
+                    f"{owner} dropped {harvester_id} at ({x},{y}); "
+                    f"EMP cloud denies auto-harvest"
+                ),
+                False,
+            )
         harvested, site_id = self._harvest_at(owner_play, harvester_id, x, y)
         if not harvested:
             return True, f"{owner} dropped {harvester_id} at ({x},{y})", False
@@ -6380,6 +6461,7 @@ class GameSession:
         nx: int,
         ny: int,
         harvest_budget: int = 0,  # back-compat; no longer used (v0.6.0)
+        emp_blocked_cells: Optional[Set[Tuple[int, int]]] = None,
     ) -> Tuple[bool, str, bool]:
         """Step a harvester to an adjacent tile.
 
@@ -6389,6 +6471,12 @@ class GameSession:
         EMPTY, BLUE → EMPTY. The ``harvest_budget`` parameter is
         preserved for back-compat with v0.5 callers but is no longer
         consulted (v0.6.0 removed the per-night RED cap).
+
+        v1.10 (RULEBOOK §4.9.3) — ``emp_blocked_cells`` is the set of
+        cells inside an EMP cloud that was already active before this
+        hour's own launches resolved (passed by the night simulator).
+        The step itself still lands on such a cell; the auto-harvest
+        is denied.
         """
         del harvest_budget  # unused — kept for signature compat
         h = self.entities.get(harvester_id)
@@ -6487,6 +6575,16 @@ class GameSession:
         self._note_asset_deployed(harvester_id)
 
         origin_tile = self.grid[ny][nx].tile
+        # v1.10 (RULEBOOK §4.9.3) — stepping into an ALREADY-established
+        # EMP cloud denies the auto-harvest outright. The step still
+        # lands (the harvester moves onto the cell) and will go empd
+        # starting next hour; it just banks nothing on this step.
+        if emp_blocked_cells and (nx, ny) in emp_blocked_cells:
+            return (
+                True,
+                f"{harvester_id} → ({nx},{ny}); EMP cloud denies auto-harvest",
+                False,
+            )
         harvested, site_id = self._harvest_at(owner_play, harvester_id, nx, ny)
         if not harvested:
             return True, f"{harvester_id} → ({nx},{ny})", False

@@ -53,15 +53,20 @@ class CortexAgentInvoker:
         # running with multiple AI agents. The default kept here keeps
         # back-compat with the original single-agent deployment.
         agent_name: str = "SOC_RED_REAPER",
-        database: str = "UMAN_SIM_DB",
-        schema: str = "SEA_OF_COLOURS",
+        # None → resolve from snowpark.naming (SOC_DATABASE / SOC_SCHEMA),
+        # so the invoker follows whichever deployment the rest of the
+        # process is pointed at instead of pinning a literal.
+        database: Optional[str] = None,
+        schema: Optional[str] = None,
         config_file: Optional[str] = None,
         pat_token: Optional[str] = None,
         text_completion_predicate: Optional[Any] = None,
     ) -> None:
+        from sea_of_colours.snowpark import naming
+
         self.agent_name = agent_name
-        self.database = database
-        self.schema = schema
+        self.database = database or naming.database()
+        self.schema = schema or naming.schema()
         # v1.9 — optional early-termination predicate for text-mode agents.
         # When set, the SSE loop calls ``text_completion_predicate(accum)``
         # after each chunk. If it returns True, the invoker closes the

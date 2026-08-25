@@ -13,7 +13,7 @@ import json
 import pytest
 
 from sea_of_colours.orchestrator_2.cortex_chat import CortexChatInvoker
-from sea_of_colours.orchestrator_2.harnesses.tabula_v7 import chat_schema
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import chat_schema
 
 
 class _FakeResp:

@@ -64,134 +64,22 @@ class AgentBinding:
 # continues to serve PILOT v1, GRID_FAST, etc. — they are NOT registered
 # here on purpose.
 KNOWN_AGENT_BINDINGS = {
-    "SOC_RED_REAPER_PILOT_V2": AgentBinding(
+    # v12 — the WORLD-VIEW release, and the only LLM agent this
+    # distribution ships. Deterministic packager, redsign seam-control,
+    # continuous journal, plus two persistent "beyond tonight" prompt
+    # components: an agent-authored WORLD VIEW (cross-day rivals+map
+    # model) and a static OUT-OF-GRID KNOWLEDGE reference (the fixed
+    # scoring/weapon/redsign physics).
+    #
+    # Every earlier harness (pilot_v2..v4, tabula, tabula_v2..v11) was
+    # deleted for the hackathon distribution — they were R&D lineage,
+    # and leaving a dozen near-identical agents in the tree is the
+    # fastest way to confuse someone asking "which one do I fork?".
+    # The answer is: this one.
+    "SOC_RED_REAPER_TABULA_V12": AgentBinding(
         kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.pilot_v2.harness:run",
-        agent_label="PILOT_V2",
-    ),
-    "SOC_RED_REAPER_PILOT_V3": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.pilot_v3.harness:run",
-        agent_label="PILOT_V3",
-    ),
-    "SOC_RED_REAPER_PILOT_V4": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.pilot_v4.harness:run",
-        agent_label="PILOT_V4",
-    ),
-    # Tabula — harvest-only phase-1 pilot (formerly pilot_v6_arena). Single LLM
-    # call per night (orbit stubs to empty), memory-driven predict/reflect loop,
-    # candidates as hints (scores stripped) so the LLM computes EV itself.
-    # Named "Tabula" (blank slate) because this is the new base agent — all
-    # future extensions build on top of this clean single-LLM harness.
-    "SOC_RED_REAPER_TABULA": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula.harness:run",
-        agent_label="TABULA",
-    ),
-    # Tabula v2 — adds probe intelligence on top of v1. Extends the prompt
-    # with FOG + ECHO exposure and PROBE PLACEMENT HINTS (area_gain +
-    # edge_promise). v1 remains fully isolated and functional at the tabula
-    # locator; v2 is a separate binding so both can be run/A-B tested.
-    "SOC_RED_REAPER_TABULA_V2": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v2.harness:run",
-        agent_label="TABULA_V2",
-    ),
-    # Tabula v3 — adds opponent awareness, hot drops, blue harvesting,
-    # orbit→tactical wishlist hand-off, harvester crash rules, and a
-    # rules/strategies split. v2 remains fully isolated and functional
-    # at the tabula_v2 locator; v3 is a separate binding so both can be
-    # run/A-B tested side by side.
-    "SOC_RED_REAPER_TABULA_V3": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v3.harness:run",
-        agent_label="TABULA_V3",
-    ),
-    # Tabula v4 — adds aggressive-probing structural mandate. The
-    # harness prepends probes from the compiler's top hints when the
-    # LLM's plan under-launches given available stock + open fog.
-    # Motivation: v3 solo runs launched 7 probes/season vs the
-    # heuristic's 18, and that gap capped LLM-agent performance.
-    # v3 remains fully isolated at the tabula_v3 locator.
-    "SOC_RED_REAPER_TABULA_V4": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v4.harness:run",
-        agent_label="TABULA_V4",
-    ),
-    # Tabula v5 — lean core doctrine + conditional appendices. Replaces
-    # v4's monolithic STRATEGIES_SUMMARY (10KB always-on) with a
-    # STRATEGIES_CORE (~4.6KB) plus DOCTRINE_BLUE / DOCTRINE_REDSIGN /
-    # DOCTRINE_BEWARE_EMP / DOCTRINE_BEWARE_CHAFF blocks that only ship
-    # when their trigger condition fires. Also removes the deterministic
-    # probe augmenter — probing is doctrine-driven only.
-    "SOC_RED_REAPER_TABULA_V5": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v5.harness:run",
-        agent_label="TABULA_V5",
-    ),
-    # Tabula v6 — faithful fork of v5 (the 4-0 baseline: seeds 42/7/99/2024
-    # vs heuristic). v6 is where prior-night comprehension (reflection +
-    # chaff), hot-drop combing (walk the whole revealed disk), and fog-beacon
-    # redsign hot-drop combos get developed. v5 stays frozen as the champion
-    # so we can A/B every v6 change against a known-good reference.
-    "SOC_RED_REAPER_TABULA_V6": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v6.harness:run",
-        agent_label="TABULA_V6",
-    ),
-    # Tabula v7 — faithful fork of v6, minted as the next dev baseline once
-    # v6's moves-first + grounded-reflection + comb-path batch was proven.
-    # v6 stays frozen as the reference; v7 is where the next batch of
-    # improvements (see harnesses/tabula_v7/GOAL.md) is developed and A/B'd.
-    "SOC_RED_REAPER_TABULA_V7": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v7.harness:run",
-        agent_label="TABULA_V7",
-    ),
-    # Tabula v8 — the consolidation release. Currently a thin activation layer
-    # over the v7 harness that forces the CONTAINED TWO-CALL SPLIT (reasoning-
-    # first thinker + moves-first mover, both on the inference API). Lets v8 run
-    # head-to-head vs the frozen v6/v7 champions in one arena; forks proper once
-    # the §4 data hooks + §5 doctrine land (see tabula_v8/PLAN.md).
-    "SOC_RED_REAPER_TABULA_V8": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v8.harness:run",
-        agent_label="TABULA_V8",
-    ),
-    # Tabula v9 — the COMPREHENSION release (true fork of v8). Keeps v8's
-    # contained two-call split + 3-pillar worldview and adds the attributed
-    # event digest (why a probe/harvest/night was lost, with attacker +
-    # consequence), a REFLECT block that forces a consequence acknowledgment,
-    # EMP scars as a hazard, engine-truth redsign discoverer attribution, and
-    # the rewritten two-case weapon-free redsign-poker doctrine. v6/v7/v8 stay
-    # frozen. (v11 is the separate native-thinking-Sonnet bet.)
-    "SOC_RED_REAPER_TABULA_V9": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v9.harness:run",
-        agent_label="TABULA_V9",
-    ),
-    # Tabula v10 — the COMPILER-FAITHFULNESS release (true fork of v9, which
-    # completed the comprehension agenda and won seed 69). v10 keeps v9's
-    # thinker/doctrine but replaces the freelancing LLM executor with a
-    # DETERMINISTIC packager (compiler pattern), and adds anti-crowd seat
-    # differentiation + economy/final-night guards (see tabula_v10/
-    # SEED69_FIXPLAN.md, R0–R6). v9 stays frozen. (v11 = native-thinking-Sonnet.)
-    "SOC_RED_REAPER_TABULA_V10": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v10.harness:run",
-        agent_label="TABULA_V10",
-    ),
-    # Tabula v11 — the ASSIGNMENT-COMPREHENSION release (true fork of v10). Keeps
-    # v10's deterministic packager, walk-in reachability, and grounded reflection,
-    # and adds the Pyramid × Posture harvester-assignment model + posture-tuned
-    # plays + grounded memories (see tabula_v11_PLAN.md). Kills v10's probe-starved
-    # dead turns, echo-pure literalism, and dual-redsign confusion. v10 stays
-    # frozen as the fallback champion. (v12 = native-thinking-Sonnet bet.)
-    "SOC_RED_REAPER_TABULA_V11": AgentBinding(
-        kind="harness_in_process",
-        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v11.harness:run",
-        agent_label="TABULA_V11",
+        locator="sea_of_colours.orchestrator_2.harnesses.tabula_v12.harness:run",
+        agent_label="TABULA_V12",
     ),
 }
 
@@ -218,21 +106,7 @@ HEURISTIC_LITE_BINDING = AgentBinding(
 # to the harness with no env vars, so a human-vs-agent game works from
 # the menu alone. Anything not listed here is treated as heuristic.
 AGENT_LABEL_BINDINGS = {
-    "pilot_v2": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_PILOT_V2"],
-    "pilot_v3": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_PILOT_V3"],
-    "pilot_v4": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_PILOT_V4"],
-    "pilot_v6_arena": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA"],
-    "tabula": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA"],
-    "tabula_v2": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V2"],
-    "tabula_v3": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V3"],
-    "tabula_v4": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V4"],
-    "tabula_v5": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V5"],
-    "tabula_v6": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V6"],
-    "tabula_v7": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V7"],
-    "tabula_v8": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V8"],
-    "tabula_v9": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V9"],
-    "tabula_v10": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V10"],
-    "tabula_v11": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V11"],
+    "tabula_v12": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V12"],
     "red_harvest_lite": HEURISTIC_LITE_BINDING,
 }
 

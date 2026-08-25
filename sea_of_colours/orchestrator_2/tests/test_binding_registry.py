@@ -46,12 +46,22 @@ def test_env_per_player_override_parses(monkeypatch):
     assert b.agent_label == "run:MY_LABEL"
 
 
-def test_known_agent_maps_pilot_v2(monkeypatch):
-    monkeypatch.setenv("SOC_CORTEX_AGENT", "SOC_RED_REAPER_PILOT_V2")
+def test_known_agent_maps_v12(monkeypatch):
+    monkeypatch.setenv("SOC_CORTEX_AGENT", "SOC_RED_REAPER_TABULA_V12")
     b = br.resolve_binding(store=None, session_id="s", player="p1")
     assert b.kind == "harness_in_process"
-    assert b.locator.endswith("pilot_v2.harness:run")
-    assert b.agent_label == "PILOT_V2"
+    assert b.locator.endswith("tabula_v12.harness:run")
+    assert b.agent_label == "TABULA_V12"
+
+
+def test_retired_harness_labels_no_longer_resolve(monkeypatch):
+    """The R&D lineage (pilot_v2..v4, tabula_v2..v11) was deleted. Their
+    labels must not silently resolve to anything."""
+    for name in ("SOC_RED_REAPER_PILOT_V2", "SOC_RED_REAPER_TABULA_V9"):
+        monkeypatch.setenv("SOC_CORTEX_AGENT", name)
+        b = br.resolve_binding(store=None, session_id="s", player="p1")
+        assert b.kind == "heuristic", f"{name} should not resolve to a harness"
+    assert set(br.AGENT_LABEL_BINDINGS) == {"tabula_v12", "red_harvest_lite"}
 
 
 def test_unknown_cortex_agent_with_override_becomes_bare(monkeypatch):

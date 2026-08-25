@@ -47,7 +47,7 @@ from sea_of_colours.game.weapons import (
     MINE_COST_CREDITS,
 )
 from sea_of_colours.game.session import Entity
-from sea_of_colours.generator import Tile
+from sea_of_colours.generator import Cell, Tile
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -541,6 +541,161 @@ def test_night_emp_disables_harvester_in_cloud_next_hour() -> None:
         f for f in sess.last_night_replay if f.get("tag") == "empd"
     ]
     assert empd_frames
+
+
+# ── v1.10 — EMP denies auto-harvest on landing (§4.9.3) ─────────────
+
+
+def test_try_step_unit_denies_harvest_on_established_emp_cell() -> None:
+    """A step into a cell already inside an active EMP cloud still
+    lands, but the auto-harvest is denied (RULEBOOK §4.9.3, v1.10)."""
+    sess = _fresh_night_session()
+    h = sess.entities["harvester_p1"]
+    h.x, h.y = 4, 5
+    h.damaged = False
+    sess.grid[5][5] = Cell(Tile.RED, 200)
+
+    ok, msg, harvested = sess.try_step_unit(
+        "p1", "harvester_p1", 5, 5, emp_blocked_cells={(5, 5)},
+    )
+    assert ok is True
+    assert harvested is False
+    assert "EMP cloud denies auto-harvest" in msg
+    assert (h.x, h.y) == (5, 5)  # the step itself still lands
+    assert sess.grid[5][5].tile == Tile.RED  # no colour conversion
+    assert h.cargo_squares == []  # nothing banked
+
+
+def test_try_step_unit_harvests_normally_outside_emp_blocked_cells() -> None:
+    """The new gate is opt-in per-cell: a step landing outside the
+    blocked set (or with no EMP at all) harvests exactly as before."""
+    sess = _fresh_night_session()
+    h = sess.entities["harvester_p1"]
+    h.x, h.y = 4, 5
+    h.damaged = False
+    sess.grid[5][5] = Cell(Tile.RED, 200)
+
+    ok, msg, harvested = sess.try_step_unit(
+        "p1", "harvester_p1", 5, 5, emp_blocked_cells={(9, 9)},
+    )
+    assert ok is True
+    assert harvested is True
+    assert sess.grid[5][5].tile == Tile.GREEN
+    assert len(h.cargo_squares) == 1
+
+
+def test_try_drop_unit_denies_harvest_on_established_emp_cell(monkeypatch) -> None:
+    """A drop onto a cell already inside an active EMP cloud still
+    lands, but the auto-harvest is denied (RULEBOOK §4.9.3, v1.10)."""
+    # Drop legality (live/echo, §3.9.7) is orthogonal to the EMP gate
+    # under test — relax to live_or_echo so the conftest memory-stamp
+    # shim (which only satisfies the echo/memory path) covers it.
+    monkeypatch.setenv("SOC_DROP_MODE", "live_or_echo")
+    sess = _fresh_night_session()
+    sess.grid[6][7] = Cell(Tile.RED, 200)
+
+    ok, msg, harvested = sess.try_drop_unit(
+        "p1", "harvester_p1", 7, 6, emp_blocked_cells={(7, 6)},
+    )
+    assert ok is True
+    assert harvested is False
+    assert "EMP cloud denies auto-harvest" in msg
+    h = sess.entities["harvester_p1"]
+    assert (h.x, h.y) == (7, 6)  # the drop itself still lands
+    assert sess.grid[6][7].tile == Tile.RED  # no colour conversion
+
+
+def test_night_step_into_established_emp_cloud_does_not_harvest() -> None:
+    """Integration: a harvester that steps into a cloud which was
+    already standing before the hour began does not auto-harvest,
+    even though the step lands normally (RULEBOOK §4.9.3, v1.10).
+
+    ``harvester_p2`` starts at Manhattan distance 3 from the EMP
+    centre (8,8) — OUTSIDE the radius-2 blast — so it is never itself
+    disabled by the pre-existing "current cell inside cloud" rule; it
+    steps onto (6,8), which sits exactly on the blast boundary
+    (distance 2), well after the cloud (formed hour 1) is established.
+    """
+    sess = _fresh_night_session()
+    _stock_weapon(sess, "p1", "emp", n=1)
+    h2 = sess.entities["harvester_p2"]
+    h2.x, h2.y = 5, 8
+    h2.damaged = False
+    sess.grid[8][6] = Cell(Tile.RED, 200)
+
+    queues = {
+        # EMP launched hour 1; p1 has nothing else queued.
+        "p1": [EmpLaunchMove(at=(8, 8))],
+        # p2 waits two hours so its step into the cloud lands at
+        # hour 3 — well after the cloud (formed hour 1) is established.
+        "p2": [
+            WaitMove(),
+            WaitMove(),
+            StepMove(unit="harvester_p2", to=(6, 8)),
+        ],
+    }
+    NightSimulator().run(sess, queues)
+
+    assert (h2.x, h2.y) == (6, 8)  # the step still landed
+    assert sess.grid[8][6].tile == Tile.RED  # never converted
+    assert h2.cargo_squares == []  # nothing banked
+    denied = [
+        f for f in sess.last_night_replay
+        if "EMP cloud denies auto-harvest" in (f.get("caption") or "")
+    ]
+    assert denied
+
+
+def test_night_same_hour_emp_launch_and_landing_still_harvests_once(
+    monkeypatch,
+) -> None:
+    """Grace case: a cloud freshly spawned by a launch resolved THIS
+    hour does not block that same hour's landing — only a cloud that
+    was already established beforehand does (RULEBOOK §4.9.3, v1.10).
+
+    Uses a DROP (not a step) so the landing harvester starts orbital
+    (no "current cell") and is never itself pre-disabled by the
+    existing rule — this isolates the new landing-harvest gate,
+    mirroring the exact "EMP launched + harvester descends same hour"
+    scenario from the rulebook note.
+    """
+    # Drop legality (live/echo) is orthogonal to the EMP gate under
+    # test — relax to live_or_echo so the conftest memory-stamp shim
+    # covers the landing cell without a dedicated probe setup.
+    monkeypatch.setenv("SOC_DROP_MODE", "live_or_echo")
+    sess = _fresh_night_session()
+    _stock_weapon(sess, "p1", "emp", n=1)
+    sess.grid[8][8] = Cell(Tile.RED, 200)
+
+    queues = {
+        # Both p1's launch and p2's drop resolve during hour 1.
+        "p1": [EmpLaunchMove(at=(8, 8))],
+        # Pickup is EXEMPT from the EMP disable (§3.9.13) even though
+        # the harvester is now standing in the established cloud, so
+        # it safely extracts at hour 2 — this also keeps the unit from
+        # being destroyed as "abandoned on the surface" at Aurora,
+        # which would otherwise remove it from ``sess.entities``.
+        "p2": [
+            DropMove(unit="harvester_p2", at=(8, 8)),
+            PickupMove(unit="harvester_p2"),
+        ],
+    }
+    NightSimulator().run(sess, queues)
+
+    # The same-hour coincidence still banked the parcel...
+    assert sess.grid[8][8].tile == Tile.GREEN
+    assert len(sess.hoard_squares["p2"]) == 1
+    drop_frames = [
+        f for f in sess.last_night_replay
+        if f.get("owner") == "p2" and f.get("tag") == "drop"
+    ]
+    assert drop_frames and "auto-harvested" in drop_frames[0]["caption"]
+    # ...but the harvester was standing in the cloud from hour 1 on, so
+    # any further NON-pickup action would have gone empd (covered by
+    # the existing next-hour-disable test above) — only pickup is
+    # exempt, which is exactly what let it come home safely here.
+    h2 = sess.entities["harvester_p2"]
+    assert h2.x is None and h2.y is None  # safely extracted, not stranded
 
 
 def test_night_chaff_cancels_other_seat_same_hour() -> None:

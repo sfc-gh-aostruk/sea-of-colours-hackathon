@@ -1,23 +1,37 @@
 # BYO-Snowflake setup
 
-**TL;DR: you don't need any of this to play.** `SOC_BACKEND=memory` (the
-default for local dev — see `README.md`) plays a full game against
-`RED_HARVEST` / `RED_HARVEST_LITE` with zero external services. This doc
-is only for the two things that need a real Snowflake account:
+**TL;DR: you don't need any of this to play.** Start the server with
+`SOC_BACKEND=memory` and you get a full game against `RED_HARVEST` /
+`RED_HARVEST_LITE` with zero external services:
 
-1. **Running / improving V11** — the reference Cortex agent
-   (`sea_of_colours/orchestrator_2/harnesses/tabula_v11/`). It calls
+```bash
+SOC_BACKEND=memory python run_web.py
+```
+
+> ⚠️ The env var is required today: `SOC_BACKEND` currently **defaults
+> to `snowflake`**, so leaving it unset takes you down section 2's path
+> and fails on your first game action if the schema isn't deployed.
+
+There are two — **independent** — reasons to bring a Snowflake account
+into it. You can do either without the other:
+
+1. **Running / improving V12** — the reference Cortex agent
+   (`sea_of_colours/orchestrator_2/harnesses/tabula_v12/`). It calls
    Snowflake Cortex's inference API to think; everything else about it
-   is plain Python running on your machine.
+   is plain Python running on your machine. **PAT only — no schema
+   deploy.**
 2. **Persistent, Snowflake-backed game history** (`SOC_BACKEND=snowflake`)
    — optional, only useful if you want every season durably written to
-   real tables instead of living in server memory.
+   real tables instead of living in server memory. **Key-pair auth +
+   a schema deploy.**
 
-These are independent. You can do (1) without (2).
+Note these use **different credentials**: a Programmatic Access Token
+for Cortex, a key-pair for Snowpark. Setting one up does not set up the
+other. Most people want (1).
 
-## 1. Playing against / building V11 — PAT only, no schema deploy
+## 1. Playing against / building V12 — PAT only, no schema deploy
 
-V11 talks to Snowflake over one REST endpoint —
+V12 talks to Snowflake over one REST endpoint —
 `/api/v2/cortex/v1/chat/completions` (Cortex's inference API, not the
 "Agents" feature) — using a Programmatic Access Token. It does **not**
 need any table, view, or stored procedure deployed; the harness runs
@@ -61,15 +75,15 @@ directly, same as the heuristic agents.
    PY
    ```
    `ready: True` and a response containing `pong` means you're set.
-7. **Play a game against V11** (or run it headless — see
-   `scripts/run_matchup_v11.py` / `scripts/run_season.py --p2 cortex`).
-   `SOC_BACKEND` can stay `memory`; V11 doesn't need it to be
-   `snowflake`.
+7. **Play a game against V12** (or run it headless — see
+   `scripts/run_matchup_v12.py` / `scripts/run_season.py --p2 cortex`).
+   Keep `SOC_BACKEND=memory`; V12 does **not** need the Snowflake
+   backend — that's section 2 and entirely separate.
 
 ### Cost / rate-limit notes
 
-- Each V11 turn makes a small, bounded number of chat-completions calls
-  (see `sea_of_colours/orchestrator_2/harnesses/tabula_v11/harness.py`),
+- Each V12 turn makes a small, bounded number of chat-completions calls
+  (see `sea_of_colours/orchestrator_2/harnesses/tabula_v12/harness.py`),
   each capped by `max_completion_tokens` and a wall-clock timeout — so a
   runaway turn can't rack up an unbounded bill.
 - Trial-account credits comfortably cover a full hackathon's worth of
@@ -93,22 +107,37 @@ pip install -r requirements-snowflake.txt
    account=<your_account_identifier>
    user=<your_username>
    private_key_file=/path/to/your/rsa_key.p8
-   warehouse=SOC_WH        # optional — the deploy script creates this XSMALL warehouse if absent
-   database=UMAN_SIM_DB    # optional — override the default database name
-   schema=SEA_OF_COLOURS   # optional — override the default schema name
    ```
    See [Snowflake's key-pair auth docs](https://docs.snowflake.com/en/user-guide/key-pair-auth)
    for generating `rsa_key.p8` and registering the public key on your user.
-2. Deploy the schema (non-destructive — safe to re-run):
+2. Check where you're about to deploy. The defaults are hackathon-scoped
+   so they can't collide with an existing SOC install in the same
+   account:
+   ```bash
+   python scripts/deploy_soc_schema.py --dry-run
+   # Target: SOC_HACKATHON_DB.SEA_OF_COLOURS (warehouse SOC_HACKATHON_WH)
+   ```
+   Override with `SOC_DATABASE` / `SOC_SCHEMA` / `SOC_WAREHOUSE` (or the
+   `database=` / `schema=` / `warehouse=` keys in `sf_config`).
+3. Deploy. The database, schema and an XSMALL auto-suspending warehouse
+   are all created if absent, so this works on a brand-new trial
+   account. Non-destructive — safe to re-run:
    ```bash
    python scripts/deploy_soc_schema.py
-   # or, to skip the Cortex Agents-API specs (not needed for V11):
+   # or, to skip the Cortex Agents-API specs (not needed for V12):
    python scripts/deploy_soc_schema.py --no-agent
    ```
-3. Run with the Snowflake backend:
+4. Run with the Snowflake backend:
    ```bash
    SOC_BACKEND=snowflake python run_web.py
    ```
+
+> ⚠️ **NEW GAME wipes the target schema.** Every `init_session` clears
+> every `SOC_*` table — including previous seasons' replay frames —
+> before writing the new one. On the Snowflake backend that is a real,
+> durable delete against whatever `SOC_DATABASE` points at, so run the
+> `--dry-run` check above before pointing this at a deployment whose
+> history you care about.
 
 See `README.md`'s "Web + Snowflake" section for the full flag reference
 and cost notes on this path.
@@ -119,5 +148,6 @@ and cost notes on this path.
 | --- | --- |
 | `CortexChatInvoker(...).is_ready()` is `False` | `SNOWFLAKE_PAT` unset/empty, or `account=` missing/wrong in `sf_config`. |
 | `401`/`403` from the chat-completions call | Role on the PAT doesn't have `SNOWFLAKE.CORTEX_USER` granted, or the PAT expired. |
-| Cortex call times out / V11 falls back to a shorter plan | Normal under load — V11's wall-clock cap intentionally truncates and falls back rather than stalling the game; see the harness's timeout constants if you want to tune it. |
-| `ModuleNotFoundError: snowflake.snowpark` | You're on the `SOC_BACKEND=snowflake` path without `pip install -r requirements-snowflake.txt`. Not needed for V11 / the PAT path above. |
+| Cortex call times out / V12 falls back to a shorter plan | Normal under load — V12's wall-clock cap intentionally truncates and falls back rather than stalling the game; see the harness's timeout constants if you want to tune it. |
+| `ModuleNotFoundError: snowflake.snowpark` | You left `SOC_BACKEND` unset (it defaults to `snowflake`) without `pip install -r requirements-snowflake.txt`. To just play: `SOC_BACKEND=memory python run_web.py`. Not needed for V12 / the PAT path above. |
+| Server starts fine, then errors the moment you start a game | Same cause as the row above — the store backend is resolved lazily on first use, not at boot. |
