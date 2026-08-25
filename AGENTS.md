@@ -18,6 +18,12 @@ This file is always-on context for AI agents; keep it lean and current.
  `#tab=<name>`). It quotes concrete commands, expected output and the
  pytest baseline, so **it's a fan-out surface**: if you change install
  steps, env vars, agent names or the new-game modal, reconcile it.
+- `manual/agent.html` — the agent & harness guide: one real V12 turn
+ taken apart (percept → prompt → reply → sanitiser → engine). Its data
+ is **generated**, not hand-written — regenerate via
+ `scripts/export_agent_guide_data.py` rather than editing
+ `manual/agent-data.js`. It cites harness module paths, so a rename in
+ `harnesses/tabula_v12/` fans out here.
 - `docs/SNOWFLAKE_SETUP.md` — BYO-Snowflake-trial-account walkthrough
   (PAT for the V12 agent; optional schema deploy for persistent
   sessions). Playing/testing against `RED_HARVEST` / `RED_HARVEST_LITE`

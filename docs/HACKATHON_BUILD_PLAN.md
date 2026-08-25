@@ -87,7 +87,7 @@ weapons decision for the attendee to make.
 | --- | --- | --- |
 | 0 | Revert the RED_HARVEST_LITE experiment from the original dev repo (unrelated pre-existing WIP untouched); confirm green baseline | ✅ done |
 | 1 | Port to this clean repo; BYO-Snowflake docs; re-apply RED_HARVEST_LITE fresh | ✅ done |
-| 1.5 | Re-sync from the dev repo (engine/rulebook/manual/UI), bring V12 across, delete V11 | ✅ done (2026-08-25) — see audit below |
+| 1.5 | Re-sync from the dev repo (engine/rulebook/manual/UI), bring V12 across, delete V11 | ✅ done (2026-08-25) — see audit below; **amended** later the same day to pick up dev `5bf8f63`, which landed 10s before the port commit and was missed (agent & harness manual page) |
 | 2 | Trim the agent roster to exactly `RED_HARVEST` / `RED_HARVEST_LITE` / `V12` | ✅ done (2026-08-25) — legacy Cortex Agents-API path removed, all retired harnesses deleted, V12 flattened off `tabula_v7` and now self-contained |
 | 3 | Easy install & first-run verification pass — **the north-star phase**; untangle the two Snowflake dependencies, preserve the multiplayer/tunnel suite. Treat it as a product goal, not a checkbox | 🟢 substantially done (2026-08-25, v1.12) — backend auto-detects, boot probe + actionable errors, `quickstart_check.py`, one-click Quick game, docs reconciled; verified from a fresh venv on base requirements. Remaining: a walk-through against a genuinely fresh **trial account** (all Snowflake checks so far were offline or against an existing account) |
 | 4 | Simplify the Orbital phase down to purchasing + weapons buying (drop refine/catapult/jettison); re-teach all three agents the new orbit | pending — shape agreed, **confirm the open questions with the user before any implementation** |
@@ -393,6 +393,35 @@ Still open at "go":
   (step 1) — the v12 harness is currently untracked in the dev repo, so
   at minimum it needs committing for there to be anything stable to
   port.
+
+### Amendment — dev `5bf8f63` was missed by ten seconds
+
+The port snapshot was taken at 12:22:00; dev committed `5bf8f63`
+("manual: agent & harness guide — one real turn taken apart") at
+12:21:50. The audit was therefore correct about everything it saw and
+simply never saw that commit. Nothing else was stranded — re-verified
+by diffing the two trees afterwards:
+
+- `sea_of_colours/game/` is **byte-identical** to dev (14 files, same
+  combined hash).
+- `manual/manual.js` is dev's content plus only the `#tab=` deep-link
+  addition made here.
+- Every other difference is deliberate hackathon-side work
+  (`naming.py`, auto-detect `backend.py`, `weapons_enabled` in
+  `heuristic_agent.py`, the Cortex removal in `runtime.py` /
+  `cortex_invoker.py` / `agent/__init__.py`).
+
+Ported afterwards: `manual/agent.{html,js,css}`, `manual/agent-data.js`,
+`scripts/export_agent_guide_data.py`, and the `[ AGENT & HARNESS → ]`
+nav link in `manual/index.html`. Reconciliation needed was small — the
+page was written post-V12-fork, so it names no retired harness or the
+Cortex Agents-API; only `tabula_v7/move_sanitizer.py` needed re-pointing
+at `tabula_v12/_v7/` after the flatten (in `agent.js` and an `agent.css`
+comment).
+
+**Lesson for any future re-sync:** pin the dev SHA you are porting from
+and record it, rather than rsyncing a live tree. A commit landing
+mid-port is invisible otherwise.
 
 ## Phase 2 — Reduce the agent roster to exactly three
 
