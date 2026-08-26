@@ -7,22 +7,29 @@ This merges the two former single-purpose demos —
 *single* watchable season so the whole client FX catalogue can be
 eyeballed from one replay.
 
-Nine scripted nights, one effect family per night::
+Eleven scripted nights, one effect family per night::
 
-    Night 1 — PROBE CRUSH.        p1 probes (10,10), then drops its own
-                                  harvester on top → the landing crushes
-                                  the probe (``crushed_probes`` splash).
-    Night 2 — DROP-ON COLLISION.  both seats land a harvester on (15,12)
-                                  in the same hour → mutual-damage
-                                  collision burst.
-    Night 3 — PASS-THROUGH SWAP.  adjacent harvesters cross-step into
-                                  each other's tile → swap collision.
-    Night 4 — EMP  (p1 fires).    7×7 EMP cloud smothers p2's harvester.
-    Night 5 — MINE (p1 lays).     caltrop mine detonates under p2's step.
-    Night 6 — CHAFF (p1 fires).   orbital chaff flare smothers the hour.
-    Night 7 — EMP  (p2 fires).    mirrored: p2 deploys against p1.
-    Night 8 — MINE (p2 lays).     mirrored mine.
-    Night 9 — CHAFF (p2 fires).   mirrored chaff.
+    Night  1 — PROBE CRUSH.        p1 probes (10,10), then drops its own
+                                   harvester on top → the landing crushes
+                                   the probe (``crushed_probes`` splash).
+    Night  2 — DROP-ON COLLISION.  both seats land a harvester on (15,12)
+                                   in the same hour → mutual-damage
+                                   collision burst.
+    Night  3 — PASS-THROUGH SWAP.  adjacent harvesters cross-step into
+                                   each other's tile → swap collision.
+    Night  4 — PROBE SUPERSEDE.    p2 lands on p1's probe an hour later
+                                   (§3.16(a)) → streak, ripple, and the
+                                   old probe bursts under the newcomer.
+    Night  5 — PILE-UP.            three probes die on one square
+                                   (§3.16(c)) → two staggered streaks,
+                                   three splashes, no ripple, nothing
+                                   left standing.
+    Night  6 — EMP  (p1 fires).    7×7 EMP cloud smothers p2's harvester.
+    Night  7 — MINE (p1 lays).     caltrop mine detonates under p2's step.
+    Night  8 — CHAFF (p1 fires).   orbital chaff flare smothers the hour.
+    Night  9 — EMP  (p2 fires).    mirrored: p2 deploys against p1.
+    Night 10 — MINE (p2 lays).     mirrored mine.
+    Night 11 — CHAFF (p2 fires).   mirrored chaff.
 
 Because v0.9.2+ requires a live sensor beacon over the landing cell, the
 collision nights each probe for line-of-sight *before* dropping (probe
@@ -34,11 +41,17 @@ pre-seeds both hoards with blue parcels and tops up probe stock.
 
 Run::
 
-    python scripts/fake_graphics_season.py --backend memory \\
+    python scripts/fake_graphics_season.py --backend file \\
         --season-name Graphics_FX_Reel --wipe-first
 
-Then load ``/watch.html?season=graphics-fx-reel`` to scrub the whole
-effect catalogue end to end.
+Then serve it on the SAME backend and load
+``/watch.html?season=graphics-fx-reel`` to scrub the whole effect
+catalogue end to end::
+
+    SOC_BACKEND=file python run_web.py --port 8013
+
+``--backend memory`` still works for a quick engine-side check, but the
+store dies with this process, so nothing is left for a server to replay.
 """
 
 from __future__ import annotations
@@ -117,6 +130,30 @@ COLLISION_NIGHTS: List[Dict[str, List[Dict[str, Any]]]] = [
             {"a": "pickup", "unit": "harvester_p2"},
         ],
     },
+    # ── Night 4 — PROBE SUPERSEDE (§3.16(a)) ───────────────────────
+    # v1.15 — p1 lands on (25,8) at H1; p2 lands on the SAME cell at
+    # H2. A later stamp, so it's supersession, not annihilation: p2's
+    # streak arrives, the ripple opens (it takes the vision), and p1's
+    # probe bursts under it. One streak, one ripple, one splash.
+    {
+        "p1": [{"a": "probe", "at": [25, 8]}],
+        "p2": [{"a": "wait"}, {"a": "probe", "at": [25, 8]}],
+    },
+    # ── Night 5 — PILE-UP ON ONE SQUARE (§3.16(c)) ─────────────────
+    # v1.15 — three probes die on (28,20). p1 takes it at H1 (the
+    # incumbent), then BOTH seats land there at H2 on the same stamp:
+    # the two arrivals annihilate, and the incumbent goes with them as
+    # a collision casualty with nobody credited a supersede. Two
+    # staggered streaks, three splashes, an empty square — and NO
+    # ripple, because none of them lived to grant vision.
+    #
+    # Two seats is the ceiling on same-hour arrivals (one slot each),
+    # so this is the deepest pile a 2-seat reel can stage; the 3- and
+    # 4-way piles are covered in tests/test_probe_death_fx.py.
+    {
+        "p1": [{"a": "probe", "at": [28, 20]}, {"a": "probe", "at": [28, 20]}],
+        "p2": [{"a": "wait"}, {"a": "probe", "at": [28, 20]}],
+    },
 ]
 
 
@@ -145,6 +182,14 @@ ORBIT_PLANS: List[Optional[Dict[str, List[Dict[str, Any]]]]] = (
         None,
         dict(_EMPTY_ORBIT),
         {"p1": [], "p2": [{"a": "repair", "unit": "harvester_p2"}]},
+        # v1.15 — the two probe-collision nights settle empty orbits. These
+        # two entries exist to keep the weapon nights aligned with the
+        # weapons demo's BUILD plans below: this list is indexed by night,
+        # so inserting nights without padding here would hand night 6 the
+        # orbit meant for night 4 and every weapon launch after it would
+        # fire from an empty stockpile.
+        dict(_EMPTY_ORBIT),
+        dict(_EMPTY_ORBIT),
     ]
     + list(fws.ORBIT_PLANS[1:])
 )
@@ -173,11 +218,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--backend",
-        choices=("snowflake", "memory"),
+        choices=("snowflake", "file", "memory"),
         default=None,
         help=(
             "Storage backend. Defaults to SOC_BACKEND env (or "
-            "'snowflake' if unset). Use 'memory' for an offline test."
+            "'snowflake' if unset). Use 'memory' for a throwaway check, "
+            "or 'file' to leave the reel on disk (SOC_STORE_DIR, default "
+            ".soc_sessions) so a server started on the same backend can "
+            "actually replay it — a memory store dies with this process."
         ),
     )
     p.add_argument(
@@ -237,8 +285,9 @@ def _print_banner(*, season_name: str, session_id: str, seed: int,
     print(f"  backend      : {backend}")
     print(f"  day cap      : {len(SCRIPTED_NIGHTS)} nights")
     print("  collisions   : N1 crush · N2 drop-on · N3 swap")
-    print("  weapons (p1) : N4 EMP · N5 MINE · N6 CHAFF")
-    print("  weapons (p2) : N7 EMP · N8 MINE · N9 CHAFF")
+    print("  probe FX     : N4 supersede · N5 pile-up (3 dead on one cell)")
+    print("  weapons (p1) : N6 EMP · N7 MINE · N8 CHAFF")
+    print("  weapons (p2) : N9 EMP · N10 MINE · N11 CHAFF")
     print(line, flush=True)
 
 

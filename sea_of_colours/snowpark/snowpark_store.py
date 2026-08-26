@@ -64,6 +64,12 @@ class SnowparkSocStore:
     # the "child" tables before ``SOC_GAME_SESSION`` matches the natural
     # data dependency and keeps the wipe self-documenting.
     _SESSION_TABLES: tuple = (
+        # v1.19 — orchestrator_2's two tables were absent from every deploy
+        # until now, so they were never wipeable either. Both key on
+        # session_id; leaving them out would let a harness inherit a dead
+        # game's journal on a reused session id.
+        "SOC_AGENT_MEMORY",
+        "SOC_AGENT_BINDING",
         "SOC_AGENT_INVOCATION",
         "SOC_ORCHESTRATOR_LOG",
         "SOC_REPLAY_FRAME",
@@ -207,31 +213,73 @@ class SnowparkSocStore:
         return rows[0] if rows else None
 
     def bulk_session_scores(self) -> Dict[str, Dict[str, int]]:
-        """One-shot scores via :sql:`SOC_SESSION_STANDINGS`.
+        """Canonical per-seat score for every session.
 
-        Avoids the N-roundtrip cost of hydrating every session just to
-        compute a leaderboard for the watcher's season picker. v0.8.0
-        — the view now folds **shipped** purity only per (session,
-        player) (RULEBOOK §3.1); the per-session score is the single
-        ``score`` column.
+        Folds the persisted SHIPPED / HOARD rows through
+        :func:`sea_of_colours.game.session.compute_player_score` — the
+        same scorer behind :meth:`GameSession.score_for` and the results
+        screen — so the watcher's season picker cannot disagree with the
+        endgame card. Three grouped reads, still no per-session
+        hydration.
+
+        This used to delegate to :sql:`SOC_SESSION_STANDINGS`, and that
+        view is a second, divergent copy of the scoring rules: it sums
+        raw ``origin_purity``, so it applies no RED tier multiplier and
+        it *credits* the auto-disposed GREEN parcels §4.7 appends to
+        SHIPPED at +255 each instead of charging
+        ``GREEN_ENDGAME_PENALTY``. That is 355 points per green parcel,
+        enough to invert the ranking of a finished season. Only the
+        Snowflake store carried the duplicate — the memory and file
+        stores always called the real scorer — which is why every
+        offline season and the whole test suite agreed while live
+        Snowflake games quietly did not.
         """
-        sql = (
-            "SELECT session_id, player, score "
-            "FROM SOC_SESSION_STANDINGS"
-        )
-        out: Dict[str, Dict[str, int]] = {}
-        for row in self._exec(sql):
+        from sea_of_colours.game.session import compute_player_score
+
+        phase_by_sid: Dict[str, str] = {}
+        for row in self._exec("SELECT session_id, phase FROM SOC_GAME_SESSION"):
             d = _row_to_dict(row)
             sid = d.get("session_id")
-            player = d.get("player")
-            if not sid or player not in {"p1", "p2"}:
-                continue
-            try:
-                score = int(d.get("score", 0) or 0)
-            except (TypeError, ValueError):
-                score = 0
-            bucket = out.setdefault(str(sid), {"p1": 0, "p2": 0})
-            bucket[str(player)] = score
+            if sid:
+                phase_by_sid[str(sid)] = str(d.get("phase") or "")
+
+        def _by_session(table: str) -> Dict[str, Dict[str, List[Mapping[str, Any]]]]:
+            grouped: Dict[str, Dict[str, List[Mapping[str, Any]]]] = {}
+            rows = self._exec(
+                "SELECT session_id, owner, origin_tile, origin_purity, payload "
+                f"FROM {table}"
+            )
+            for row in rows:
+                d = _row_to_dict(row)
+                sid, owner = d.get("session_id"), d.get("owner")
+                if not sid or not owner:
+                    continue
+                seats = grouped.setdefault(str(sid), {})
+                seats.setdefault(str(owner), []).append(_canon_parcel(d))
+            return grouped
+
+        shipped = _by_session("SOC_SHIPPED_PARCEL")
+        hoard = _by_session("SOC_HOARD_PARCEL")
+
+        out: Dict[str, Dict[str, int]] = {}
+        for sid in set(phase_by_sid) | set(shipped) | set(hoard):
+            shipped_by_owner = shipped.get(sid, {})
+            hoard_by_owner = hoard.get(sid, {})
+            # N-seat aware: the owner column is the only seat list we
+            # have here (SOC_GAME_SESSION has no players column), so a
+            # session with no parcels yet falls back to the 2-seat default.
+            seats = sorted(set(shipped_by_owner) | set(hoard_by_owner)) or ["p1", "p2"]
+            # The season-end vault-RED fire-sale only realises once the
+            # season is actually over, matching GameSession.score_for.
+            complete = phase_by_sid.get(sid, "") == "season_complete"
+            out[sid] = {
+                seat: compute_player_score(
+                    shipped_by_owner.get(seat, []),
+                    hoard_by_owner.get(seat, []),
+                    is_complete=complete,
+                )
+                for seat in seats
+            }
         return out
 
     # ── SOC_SQUARE_IDENTITY ───────────────────────────────────────
@@ -933,6 +981,27 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
     if isinstance(row, Mapping):
         return {k.lower(): v for k, v in row.items()}
     return {f"col{i}": v for i, v in enumerate(row)}
+
+
+def _canon_parcel(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Unwrap a parcel row's VARIANT ``payload`` into the scorer's dict.
+
+    The payload is the same snapshot the live session carries, including
+    the catapult-stamped ``effective_purity`` / ``score_tier``, so
+    scoring off it gives the identical answer to scoring the in-memory
+    game. Snowflake hands a VARIANT back as JSON text. The flat
+    ``origin_*`` columns are the fallback for any row written before the
+    payload column existed — ``compute_player_score`` and
+    ``_parcel_purity`` both accept that shape too, just without the
+    stamped tier.
+    """
+    payload = row.get("payload")
+    if isinstance(payload, str) and payload.strip():
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = None
+    return payload if isinstance(payload, dict) and payload else row
 
 
 def _chunks(items: List[Any], n: int) -> Iterable[List[Any]]:

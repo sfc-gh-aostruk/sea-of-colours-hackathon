@@ -5653,20 +5653,26 @@ class GameSession:
         # subsequent collision — the launch itself was observable.
         self._pulse_probe_launch(owner, x, y, uid)
 
-        # §3.16 E4 — collision-crater sweep. When two+ probes mutually annihilate
+        # §3.16(d) — collision-crater sweep. When two+ probes mutually annihilate
         # on a cell they clear it, so a THIRD probe launched onto the SAME cell in
         # the SAME turn (same day+hour stamp) would find it empty and survive on a
         # pairwise reading — a rules bug that let a latecomer steal an "empty"
         # seam cell. We record every simultaneous-collision cell keyed by its
         # turn stamp and destroy any same-stamp arrival that lands in the crater.
+        # (v1.15 — this shipped in v0.9.17 citing a "§3.16 E4" that was never in
+        # the RULEBOOK; the rule is now written down as §3.16(d).)
         craters: Dict[Tuple[int, int], Tuple[int, Optional[int]]] = getattr(
             self, "_probe_collision_cells", None
         ) or {}
         self._probe_collision_cells = craters  # type: ignore[attr-defined]
         if craters.get((x, y)) == cur_stamp:
             self._note_asset_destroyed(uid, reason="probe_collision")
+            self._queue_probe_death_fx(
+                uid, owner, x, y, reason="probe_collision",
+            )
             self.entities.pop(uid, None)
             stamps.pop(uid, None)
+            self._forget_probe_marks_at(x, y, [uid])
             self.log_event(
                 "probe_collision",
                 f"probe {uid} landed on a simultaneous-collision crater at "
@@ -5708,8 +5714,19 @@ class GameSession:
                     owners_by_id[eid] = cast(PlayerId, en.owner)
                 for eid in destroyed_ids:
                     self._note_asset_destroyed(eid, reason="probe_collision")
+                    self._queue_probe_death_fx(
+                        eid, owners_by_id[eid], x, y,
+                        reason="probe_collision",
+                    )
                     self.entities.pop(eid, None)
                     stamps.pop(eid, None)
+                self._forget_probe_marks_at(x, y, destroyed_ids)
+                # v1.15 — the hour is ONE event (§3.16(c)). An earlier seat
+                # in this same hour may already have taken the cell's
+                # incumbent as a supersede; a second arrival proves nobody
+                # held the cell, so that death re-files as a collision and
+                # the credit is withdrawn.
+                self._finalise_probe_contest(x, y, cur_stamp)
                 # Mark the crater so a same-turn latecomer (E4) dies here too.
                 craters[(x, y)] = cur_stamp
                 self.log_event(
@@ -5738,11 +5755,22 @@ class GameSession:
             }
             for eid in destroyed_ids:
                 self._note_asset_destroyed(eid, reason="probe_superseded")
+                self._queue_probe_death_fx(
+                    eid, owners_by_id[eid], x, y,
+                    reason="probe_superseded",
+                    crusher_owner=owner,
+                )
                 # v1.6 kill-feed: the incoming probe's house superseded the
-                # older probe's house.
+                # older probe's house. v1.15 — provisional until the hour
+                # closes; a second probe onto this cell on this stamp makes
+                # it a collision instead (see _finalise_probe_contest).
                 self._attrib("probes_superseded", owner, owners_by_id.get(eid))
+                self._record_provisional_supersede(
+                    x, y, cur_stamp, eid, owners_by_id[eid], owner,
+                )
                 self.entities.pop(eid, None)
                 stamps.pop(eid, None)
+            self._forget_probe_marks_at(x, y, destroyed_ids)
             self.log_event(
                 "probe_superseded",
                 f"probe {uid} superseded "
@@ -6507,6 +6535,162 @@ class GameSession:
                 tx, ty, exclude_entity_id=probe.id,
             )
 
+    def _forget_probe_marks_at(
+        self, x: int, y: int, probe_ids: Sequence[str],
+    ) -> None:
+        """Erase dead probes from every House's picture of one square.
+
+        v1.19 (bug #19) — a probe mark left standing on a square with no
+        probe on it. §3.15 publishes a launch to every other House, so the
+        moment a probe lands, each opponent's echo carries it. Nothing ever
+        took it back off: the §3.16 death paths destroyed the entity and
+        left the marks, and the scheduled sweep that eventually clears them
+        (:meth:`_expire_stale_launch_markers`) is a three-night timer. So
+        for up to three nights a House could sit looking at a probe that
+        annihilated in front of it.
+
+        That timer is the right answer for a probe killed *out of sight* —
+        you watched it land, you did not watch it die. It is the wrong
+        answer here, because a §3.16 contest is exactly as public as the
+        launches that caused it: two streaks converge on one square and
+        burst. Every House that was told about the launch is told about the
+        crash, so the mark goes now rather than in three nights' time.
+
+        Deliberately narrow: only the named probes, only this square, and
+        no fresh snapshot of anything. A House learns that a probe it had
+        already been told about is gone — never anything it hadn't earned.
+        """
+        ids = {str(pid) for pid in probe_ids}
+        key = _xy_key(x, y)
+        for bucket in self.probe_intel.values():
+            entry = bucket.get(key)
+            if not isinstance(entry, dict):
+                continue
+            occ = [o for o in (entry.get("occupants") or []) if isinstance(o, dict)]
+            hits = [o for o in occ if str(o.get("id")) in ids]
+            glyph = entry.get("probe_launch_glyph")
+            glyph_hit = (
+                str(glyph.get("probe_id")) in ids
+                if isinstance(glyph, dict) else False
+            )
+            if not hits and not glyph_hit:
+                continue
+            if entry.get("via") == "probe_launch" and len(hits) == len(occ):
+                # A bare §3.15 marker: the entry exists only to say "a probe
+                # landed here". With the probe gone there is nothing left for
+                # it to report, so retire it whole and let the square fall
+                # back to fog or to whatever older terrain memory it had.
+                bucket.pop(key, None)
+                continue
+            for o in hits:
+                self._strip_launch_overlay(entry, str(o.get("id")))
+            if glyph_hit and isinstance(glyph, dict):
+                self._strip_launch_overlay(entry, str(glyph.get("probe_id")))
+            if not entry.get("occupants"):
+                # The top-entity glyph was one of the probes we just removed;
+                # leaving it would put the mark straight back on the square.
+                entry["glyph_ch"] = None
+                entry["glyph_fg"] = None
+
+    def _record_provisional_supersede(
+        self,
+        x: int,
+        y: int,
+        stamp: Tuple[int, Optional[int]],
+        victim_id: str,
+        victim_owner: str,
+        killer: str,
+    ) -> None:
+        """Note that ``victim_id`` was taken as a supersede on this stamp.
+
+        v1.15 — provisional, because a supersede only stands if the seat
+        that took the cell actually *holds* it when the hour closes. Seats
+        resolve one at a time, so the first arrival cannot yet know whether
+        a second probe is inbound on the same stamp; if one is, §3.16 says
+        nobody held the cell and this death was a collision casualty all
+        along. :meth:`_finalise_probe_contest` re-files it.
+        """
+        book = getattr(self, "_probe_supersedes_this_stamp", None)
+        if book is None:
+            book = {}
+            self._probe_supersedes_this_stamp = book  # type: ignore[attr-defined]
+        book.setdefault((int(x), int(y), stamp), []).append(
+            (str(victim_id), str(victim_owner), str(killer))
+        )
+
+    def _finalise_probe_contest(
+        self, x: int, y: int, stamp: Tuple[int, Optional[int]],
+    ) -> None:
+        """Re-file this stamp's supersedes on (x,y) as collision casualties.
+
+        v1.15 — called when a second probe lands on the cell on the same
+        ``(day, hour)``, which by §3.16 makes the whole hour one mutual
+        annihilation: every probe on the square dies and no House takes
+        the cell, so no House earns a supersede either. Without this the
+        incumbent's ledger row and the ``probes_superseded`` kill-feed
+        credit recorded whichever seat the resolver happened to reach
+        first — a seat that lost its own probe in the same instant.
+        """
+        book = getattr(self, "_probe_supersedes_this_stamp", None) or {}
+        for victim_id, victim_owner, killer in book.pop(
+            (int(x), int(y), stamp), [],
+        ):
+            rec = self.asset_records.get(victim_id)
+            if rec is not None:
+                # Written directly: ``_note_asset_destroyed`` only fills a
+                # blank row, and this one is already stamped.
+                rec.destroyed_by = "probe_collision"
+            stat_m = self.combat_attrib.get("probes_superseded") or {}
+            by_victim = stat_m.get(killer)
+            if by_victim:
+                left = int(by_victim.get(victim_owner, 0)) - 1
+                if left > 0:
+                    by_victim[victim_owner] = left
+                else:
+                    by_victim.pop(victim_owner, None)
+                # Drop the emptied attacker row rather than leaving a 0-hit
+                # shell behind: the kill feed hides those, but the season
+                # stats blob is also read raw by evals and the agent view.
+                if not by_victim:
+                    stat_m.pop(killer, None)
+
+    def _queue_probe_death_fx(
+        self,
+        probe_id: str,
+        probe_owner: str,
+        x: int,
+        y: int,
+        *,
+        reason: str,
+        crusher_owner: Optional[str] = None,
+    ) -> None:
+        """Queue the pixel-splash record for a probe destroyed at (x,y).
+
+        The simulator drains :attr:`pending_probe_crush_events` after every
+        applied move and folds it onto that move's replay frame, so the
+        watcher can splash the cell in the dead probe's seat colour.
+
+        v1.19 — every way a probe can die on a cell now files here, not just
+        the harvester crush this buffer was built for. The §3.16 paths
+        (supersession, mutual annihilation, the collision crater) only wrote
+        a log line, so a superseded probe simply blinked out of existence,
+        and a mutual annihilation — where the arriving probe is created and
+        destroyed inside one move and therefore never appears in a frame's
+        entity snapshot — rendered *nothing at all*, streak included. Two
+        seats could burn a probe each on the same cell and the board would
+        not flicker.
+
+        ``reason`` rides along so the UI can name the cause rather than
+        calling every one of them a crush.
+        """
+        self.pending_probe_crush_events.append({
+            "at": [int(x), int(y)],
+            "probe_id": str(probe_id),
+            "probe_owner": str(probe_owner),
+            "crusher_owner": str(crusher_owner) if crusher_owner else None,
+            "reason": str(reason),
+        })
+
     def consume_probes_at(
         self, x: int, y: int, crusher_owner: Optional[str] = None,
     ) -> List[str]:
@@ -6537,12 +6721,11 @@ class GameSession:
             self._note_asset_destroyed(
                 eid, reason=f"crushed_by_harvester@({x},{y})"
             )
-            self.pending_probe_crush_events.append({
-                "at": [int(x), int(y)],
-                "probe_id": str(eid),
-                "probe_owner": str(en.owner),
-                "crusher_owner": str(crusher_owner) if crusher_owner else None,
-            })
+            self._queue_probe_death_fx(
+                eid, en.owner, x, y,
+                reason="crushed_by_harvester",
+                crusher_owner=crusher_owner,
+            )
             # v1.6 kill-feed: attribute the crush to the harvester's house.
             self._attrib("probes_crushed", crusher_owner, en.owner)
             del self.entities[eid]

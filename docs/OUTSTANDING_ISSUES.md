@@ -687,6 +687,392 @@ switched off markers stand forever because there is no schedule to clear
 against. Verified against the committed engine: 4 fail there, the 4 guards
 pass.
 
+## 18. ✅ (DONE, v1.19 / RULEBOOK v1.15) A probe could die with no graphic at all, and an incumbent died with the wrong name on it
+
+Two problems on one square, found from "there is currently no graphic for
+superseding a probe".
+
+**The graphics.** `crushed_probes` is the replay payload that drives the
+pixel-splash — eight squares flying out of the cell in the dead probe's seat
+colour. It was only ever filled by `consume_probes_at`, the harvester crush
+it was built for. All three §3.16 paths in `spawn_probe` wrote a log line and
+nothing else, so:
+
+- a **superseded** probe blinked out with no cue that the arriving probe had
+  killed it; and
+- a **mutual annihilation** rendered *nothing whatsoever* — not even the
+  incoming streak. The animator derives a landing by diffing frame entity
+  snapshots, and a probe destroyed on arrival is created and destroyed inside
+  one move, so it never appears in one. Two seats could burn a probe each on
+  the same square and the board would not flicker.
+
+Fixed by filing a record on every path (`_queue_probe_death_fx`, carrying a
+`reason`), and by synthesising the landing delta from that record when no
+surviving probe can be diffed out. No new visuals — the existing streak,
+splash and ripple, with the streak's existing per-probe random stagger doing
+the "series of landings" look. A doomed probe skips the ripple only, because
+the ripple is the vision pop and an annihilated probe grants no vision.
+
+**Then the splash timing, which was wrong for every crush, not just the new
+ones.** The tick-level FX pass fires the instant a tick paints, while the
+unit that did the crushing is still visibly in flight — so the burst popped
+in isolation with nothing arriving to explain it. The first pass at this
+moved only the probe-on-probe case into the streak's landing callback and
+left harvester crushes where they were, on the false grounds that "the
+crushing unit's own animation already puts it on the beat". It does not:
+`runReplayAnimationsTick` only *schedules* the ghosts, so the FX loop right
+after it still runs at t=0 — ahead of a step slide, a lifter's deposit, and
+(with orbit sequencing on) a ~2.6s launch lead.
+
+**And two faults in the pre-landing mask itself**, both of which broke the
+one rule the mask exists to enforce — the board must not move before the
+sprite arrives.
+
+- *The mask leaked the tile under it.* Matching it to `--fog-bg` fixed the
+  black hole but that colour is **96% alpha** — fine on a fog cell, which
+  has nothing beneath it but the board, and wrong as an overlay on a cell
+  the frame has already painted revealed. The remaining 4% let a RED seam
+  glow faintly through before the probe had found it: the sign bleeding a
+  beat early, which is exactly the intel the mask withholds. Now stacked as
+  the fog tint over `--bg`, which composites to the same colour a fog cell
+  shows with no transparency left.
+- *One probe's landing opened another probe's vision.* The probe branch
+  revealed the shared `probeMaskedCells` set rather than its own cells, so
+  the first streak down lifted every in-flight probe's mask. `spawnProbeTrail`
+  jitters each start by up to 200ms precisely so simultaneous probes land
+  staggered, so the second probe's ground opened while it was still in the
+  air — most visibly with two seats onto one square (§3.16). It now calls
+  `revealMaskedCells(pendingMasks)`, the local-array helper the harvester
+  drop already used; the shared set stays as the cancellation ledger.
+
+**The reveal mask also un-saw ground the viewer already held.**
+`collectNewlyRevealedCells` asked "was this cell *fresh* before?", which puts
+a remembered tile in the same bucket as pitch fog — so every stale tile and
+probe echo inside an incoming probe's disc got the fog block dropped on it
+and blinked out, as though the probe were un-seeing the ground on its way in.
+Only a genuine fog → visible flip is fog-masked now. A stale tile is instead
+*held at its remembered look* (dimmed to `--opa-stale`, since the dimming
+normally comes from `.cell--stale` on a cell that is fresh in this frame and
+would otherwise show the memory at full live brightness), and promoted to
+live on the landing beat with everything else.
+
+**The victim also had to still be standing when its killer arrived.** The
+replay paints the resolved end-state frame and animates deltas over it, so a
+doomed probe was already erased the instant the tick painted — it blinked out
+while the harvester was still sliding toward it, and the splash then went off
+over a square that had been empty for a second. Fixing *when* the splash
+fires did nothing for this on its own. `_layDoomedProbeStandins` now holds
+each victim on its cell from the moment the delta is scheduled, and the same
+landing hook that fires the splash removes it, so the probe is gone in the
+beat it bursts rather than long before. It only stands in for a probe that
+was on the board in the previous frame — a probe born and destroyed inside
+one move (the arriving side of a §3.16 annihilation) was never visible, and
+its arrival is already the incoming streak. Verified against the reel: 7 of
+its 8 probe deaths take a stand-in, and the one that doesn't is exactly that
+case.
+
+A third, separate hole: **a seat could not see its own probe die.** A probe
+killed on arrival grants no vision, so the cell paints as fog for the seat
+that launched it, and `playProbeCrushFx`'s fog gate then swallowed the only
+feedback that seat had — streak in, nothing. The gate now yields when the
+viewer owns the dead probe. Nothing leaks: that seat picked the target and
+knows the probe is gone. Another House's probe dying on a cell you cannot
+see stays hidden, because that *would* tell you they had a probe there.
+
+Every branch now fires its own splash from its own landing hook — `step` on
+the ghost's `transitionend`, `drop` at `_onDeposit`, `probe` at the streak's
+touchdown — scoped to the cell it landed on, since two units can crush two
+different probes in the same hour and an unscoped call from whichever landed
+first detonated the other's victim early. Hooks stake their cell in
+`crushClaimedCells` as they are scheduled, and the tick-level pass now fires
+only what nobody claimed: a scrub (no animations run) or a delta skipped
+outright, e.g. an enemy action the viewing seat cannot see. Those have no
+beat to be in time with. `_onDeposit` is also installed unconditionally now
+— it used to be skipped when a drop revealed nothing and recoloured nothing,
+which is exactly the case where a crush was the only thing left to sequence.
+
+**The rule.** §3.16 was explicit that two or more probes landing on a square
+in one hour all die, and **silent** on an older probe already standing there.
+The engine answered by accident: resolving seat by seat, the first arrival
+superseded the incumbent, then the second annihilated with the first. Body
+count right, attribution wrong — the incumbent was ledgered
+`probe_superseded` and the `probes_superseded` kill-feed credit went to
+whichever seat the resolver reached first, a seat that lost its own probe in
+the same instant.
+
+Ruled (RULEBOOK v1.15, new §3.16(c)): the incumbent dies as a **collision
+casualty** and **nobody** is credited a supersede — supersession is an act by
+a surviving newcomer, and when the arrivals wipe each other out nobody took
+the cell. Two rivals clearing an established probe therefore pay both their
+own probes for it. `_finalise_probe_contest` re-files the provisional
+supersede once a second same-stamp arrival proves the cell was never held, so
+ledger and kill-feed no longer depend on seat order. Also written down at
+last: the same-hour latecomer sweep (new §3.16(d)) shipped in v0.9.17 citing
+a "§3.16 E4" that had never existed in the RULEBOOK.
+
+**Tests:** `tests/test_probe_death_fx.py` — 14 cases covering all three
+paths, the incumbent ruling (2-, 3- and 4-way piles), the guard that a lone
+newcomer *does* still earn its supersede, and the guard that an unopposed
+launch splashes nothing.
+
+## 19. ✅ (DONE, v1.19) A dead probe kept marking a square you could see was empty
+
+**Symptom:** a probe glyph sat on a cell that the owner had clear sight of
+and that plainly held nothing. It never aged out on its own; only a later
+event on the same cell cleared it.
+
+**Root cause:** two rules that are each correct on their own, colliding.
+§3.15 stamps a **launch marker** on the target cell so a seat can see where
+its own probe went, and that marker is deliberately sticky (it survives
+losing sight of the cell — that's the point of it, and it has its own
+3-night expiry). §3.16 kills probes on collision and supersession. Nothing
+connected the two: when a seat **witnessed** its own probe die, the death
+was drawn, but the launch marker underneath it was left in
+`probe_intel`. The seat was therefore looking at a marker for a probe it
+had just watched be destroyed.
+
+The earlier crush path didn't show this because `_freeze_final_probe_echo`
+already rewrites the victim's echo on that route. Widening that helper to
+cover the §3.16 deaths was the first attempt and was wrong — it re-froze
+the whole vision disk, handing the dead probe's owner a free snapshot of
+everything the probe *could* have seen, which is unearned vision.
+
+**Fix (`game/session.py`):** new `_forget_probe_marks_at`, which takes a
+cell and a set of just-died probe ids and removes **only** those probes'
+traces (occupant entries, `probe_launch_glyph`, `via`, and the glyph
+fields when nothing else claims them) from every player's `probe_intel`.
+It grants no vision — it only retracts a claim the engine now knows to be
+false. Called from `spawn_probe` on both the collision and the supersede
+paths. `_freeze_final_probe_echo` stays where it was, on harvester crush.
+
+**Tests:** `tests/test_probe_death_fx.py` — a superseded probe stops being
+painted on its square; a multi-way pile-up leaves no mark anywhere; a
+probe that *survives* keeps its launch mark (the guard against
+over-retracting); a death elsewhere doesn't touch an unrelated square.
+
+---
+
+## 20. ✅ (DONE, v1.19) The day-2 harvester collision exploded three seconds before impact
+
+**Symptom:** on a simultaneous drop, one harvester detonated and lifted off
+while the other was still visibly falling — the explosion, damage numbers
+and lift-off all played before the two craft met.
+
+**Root cause — two faults, not one.** Both are sequencing, not logic; the
+engine ordering was right throughout.
+
+1. *The explosion.* Orbital arrivals animate with a long run-in
+   (`_OS_LEAD_MS` — 2600ms for a drop) so the craft has somewhere to fall
+   from, but `playCollisionFx` fired from the tick loop at frame-paint
+   time. Detonation and contact ran ~3s apart.
+2. *The departure.* `pickup` had **no lead at all**, so a recovery began
+   at tick paint while the inbound drop was still held by its 2600ms
+   lead: the damaged harvester lifted off and was clear of the board two
+   seconds before the impact that damaged it was drawn.
+
+Fixing (1) alone left the reported symptom untouched, because the thing
+being complained about was (2). Worse, the check that would have caught
+it looked in the wrong place: a replay **tick bundles several frames**
+(here hour 3's collision and hour 4's recovery), and they all animate
+concurrently, each on its own lead. A pickup asking its own
+`curFrame.collisions` sees nothing, because the collision belongs to a
+different frame of the same tick.
+
+**Fix (`server/static/app.js`):**
+- The collision ring is **claimed** by the arrival animation rather than
+  raced by the tick loop — `runOrbitalArcAnimation` installs
+  `_fireCollision` on `delta._onDeposit` so it goes off at the bounce
+  midpoint, with `collisionClaimedCells` preventing a double fire.
+- `runReplayAnimationsTick` now censuses collisions across **every frame
+  in the tick** into `tickCollisionCells`. A pickup off a tile in that set
+  is held until `_osCollisionContactMs()` (inbound lead + the 550ms arc
+  midpoint), so the impact is drawn before the recovery starts.
+- The held unit is stood back onto its tile from paint time
+  (`_layPickupStandin`, handed to the deferred arc via `_preStandin`).
+  Without it the harvester blinked out at paint and the collision landed
+  on an empty square — the first attempt at this fix did exactly that.
+
+**Verification:** `scripts/_fx_census.py`, which supersedes the two
+narrower harnesses that missed this. Tick 10 of the reel now reads:
+inbound ghost +2652ms, impact +3183ms, unit lifted +3766ms — cause before
+effect, with no blink-out.
+
+**Note on the earlier harnesses.** `_fx_collision.py` timed only the
+explosion and never asked when the harvester sprite left; `_fx_probe.py`
+sampled a hardcoded cell list, so anything happening elsewhere was
+invisible. Both reported "fixed"/"not reproducible" on faults that were
+live. `_fx_census.py` diffs every sprite on the board, by glyph **and
+colour** (a probe superseded by a rival is `·` before and after, so a
+glyph-only diff calls a change of owner "no change").
+
+---
+
+## 21. ✅ (DONE, v1.19) The doomed probe vanished the instant the hour opened
+
+**Symptom:** a harvester dropping onto an occupied square crushed the probe
+on the right beat — the burst was correctly timed by #20's fix — but the
+probe *itself* left the square the moment the hour started, so the crush
+detonated on ground that had already been empty for three seconds.
+
+**Why the census said it was fine.** `_layDoomedProbeStandins` was doing
+its job: the stand-in node was in the DOM, attached to the right cell, and
+`getComputedStyle` reported it visible for the full hold. Every DOM-level
+check passed. `.harvest-terrain-standin` — the layer that holds the tile's
+*terrain* still while a drop is in the air — is `position:absolute;
+inset:0; z-index:4` with an opaque background, and `.entity-overlay`
+carries no `z-index` at all. The terrain hold was painted straight over
+the probe. Present, visible, and behind an opaque rectangle.
+
+This is the third time in this bug family that a harness reported "not
+reproducible" on a live fault (see the note under #20). The lesson is
+narrower than "the harness was too narrow": **presence in the DOM is not
+presence on screen.** Anything asserting a sprite was seen has to end in
+pixels.
+
+**Fix (`server/static/app.js`, `server/static/styles.css`):**
+- `.entity-overlay--doomed` at `z-index: 5`, so a unit deliberately held on
+  its tile sits above the terrain hold rather than under it.
+- The stand-in is now built from the probe the board **was actually
+  painting** a beat ago — `entityOverlayHtml(before.entity)` off the
+  previous frame's cells — instead of a hand-rolled `·`. The old dot had no
+  lifetime rings and no profile colour, so even unoccluded it read as some
+  other, fainter thing appearing rather than the probe staying put.
+
+The supersede path (`§3.16(a)`) lays no terrain stand-in, so it was never
+occluded; it picks up the markup half of the fix only.
+
+**Verification:** `scripts/_fx_pixels.py` — screenshots one cell every
+250ms through a tick and contact-sheets the result, deliberately ignoring
+the DOM. Before: the cell is bare from +0ms. After: the probe is on screen
+at +0ms in its real markup, holds to +2000ms, and is replaced by the
+harvester and its crush burst at +3000ms.
+
+---
+
+## 22. ✅ (DONE, v1.19) V12 played every Snowflake season with no cross-night memory
+
+**Status (v1.19):** Fixed. `SOC_AGENT_MEMORY` and `SOC_AGENT_BINDING` are now
+part of the standard deploy and part of the session wipe.
+
+**Symptom:** V12 played visibly worse in the browser than in the headless
+matchup runner it was tuned against — repeating plans it had already seen fail,
+re-picking cells it had just been denied, and losing the thread between nights.
+Its own THINK text would name a cause one night and ignore it the next.
+
+**Root cause:** two independent gaps that hid each other.
+
+- When orchestrator_2 landed, `SOC_AGENT_MEMORY` was **relocated** out of
+  `snowflake/soc_schema.sql` into
+  `sea_of_colours/orchestrator_2/snowflake/orchestrator_v2_schema.sql`. That
+  file's header says to deploy it via `scripts/deploy_soc_schema.py` — but the
+  deployer only ever shipped three files, all from `snowflake/`. Nothing
+  created the table, on any account. `SOC_AGENT_BINDING` was missing for the
+  same reason. Confirmed against the live account: 12 `SOC_*` tables, neither
+  of these among them.
+- All three of V12's memory modules — the strategy journal
+  (`tabula_v12/_v7/memory.py`), `hazard_memory.py` and `frontier.py` — keep a
+  **process-local dict** and mirror it to that table **best-effort inside bare
+  `except` blocks**, with the rehydrate-on-empty read equally forgiving. A
+  missing table therefore produced no error, no log line, and no visible
+  degradation in any test.
+
+**Why only live play suffered:** `scripts/run_matchup_v12.py` does
+`os.environ.setdefault("SOC_BACKEND", "memory")` and plays a whole season
+inside one process, so the process-local dict carries the full journal and the
+mirror is irrelevant — which is exactly the configuration V12 was validated in.
+A live season runs for hours on Snowflake, where that dict is the *only* copy;
+the moment the server process is replaced the memory is gone for good, because
+rehydration hits a table that does not exist and swallows the failure.
+
+**Fix:**
+- `scripts/deploy_soc_schema.py` now deploys `orchestrator_v2_schema.sql`
+  between the schema and the views (it is `CREATE TABLE IF NOT EXISTS`, so it
+  is non-destructive and safe to re-run).
+- `SnowparkSocStore._SESSION_TABLES` gains both tables, as the SQL file's own
+  comment had been asking for. Both key on `session_id`, so the existing wipe
+  predicates work unchanged; without this a reused session id would inherit a
+  dead game's journal.
+
+**Verification:** `scripts/_check_agent_memory.py` writes a journal entry
+through V12's own `memory.save_entry`, clears the in-process store to force the
+restarted-server path, and reads it back through `read_recent` — 0 rows before
+the fix, round-trip PASS after. Full suite 1051 passed / 1 failed, the failure
+being the pre-existing `two_seams_choose_one` eval debt.
+
+**Verified in play (session `46615fbd`, V12 vs RED_HARVEST):** the server was
+killed at day 6 with the journal held only in-process, restarted empty, and the
+season resumed and completed. Days 1–6 hydrated back out of Snowflake and day 7
+plus `hazard_cells` / `spent_blue` / `enemy_probe_disk_history` were written by
+the new process. Before this fix that restart erased the season's history
+silently. `read_recent` was also confirmed against the real season data from a
+fresh process with an empty cache.
+
+**Not established:** whether this is what collapsed the day-3 plan on session
+`e75dbdc` (`sanitized=9 … moves=1`). That night has not been isolated. Note
+also that a season played on one uninterrupted process was never affected —
+the process-local cache covered it — so this fix changes behaviour only across
+a restart.
+
+---
+
+## 23. ✅ (DONE, v1.20) The Snowflake season picker crowned the loser
+
+**Status (v1.20):** Fixed. `SnowparkSocStore.bulk_session_scores` folds the
+persisted parcels through `compute_player_score` like every other store; nothing
+user-facing scores off the SQL view any more.
+
+**Symptom:** the season picker and the end-of-season card disagreed about the
+score, and on at least one finished season they disagreed about **who won**.
+Serpens_Lattice (`46615fbd`, V12 vs RED_HARVEST) read p1 1436 / p2 1853 in the
+picker against a true p1 1527 / p2 1418 on the results screen — opposite
+winners.
+
+**Root cause:** the scoring rules existed in two places. `compute_player_score`
+(`game/session.py`) is the canonical one, and its docstring promises "the
+standings, the HUD's shipped-score line, and the end-of-game results screen can
+never disagree". The Snowflake store did not call it: `bulk_session_scores`
+selected a precomputed `score` column out of the `SOC_SESSION_STANDINGS` view,
+which reimplements scoring in SQL as
+
+```sql
+SUM(LEAST(255, GREATEST(0, COALESCE(origin_purity, 0))))
+```
+
+That is a raw purity sum, and it diverges twice:
+
+- **No RED tier multiplier.** The real score is tier-weighted, which is why
+  engine scores carry fractions (`1526.75`) and the view's never did.
+- **GREEN is credited instead of charged.** Since v1.13 green is auto-disposed
+  each orbit and the disposed parcels are appended to `SOC_SHIPPED_PARCEL`
+  carrying their GREEN origin tile — deliberately, so the bulk scoreboard can
+  charge them with no extra column (§4.7). Green is always purity 255, so the
+  view paid **+255** for each one where the scorer charges
+  **−100**: a 355-point error per parcel. RED_HARVEST had jettisoned four, so
+  55% of its phantom 1853 was green it should have been penalised for.
+
+**Why it went unnoticed:** only the Snowflake store had the duplicate. The
+memory and file stores both call `compute_player_score`, so every offline
+season, every headless matchup and the entire test suite agreed with the results
+screen. The invariant only broke on a live Snowflake game, where the two
+surfaces are rarely read side by side.
+
+**Fix:** `bulk_session_scores` now issues three grouped reads (phases, shipped,
+hoard) and scores them in Python through `compute_player_score`, unwrapping each
+row's VARIANT `payload` so the scorer sees the same parcel dict the live session
+holds — including the catapult-stamped `effective_purity` / `score_tier`. Still
+no per-session hydration. Seats come from the parcel `owner` column, so it stays
+N-seat aware. The view is left in the schema for ad-hoc SQL.
+
+**Verification:** `tests/test_snowflake_standings_parity.py` pins the parity
+offline against a fake session, asserts a disposed GREEN costs
+`GREEN_ENDGAME_PENALTY` rather than paying its purity, and fails if anything
+reads `SOC_SESSION_STANDINGS` on the score path again. Against the live account
+the picker now matches `score_for` exactly on Serpens_Lattice and on four other
+sessions including a single-seat one. Full suite 1056 passed / 1 failed, the
+failure being the pre-existing `two_seams_choose_one` eval debt.
+
+---
+
 ## Triage summary
 
 | # | Area | Severity | Blocking multiplayer? |
@@ -708,3 +1094,9 @@ pass.
 | 15 | Weapon launch + a second action in the same hour (collision pre-passes ignored pre-empted seats) | ✅ done (v1.19) | no |
 | 16 | Chaff couldn't stop a launch; chaff chained into a lock (RULEBOOK §4.9.3 ⇄ §4.9.5 contradiction) | ✅ done (v1.19 / RULEBOOK v1.14) | no |
 | 17 | Probe-launch markers never expired (sweep behind an early return; merged glyphs skipped) | ✅ done (v1.19) | no |
+| 18 | Supersede/annihilation had no graphic at all; incumbent mis-ledgered by seat order (§3.16 silent on it) | ✅ done (v1.19 / RULEBOOK v1.15) | no |
+| 19 | §3.15 launch marker outlived a death its owner watched happen | ✅ done (v1.19) | no |
+| 20 | Collision: ring fired ~3s early, and the damaged harvester lifted off before the impact (cross-frame sequencing within a tick) | ✅ done (v1.19) | no |
+| 21 | Doomed probe held in the DOM but painted under the opaque terrain stand-in, so it vanished at hour open | ✅ done (v1.19) | no |
+| 22 | V12 had no cross-night memory on Snowflake: `SOC_AGENT_MEMORY` was never deployed and every write/read swallowed the failure | ✅ done (v1.19) | no |
+| 23 | Snowflake picker scored off a SQL view that credited disposed GREEN at +255 instead of charging −100 and applied no tier multiplier, inverting a finished season's winner | ✅ done (v1.20) | no |

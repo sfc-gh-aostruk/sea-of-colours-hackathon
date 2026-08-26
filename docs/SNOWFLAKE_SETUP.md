@@ -191,10 +191,18 @@ pip install -r requirements-snowflake.txt
 
 | Flag | Effect |
 | ---- | ------ |
-| `--schema-only` | Stop after `soc_schema.sql` + `soc_views.sql`. |
+| `--schema-only` | Stop after `soc_schema.sql`, `orchestrator_v2_schema.sql` and `soc_views.sql`. |
 | `--no-procs`    | Skip `soc_procedures.sql` (procedures will be missing). |
 | `--config FILE` | Use a different Snowflake config (default: `~/.ssh/sf_config`). |
 | `--dry-run`     | Print the resolved database / schema / warehouse and exit without connecting. |
+
+> **Deployed before v1.19?** Re-run the deploy. `SOC_AGENT_MEMORY` and
+> `SOC_AGENT_BINDING` live in `orchestrator_v2_schema.sql`, which was never
+> wired into this script, so no account has them. V12 mirrors its
+> cross-night memory there best-effort and swallows the failure, so the
+> only symptom is the agent quietly forgetting the season between server
+> restarts. Everything here is `CREATE TABLE IF NOT EXISTS`; re-running is
+> non-destructive.
 
 The deploy also builds and uploads the engine package zip
 (`build/sea_of_colours.zip`) to `@SOC_PY_STAGE`, so every stored

@@ -1355,6 +1355,11 @@ body {
   --opa-stale: 0.72;
   --opa-echo: 0.58;
   --opa-fog: 0.24;
+  /* v1.19 — the fog block's own paint, hoisted to a var because the
+   * probe-drop mask has to stand in for a fog cell exactly (see
+   * `.cell--probe-pending`). Two copies of this colour is how that mask
+   * drifted into painting a black hole instead of fog. */
+  --fog-bg: rgba(15, 12, 24, 0.96);
 }
 
 .map-host > .map-grid .row .cell .glyph.glyph--terrain {
@@ -1370,7 +1375,7 @@ body {
 }
 
 .map-host > .map-grid .row .cell.cell--fog {
-  background: rgba(15, 12, 24, 0.96);
+  background: var(--fog-bg);
 }
 
 .map-host > .map-grid .row .cell.cell--fog .glyph {
@@ -6646,15 +6651,44 @@ button.cli-btn.cli-btn--live-pulse {
  * pre-arrival look (fog-coloured solid block) until the streak lands.
  * We layer a ::after over the cell so the underlying terrain HTML
  * doesn't have to be re-rendered.
+ *
+ * v1.19 — it has to READ as fog, because fog is what the viewer was
+ * looking at a beat ago. This painted a flat `#050307` — darker than
+ * `--fog-bg` and with no `░░` dither — so an incoming probe punched a
+ * black hole in the board just before it landed, which is the opposite
+ * of the "don't move the board before the sprite arrives" rule the mask
+ * exists to enforce. Now it mirrors `.cell--fog` on both counts.
+ *
+ * It must also be OPAQUE, which `--fog-bg` alone is not: that colour is
+ * 96% alpha, fine on a fog cell (nothing under it but the board) but not
+ * as an overlay on a cell the frame has already painted as REVEALED. The
+ * remaining 4% let the resource underneath bleed through, so a RED seam
+ * glowed faintly under the mask before the probe had found it — the sign
+ * leaking a beat early, which is precisely the intel the mask is here to
+ * withhold. Stacking the fog tint over `--bg` reproduces exactly what a
+ * fog cell composites to, with no transparency left to leak through, and
+ * keeps both halves reading from the same two variables.
  */
 .map-host > .map-grid .row .cell.cell--probe-pending {
   position: relative;
 }
 .map-host > .map-grid .row .cell.cell--probe-pending::after {
-  content: "";
+  content: "░░";
   position: absolute;
   inset: 0;
-  background: #050307;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(var(--fog-bg), var(--fog-bg)), var(--bg);
+  /* --dim at --opa-fog. The literal is the pre-color-mix fallback, not a
+   * second source of truth: engines that parse the second declaration
+   * derive it from the same two vars the fog cell uses. */
+  color: rgba(168, 177, 189, 0.24);
+  color: color-mix(
+    in srgb,
+    var(--dim) calc(var(--opa-fog) * 100%),
+    transparent
+  );
   z-index: 4;
   pointer-events: none;
   opacity: 1;
@@ -6721,6 +6755,14 @@ button.cli-btn.cli-btn--live-pulse {
 /* ── Harvest effects ───────────────────────────────────────────────── */
 
 /* Terrain standin: holds old tile appearance while harvester is in transit */
+/* v1.19 — a probe held on its tile until its killer arrives must sit ABOVE
+ * the terrain hold. `.harvest-terrain-standin` below is an opaque inset:0
+ * layer at z-index 4 and `.entity-overlay` carries no z-index at all, so
+ * the doomed probe was painted behind it and disappeared the moment the
+ * hour opened — while remaining in the DOM and computed-visible, which is
+ * why a DOM-level census kept reporting it present for the full 3 seconds. */
+.map-host > .map-grid .row .entity-overlay--doomed { z-index: 5; }
+
 .harvest-terrain-standin {
   position: absolute;
   inset: 0;
@@ -8287,3 +8329,360 @@ body.cc-resolving #cc-panel-orbit > :not(.cc-panel-head) {
 /* Daylight model: NIGHT is the plain (dark) map; DAY is the same map
  * under the yellow ``#cc-daylight-wash`` film. The sunrise wipe reveals
  * the film left→right; the sunset wipe clears it the same direction. */
+
+/* ── v1.19 — ASK V12 advisor ────────────────────────────────────────────
+ *
+ * A second opinion, not a second player. The whole block is deliberately
+ * quieter than TRANSMIT: violet, hairline, no fill. It sits directly
+ * above the commit button and must never read as the primary action —
+ * the human is still the one playing the seat.
+ *
+ * Violet is unused by the game's semantics (RED / GREEN / BLUE are
+ * resources, cyan is EMP, seat colours are per-player), so the advisor
+ * can own it outright without competing with anything on the board. The
+ * same hue carries through to the map overlay, which is how you know the
+ * numbered markers are advice rather than your own queued orders.
+ */
+:root {
+  --advisor: #c58bff;
+  --advisor-dim: rgba(197, 139, 255, 0.42);
+}
+
+.cc-advisor {
+  margin: 10px 0 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--advisor-dim);
+  border-left-width: 2px;
+  background: rgba(197, 139, 255, 0.045);
+}
+
+.cc-advisor-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* The base `button.cli-btn` rule is element+class, so every colour here
+ * has to match that specificity or the whole block comes out green. */
+button.cli-btn.cc-advisor-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  border-color: var(--advisor-dim);
+  color: var(--advisor);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+button.cli-btn.cc-advisor-ask:hover:not(:disabled),
+button.cli-btn.cc-advisor-ask:focus-visible:not(:disabled) {
+  border-color: var(--advisor);
+  background: rgba(197, 139, 255, 0.14);
+  color: var(--advisor);
+}
+button.cli-btn.cc-advisor-ask:disabled {
+  border-color: var(--advisor-dim);
+  color: var(--advisor);
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The lozenge turns slowly while a question is in flight, so a long
+ * think still reads as "working" without a progress bar shouting. */
+.cc-advisor-mark { font-size: 11px; line-height: 1; }
+.cc-advisor--busy .cc-advisor-mark { animation: advisor-turn 2.4s linear infinite; }
+@keyframes advisor-turn { to { transform: rotate(360deg); } }
+
+.cc-advisor-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--advisor);
+  font-variant-numeric: tabular-nums;
+}
+.cc-advisor-spin { animation: advisor-pulse 1s steps(2, end) infinite; }
+@keyframes advisor-pulse { 50% { opacity: 0.15; } }
+
+button.cli-btn.cc-advisor-cancel {
+  border-color: var(--frame);
+  color: var(--dim);
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.cc-advisor-error {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--red);
+}
+
+.cc-advisor-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  border-bottom: 1px solid var(--advisor-dim);
+  padding-bottom: 6px;
+}
+button.cli-btn.cc-advisor-tab {
+  border-color: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  padding: 2px 8px;
+  /* The orders column is ~330px; without this the two tabs shatter
+   * across three lines each and the row stops reading as tabs. */
+  white-space: nowrap;
+}
+button.cli-btn.cc-advisor-tab:hover {
+  background: rgba(197, 139, 255, 0.1);
+  color: var(--advisor);
+}
+button.cli-btn.cc-advisor-tab[aria-selected="true"] {
+  color: var(--advisor);
+  border-color: var(--advisor-dim);
+  background: rgba(197, 139, 255, 0.08);
+}
+/* Its own line — in this column there is no room to sit it beside the
+ * tabs without pushing them into a wrap. */
+.cc-advisor-meta {
+  flex: 1 0 100%;
+  order: 3;
+  font-size: 10px;
+  padding-top: 4px;
+}
+
+.cc-advisor-pane {
+  max-height: 210px;
+  overflow-y: auto;
+  padding: 8px 2px 2px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+/* Label beside value rather than above it — the pane is short and a
+ * stacked list pushed the orders themselves below the fold. */
+.cc-advisor-pane dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 0 0 8px;
+}
+.cc-advisor-pane dt {
+  color: var(--advisor);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding-top: 1px;
+}
+.cc-advisor-pane dd { margin: 0; }
+.cc-advisor-moves { margin: 0; padding: 0; list-style: none; }
+.cc-advisor-moves li {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0;
+  font-variant-numeric: tabular-nums;
+}
+.cc-advisor-moves .h { color: var(--advisor); min-width: 2.6em; }
+
+.cc-advisor-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+button.cli-btn.cc-advisor-adopt,
+button.cli-btn.cc-advisor-show {
+  font-size: 11px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+button.cli-btn.cc-advisor-adopt {
+  border-color: var(--advisor);
+  color: var(--advisor);
+}
+button.cli-btn.cc-advisor-adopt:hover,
+button.cli-btn.cc-advisor-adopt:focus-visible {
+  background: rgba(197, 139, 255, 0.18);
+  color: var(--advisor);
+}
+button.cli-btn.cc-advisor-show {
+  border-color: var(--advisor-dim);
+  color: var(--dim);
+}
+button.cli-btn.cc-advisor-show:hover,
+button.cli-btn.cc-advisor-show:focus-visible {
+  background: rgba(197, 139, 255, 0.1);
+  color: var(--advisor);
+}
+.cc-advisor-note { flex: 1 0 100%; font-size: 10px; line-height: 1.4; }
+
+button.cli-btn.cc-advisor-expand,
+button.cli-btn.cc-advisor-download {
+  font-size: 11px;
+  padding: 3px 9px;
+  white-space: nowrap;
+  border-color: var(--advisor-dim);
+  color: var(--dim);
+}
+button.cli-btn.cc-advisor-expand:hover,
+button.cli-btn.cc-advisor-expand:focus-visible,
+button.cli-btn.cc-advisor-download:hover,
+button.cli-btn.cc-advisor-download:focus-visible {
+  background: rgba(197, 139, 255, 0.1);
+  color: var(--advisor);
+}
+
+/* ── v1.19 — ASK V12 full card ──────────────────────────────────────
+ * The inline pane lives in the orders column and can only ever show a
+ * glance. This is the read-everything view: the reasoning and the raw
+ * prompt are thousands of lines, so the dialog owns the viewport and
+ * scrolls its own body rather than nesting a scroller in a scroller. */
+.cc-advisor-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 6, 12, 0.82);
+  backdrop-filter: blur(2px);
+}
+.cc-advisor-modal[hidden] { display: none; }
+
+.cc-advisor-modal-box {
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, 100%);
+  max-height: 100%;
+  background: var(--panel, #0b0e17);
+  border: 1px solid var(--advisor-dim);
+  box-shadow: 0 0 0 1px rgba(197, 139, 255, 0.08),
+              0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.cc-advisor-modal-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--advisor-dim);
+}
+.cc-advisor-modal-head h2 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--advisor);
+}
+.cc-advisor-modal-meta { font-size: 11px; }
+button.cli-btn.cc-advisor-modal-close {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 3px 9px;
+}
+
+.cc-advisor-modal-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 16px 0;
+}
+button.cli-btn.cc-advisor-modal-tab {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-color: var(--advisor-dim);
+  color: var(--dim);
+}
+button.cli-btn.cc-advisor-modal-tab[aria-selected="true"] {
+  color: var(--advisor);
+  background: rgba(197, 139, 255, 0.14);
+}
+
+.cc-advisor-modal-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 12px 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+/* Verbatim text: preserve the model's own wrapping, but never force a
+ * horizontal scrollbar on a long unbroken coordinate run. */
+.cc-advisor-modal-body .cc-card-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.cc-advisor-modal-body dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0 0 12px;
+}
+.cc-advisor-modal-body dt {
+  color: var(--advisor);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding-top: 2px;
+}
+.cc-advisor-modal-body dd { margin: 0; }
+
+.cc-advisor-modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-top: 1px solid var(--advisor-dim);
+}
+
+/* `hidden` must win over the display values set above — the attribute's
+ * UA rule is a bare `[hidden]` and loses to any class selector, which is
+ * how the timer ended up permanently visible. */
+.cc-advisor[hidden],
+.cc-advisor-timer[hidden],
+.cc-advisor-tabs[hidden],
+.cc-advisor-foot[hidden],
+button.cli-btn.cc-advisor-cancel[hidden],
+button.cli-btn.cc-advisor-tab[hidden] { display: none; }
+
+/* Map overlay: one numbered marker per proposed order, on the cell it
+ * targets, numbered by the hour it would execute. Pointer-events off so
+ * hovering the preview never steals a click from the board underneath. */
+.advisor-marker {
+  /* Viewport-fixed, like the rest of the map FX — the map host scrolls
+   * and is not a positioned ancestor, so anchoring to it would need a
+   * containing-block change that every other overlay avoids. */
+  position: fixed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 1px solid var(--advisor);
+  background: rgba(20, 8, 34, 0.82);
+  color: var(--advisor);
+  font: 600 10px/1 var(--mono);
+  pointer-events: none;
+  z-index: 9000;
+  animation: advisor-mark-in 140ms ease-out both;
+}
+.advisor-marker--probe { border-style: dashed; }
+.advisor-marker__n { text-shadow: 0 0 4px rgba(197, 139, 255, 0.7); }
+@keyframes advisor-mark-in {
+  from { opacity: 0; transform: scale(0.7); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-advisor--busy .cc-advisor-mark,
+  .cc-advisor-spin { animation: none; }
+  .advisor-marker { animation: none; }
+}

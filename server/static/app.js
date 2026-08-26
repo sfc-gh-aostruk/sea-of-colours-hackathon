@@ -5195,6 +5195,33 @@
         const to = Array.isArray(entry.to) ? entry.to : [];
         return { a: "step", x: Number(to[0]), y: Number(to[1]), unit };
       }
+      // v1.19 — weapons and WAIT used to fall through to the `pickup`
+      // default below, which quietly turned an incoming EMP salvo into a
+      // unit-less pickup. Harmless while the only caller was the
+      // (movement-only) preset chips; not harmless now that ASK V12 feeds
+      // a whole night's orders through here. Shapes mirror
+      // `queueToWireMoves`, which is the inverse of this function.
+      if (action === "wait") return { a: "wait" };
+      if (action === "chaff_flare") return { a: "chaff_flare" };
+      if (action === "emp_launch") {
+        // The wire form is either one [x,y] or a list of them (salvo).
+        const at = Array.isArray(entry.at) ? entry.at : [];
+        const ats = Array.isArray(at[0]) ? at : (at.length === 2 ? [at] : []);
+        const clean = ats
+          .filter((t) => Array.isArray(t) && t.length === 2)
+          .map((t) => [Number(t[0]), Number(t[1])]);
+        if (!clean.length) return { a: "wait" };
+        return {
+          a: "emp_launch",
+          ats: clean,
+          x: clean[0][0],
+          y: clean[0][1],
+        };
+      }
+      if (action === "mine_lay") {
+        const at = Array.isArray(entry.at) ? entry.at : [];
+        return { a: "mine_lay", x: Number(at[0]), y: Number(at[1]) };
+      }
       return { a: "pickup", unit };
     });
     renderSoloQueue();
@@ -5282,6 +5309,604 @@
       );
     }
     return out;
+  }
+
+  // ── v1.19 — ASK V12 (read-only advisor) ──────────────────────────────
+  //
+  // A second opinion on the position from the shipped LLM harness. The
+  // server runs V12's full THINK -> PLAN pipeline against this seat's own
+  // percept with `submit=False`, so nothing is played and — importantly —
+  // no memory is written. V12's journal, hazard memory and reflection
+  // anchor are keyed by (session, seat); writing them for a seat a human
+  // is driving would invent a history of turns V12 never took, and the
+  // human's own moves would come back later as "what V12 did last night".
+  //
+  // The price is that the advice is per-position rather than per-season:
+  // it reasons from the live board plus last night's engine-truth replay,
+  // with no thread back through earlier nights. The panel says so, because
+  // a player comparing this against a V12 opponent should know the
+  // opponent has continuity that this does not.
+
+  /** Cached answer from GET /advisor: null = not asked yet. */
+  let advisorAvailable = null;
+  /** In-flight request, so a submit (or the cancel button) can kill it. */
+  let advisorAbort = null;
+  let advisorTimerId = 0;
+  /** The most recent answer, held for the tabs / overlay / adopt. */
+  let advisorPlan = null;
+  /** Live marker nodes for the hover preview. */
+  const advisorMarkers = [];
+
+  const advisorRoot = document.getElementById("cc-advisor");
+  const advisorAskBtn = document.getElementById("advisor-ask");
+  const advisorCancelBtn = document.getElementById("advisor-cancel");
+  const advisorTimerEl = document.getElementById("advisor-timer");
+  const advisorElapsedEl = document.getElementById("advisor-elapsed");
+  const advisorErrorEl = document.getElementById("advisor-error");
+  const advisorResultEl = document.getElementById("advisor-result");
+  const advisorMetaEl = document.getElementById("advisor-meta");
+  const advisorTabPlan = document.getElementById("advisor-tab-plan");
+  const advisorTabThink = document.getElementById("advisor-tab-think");
+  const advisorPanePlan = document.getElementById("advisor-pane-plan");
+  const advisorPaneThink = document.getElementById("advisor-pane-think");
+  const advisorShowBtn = document.getElementById("advisor-show");
+  const advisorAdoptBtn = document.getElementById("advisor-adopt");
+
+  /** Guards the probe against re-entry — `updateAdvisorVisibility` calls
+   *  it lazily on every status poll until an answer lands. */
+  let _advisorProbing = false;
+
+  /** Ask the server once per session whether this game can offer V12. */
+  async function refreshAdvisorAvailability() {
+    if (_advisorProbing) return;
+    if (WATCH_MODE || !sessionId) {
+      advisorAvailable = false;
+      updateAdvisorVisibility(null);
+      return;
+    }
+    _advisorProbing = true;
+    try {
+      const res = await fetch(`/api/game/${sessionId}/advisor`, {
+        cache: "no-store",
+      });
+      const out = await res.json().catch(() => ({}));
+      advisorAvailable = Boolean(out && out.available);
+    } catch (_e) {
+      // An unreachable probe is indistinguishable from "not offered" as
+      // far as the player is concerned, and a broken button is worse
+      // than an absent one.
+      advisorAvailable = false;
+    } finally {
+      _advisorProbing = false;
+    }
+    updateAdvisorVisibility(null);
+  }
+
+  /**
+   * Show the control only when asking would make sense: a Snowflake game
+   * with working credentials, on a night this seat has not yet sent.
+   *
+   * The seat-has-submitted case matters beyond tidiness — once the orders
+   * are in, adopting a plan would do nothing, so offering it would be a
+   * lie. Orbit is excluded outright because the harness's orbit path has
+   * no read-only mode and would play the turn.
+   *
+   * @param {any} st most recent /status payload, or null to reuse the last
+   */
+  function updateAdvisorVisibility(st) {
+    if (!advisorRoot) return;
+    if (st) _advisorLastStatus = st;
+    const s = st || _advisorLastStatus;
+    // Lazy probe. New Game and Join both ask explicitly, but a session can
+    // arrive by other routes; asking here on first sight means no path has
+    // to remember to. `refreshAdvisorAvailability` is re-entry guarded, so
+    // repeated status polls cost one request, not one each.
+    if (advisorAvailable === null && sessionId && !WATCH_MODE) {
+      void refreshAdvisorAvailability();
+      return;
+    }
+    const ok =
+      advisorAvailable === true &&
+      !WATCH_MODE &&
+      Boolean(s) &&
+      String(s.phase) === "planning" &&
+      !s.is_season_complete &&
+      !(s.pending && s.pending[MY_SEAT]);
+    advisorRoot.hidden = !ok;
+    if (!ok) cancelAdvisor({ silent: true });
+  }
+  let _advisorLastStatus = null;
+
+  function _advisorSetBusy(busy) {
+    if (!advisorRoot) return;
+    advisorRoot.classList.toggle("cc-advisor--busy", busy);
+    if (advisorAskBtn) advisorAskBtn.disabled = busy;
+    if (advisorTimerEl) advisorTimerEl.hidden = !busy;
+    if (advisorCancelBtn) advisorCancelBtn.hidden = !busy;
+  }
+
+  /**
+   * Abandon an in-flight question.
+   *
+   * Called by the cancel button and — the case that actually matters —
+   * whenever the seat transmits its orders. A plan that arrives after you
+   * have already committed is worse than no plan: the [ adopt ] button
+   * would be sitting there inviting a click that cannot land.
+   */
+  function cancelAdvisor(opts) {
+    const silent = Boolean(opts && opts.silent);
+    if (advisorAbort) {
+      advisorAbort.abort();
+      advisorAbort = null;
+    }
+    if (advisorTimerId) {
+      window.clearInterval(advisorTimerId);
+      advisorTimerId = 0;
+    }
+    _advisorSetBusy(false);
+    hideAdvisorOverlay();
+    if (!silent) return;
+    // A silent cancel is a state change (left the night, sent the
+    // orders), so the stale answer goes with it — including the full
+    // card, which would otherwise sit open over a board it no longer
+    // describes, still offering [ adopt ].
+    advisorPlan = null;
+    if (advisorResultEl) advisorResultEl.hidden = true;
+    if (advisorErrorEl) advisorErrorEl.hidden = true;
+    closeAdvisorCard();
+  }
+
+  async function askAdvisor() {
+    if (!sessionId || (advisorAskBtn && advisorAskBtn.disabled)) return;
+    cancelAdvisor({ silent: true });
+    _advisorSetBusy(true);
+    if (advisorErrorEl) advisorErrorEl.hidden = true;
+
+    const t0 = performance.now();
+    if (advisorElapsedEl) advisorElapsedEl.textContent = "0.0s";
+    advisorTimerId = window.setInterval(() => {
+      if (advisorElapsedEl) {
+        advisorElapsedEl.textContent =
+          `${((performance.now() - t0) / 1000).toFixed(1)}s`;
+      }
+    }, 100);
+
+    const ctl = new AbortController();
+    advisorAbort = ctl;
+    // A think is a live model round trip; two minutes is generous enough
+    // that a slow one still lands, short enough that a hung one doesn't
+    // leave the timer running all night.
+    const killer = window.setTimeout(() => ctl.abort(), 120000);
+    try {
+      const res = await fetch(
+        `/api/game/${sessionId}/advisor?player=${encodeURIComponent(MY_SEAT)}`,
+        { method: "POST", cache: "no-store", signal: ctl.signal },
+      );
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          typeof out.detail === "string" ? out.detail : `HTTP ${res.status}`,
+        );
+      }
+      advisorPlan = out;
+      renderAdvisorResult(out);
+    } catch (err) {
+      if (ctl.signal.aborted) return; // cancelled on purpose; say nothing
+      if (advisorErrorEl) {
+        advisorErrorEl.textContent = `V12 could not answer: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+        advisorErrorEl.hidden = false;
+      }
+    } finally {
+      window.clearTimeout(killer);
+      if (advisorAbort === ctl) advisorAbort = null;
+      if (advisorTimerId) {
+        window.clearInterval(advisorTimerId);
+        advisorTimerId = 0;
+      }
+      _advisorSetBusy(false);
+    }
+  }
+
+  /** Coordinate lists as the board writes them, not as JSON writes them. */
+  function _advisorCells(list) {
+    return (Array.isArray(list) ? list : [])
+      .map((c) => (Array.isArray(c) && c.length === 2
+        ? `(${c[0]},${c[1]})`
+        : JSON.stringify(c)))
+      .join(" ");
+  }
+
+  /** One human-readable line per proposed order, in execution order. */
+  function advisorMoveLines(moves) {
+    return (Array.isArray(moves) ? moves : []).map((m, i) => {
+      const a = String((m && m.a) || "?");
+      const at = Array.isArray(m && m.at) ? m.at : null;
+      const to = Array.isArray(m && m.to) ? m.to : null;
+      const unit = m && m.unit ? ` ${String(m.unit)}` : "";
+      let where = "";
+      if (to && to.length === 2) where = ` → (${to[0]},${to[1]})`;
+      else if (at && at.length === 2 && typeof at[0] === "number") {
+        where = ` @ (${at[0]},${at[1]})`;
+      } else if (at && at.length) {
+        // An EMP salvo carries a list of cells rather than one.
+        where = ` @ ${at.map((t) => `(${t[0]},${t[1]})`).join(" ")}`;
+      }
+      return { hour: `H${i + 1}`, text: `${a}${unit}${where}` };
+    });
+  }
+
+  function renderAdvisorResult(out) {
+    if (!advisorResultEl) return;
+    const plan = out.plan || {};
+    const think = out.thinking || {};
+
+    if (advisorMetaEl) {
+      const secs = ((Number(out.elapsed_ms) || 0) / 1000).toFixed(1);
+      advisorMetaEl.textContent =
+        `day ${out.day} · ${out.moves.length} order(s) · ${secs}s`
+        + (plan.fallback_used ? " · FALLBACK (no live think)" : "");
+    }
+
+    // PLAN — the decision, then the orders it compiled to.
+    const rows = [];
+    if (plan.posture) rows.push(["posture", plan.posture]);
+    if (plan.plan_ids && plan.plan_ids.length) {
+      rows.push(["chose", plan.plan_ids.join(", ")]);
+    }
+    if (plan.targets && plan.targets.length) {
+      rows.push(["targets", _advisorCells(plan.targets)]);
+    }
+    if (plan.avoid && plan.avoid.length) {
+      rows.push(["avoid", _advisorCells(plan.avoid)]);
+    }
+    if (plan.note) rows.push(["note", plan.note]);
+    if (plan.sanitizer_changes && plan.sanitizer_changes.length) {
+      rows.push(["corrected", plan.sanitizer_changes.join(" · ")]);
+    }
+    const dl = document.createElement("dl");
+    for (const [k, v] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = String(v);
+      dl.append(dt, dd);
+    }
+    const ol = document.createElement("ul");
+    ol.className = "cc-advisor-moves";
+    for (const line of advisorMoveLines(out.moves)) {
+      const li = document.createElement("li");
+      const h = document.createElement("span");
+      h.className = "h";
+      h.textContent = line.hour;
+      const t = document.createElement("span");
+      t.textContent = line.text;
+      li.append(h, t);
+      ol.appendChild(li);
+    }
+    advisorPanePlan.replaceChildren(dl, ol);
+
+    // THINKING — the bounded reasoning, verbatim.
+    advisorPaneThink.textContent =
+      String(think.reasoning || "").trim()
+      || "(no reasoning returned — the thinker was off, empty, or fell "
+         + "through to the deterministic mover)";
+
+    advisorResultEl.hidden = false;
+    selectAdvisorTab("plan");
+  }
+
+  function selectAdvisorTab(which) {
+    const planOn = which === "plan";
+    if (advisorTabPlan) advisorTabPlan.setAttribute("aria-selected", String(planOn));
+    if (advisorTabThink) advisorTabThink.setAttribute("aria-selected", String(!planOn));
+    if (advisorPanePlan) advisorPanePlan.hidden = !planOn;
+    if (advisorPaneThink) advisorPaneThink.hidden = planOn;
+  }
+
+  /**
+   * Lay the proposed orders over the board, one numbered marker per cell.
+   *
+   * The number is the hour the order would execute, which is the part a
+   * bare list of coordinates cannot show: two orders on adjacent cells
+   * read completely differently depending on which comes first. Markers
+   * are absolutely positioned against the map host and never intercept
+   * pointer events, so the board stays clickable underneath.
+   */
+  function showAdvisorOverlay() {
+    hideAdvisorOverlay();
+    if (!advisorPlan || !mapPlayer) return;
+    // Clip to the map viewport so a marker for a cell scrolled out of
+    // sight doesn't float over the surrounding chrome.
+    const clip = mapPlayer.getBoundingClientRect();
+    const seen = new Map();
+    (advisorPlan.moves || []).forEach((m, i) => {
+      const a = String((m && m.a) || "");
+      let cells = [];
+      if (Array.isArray(m && m.to) && m.to.length === 2) cells = [m.to];
+      else if (Array.isArray(m && m.at) && typeof m.at[0] === "number") {
+        cells = [m.at];
+      } else if (Array.isArray(m && m.at)) cells = m.at;
+      for (const c of cells) {
+        if (!Array.isArray(c) || c.length !== 2) continue;
+        const key = `${c[0]},${c[1]}`;
+        // Two orders on one cell: keep the earliest hour on the marker
+        // and let the list carry the detail, rather than stacking badges.
+        if (seen.has(key)) continue;
+        seen.set(key, true);
+        const cell = mapPlayer.querySelector(
+          `[data-x="${c[0]}"][data-y="${c[1]}"]`,
+        );
+        if (!cell) continue;
+        const r = cell.getBoundingClientRect();
+        if (r.bottom < clip.top || r.top > clip.bottom) continue;
+        const el = document.createElement("div");
+        el.className = "advisor-marker"
+          + (a === "probe" ? " advisor-marker--probe" : "");
+        el.style.left = `${r.left.toFixed(1)}px`;
+        el.style.top = `${r.top.toFixed(1)}px`;
+        el.style.width = `${r.width.toFixed(1)}px`;
+        el.style.height = `${r.height.toFixed(1)}px`;
+        const n = document.createElement("span");
+        n.className = "advisor-marker__n";
+        n.textContent = String(i + 1);
+        el.appendChild(n);
+        document.body.appendChild(el);
+        advisorMarkers.push(el);
+      }
+    });
+  }
+
+  function hideAdvisorOverlay() {
+    while (advisorMarkers.length) advisorMarkers.pop().remove();
+  }
+
+  /** Take the plan as your own — it lands in YOUR queue, unsent. */
+  function adoptAdvisorPlan() {
+    if (!advisorPlan) return;
+    applyHintQueue(advisorPlan.moves || []);
+    syncSoloCliFakeBoxes();
+    hideAdvisorOverlay();
+    // Left un-transmitted on purpose. Adopting is "start from V12's
+    // answer", not "let V12 play" — the edit and the commit stay yours.
+    if (advisorMetaEl) {
+      advisorMetaEl.textContent = "adopted into your queue — edit or TRANSMIT";
+    }
+  }
+
+  // ── v1.19 — the FULL CARD modal ────────────────────────────────────
+  //
+  // The inline pane is deliberately small: it sits inside the orders
+  // column and has to leave room for the board. The reasoning and the
+  // prompt are both far longer than that pane can show without becoming
+  // a scroll-in-a-scroll, so the whole exchange gets its own dialog,
+  // plus a download for reading it outside the browser (the audit
+  // table's copy of the prompt is truncated at 32k — this is the only
+  // place the untruncated text exists).
+  const advisorModal = document.getElementById("advisor-modal");
+  const advisorModalBody = document.getElementById("advisor-modal-body");
+  const advisorModalMeta = document.getElementById("advisor-modal-meta");
+  const advisorExpandBtn = document.getElementById("advisor-expand");
+  const advisorDownloadBtn = document.getElementById("advisor-download");
+  const advisorDownloadNote = document.getElementById("advisor-download-note");
+  let advisorCardTab = "orders";
+
+  /** Build the plain-text card: exactly what the model saw, then said. */
+  function advisorCardText() {
+    if (!advisorPlan) return "";
+    const p = advisorPlan;
+    const plan = p.plan || {};
+    const think = p.thinking || {};
+    const prompts = p.prompts || {};
+    const rule = "=".repeat(72);
+    const out = [];
+    out.push(rule);
+    out.push(`SEA OF COLOURS — V12 ADVISORY CARD`);
+    out.push(`session ${sessionId}   seat ${p.player}   day ${p.day}`);
+    out.push(`answered in ${((Number(p.elapsed_ms) || 0) / 1000).toFixed(1)}s`
+      + (plan.fallback_used ? "   FALLBACK (no live think)" : ""));
+    out.push(`generated ${new Date().toISOString()}`);
+    out.push(rule);
+
+    out.push("", "## PROPOSED ORDERS", "");
+    const lines = advisorMoveLines(p.moves);
+    if (!lines.length) out.push("(none)");
+    for (const l of lines) out.push(`  ${l.hour.padEnd(4)} ${l.text}`);
+
+    out.push("", "## DECISION", "");
+    if (plan.posture) out.push(`  posture   ${plan.posture}`);
+    if ((plan.plan_ids || []).length) {
+      out.push(`  chose     ${plan.plan_ids.join(", ")}`);
+    }
+    if ((plan.targets || []).length) {
+      out.push(`  targets   ${_advisorCells(plan.targets)}`);
+    }
+    if ((plan.avoid || []).length) {
+      out.push(`  avoid     ${_advisorCells(plan.avoid)}`);
+    }
+    if (plan.note) out.push(`  note      ${plan.note}`);
+    if ((plan.sanitizer_changes || []).length) {
+      out.push("", "  corrected by the sanitiser:");
+      for (const c of plan.sanitizer_changes) out.push(`    - ${c}`);
+    }
+    if (think.intent) out.push("", `  intent     ${think.intent}`);
+    if (think.reflection) out.push(`  reflection ${think.reflection}`);
+
+    out.push("", rule, "## REASONING (think pass, verbatim)", rule, "");
+    out.push(String(think.reasoning || "(none returned)").trim());
+
+    out.push("", rule, "## OPTION MENU (what was on the table)", rule, "");
+    out.push(String(think.option_menu || "(none)").trim());
+
+    for (const [label, key] of [
+      ["THINK", "think"], ["PLAN", "plan"], ["MOVER", "mover"],
+    ]) {
+      const text = String(prompts[key] || "").trim();
+      if (!text) continue;
+      out.push("", rule, `## ${label} PROMPT (untruncated, as sent)`, rule, "");
+      out.push(text);
+    }
+    return out.join("\n");
+  }
+
+  function renderAdvisorCard() {
+    if (!advisorModalBody || !advisorPlan) return;
+    const p = advisorPlan;
+    const think = p.thinking || {};
+    const prompts = p.prompts || {};
+
+    if (advisorModalMeta) {
+      const secs = ((Number(p.elapsed_ms) || 0) / 1000).toFixed(1);
+      advisorModalMeta.textContent =
+        `day ${p.day} · seat ${p.player} · ${(p.moves || []).length} order(s) · ${secs}s`;
+    }
+
+    let node;
+    if (advisorCardTab === "orders") {
+      node = document.createElement("div");
+      node.className = "cc-card-orders";
+      const ol = document.createElement("ul");
+      ol.className = "cc-advisor-moves";
+      const lines = advisorMoveLines(p.moves);
+      if (!lines.length) {
+        const li = document.createElement("li");
+        li.textContent = "(no orders proposed)";
+        ol.appendChild(li);
+      }
+      for (const line of lines) {
+        const li = document.createElement("li");
+        const h = document.createElement("span");
+        h.className = "h";
+        h.textContent = line.hour;
+        const t = document.createElement("span");
+        t.textContent = line.text;
+        li.append(h, t);
+        ol.appendChild(li);
+      }
+      node.appendChild(ol);
+      // Reuse the inline pane's decision table verbatim rather than
+      // maintaining a second copy of the same formatting rules.
+      if (advisorPanePlan) {
+        const dl = advisorPanePlan.querySelector("dl");
+        if (dl) node.insertBefore(dl.cloneNode(true), ol);
+      }
+    } else {
+      node = document.createElement("pre");
+      node.className = "cc-card-pre";
+      if (advisorCardTab === "think") {
+        node.textContent = String(think.reasoning || "").trim()
+          || "(no reasoning returned)";
+      } else if (advisorCardTab === "options") {
+        node.textContent = String(think.option_menu || "").trim()
+          || "(no option menu returned)";
+      } else {
+        const parts = [];
+        for (const [label, key] of [
+          ["THINK", "think"], ["PLAN", "plan"], ["MOVER", "mover"],
+        ]) {
+          const text = String(prompts[key] || "").trim();
+          if (text) parts.push(`──── ${label} PROMPT ────\n\n${text}`);
+        }
+        node.textContent = parts.join("\n\n\n") || "(no prompt returned)";
+      }
+    }
+    advisorModalBody.replaceChildren(node);
+
+    for (const tab of document.querySelectorAll(".cc-advisor-modal-tab")) {
+      tab.setAttribute(
+        "aria-selected", String(tab.dataset.card === advisorCardTab),
+      );
+    }
+  }
+
+  function openAdvisorCard() {
+    if (!advisorModal || !advisorPlan) return;
+    advisorCardTab = "orders";
+    renderAdvisorCard();
+    advisorModal.hidden = false;
+    const close = document.getElementById("advisor-modal-close");
+    if (close) close.focus();
+  }
+
+  function closeAdvisorCard() {
+    if (advisorModal) advisorModal.hidden = true;
+  }
+
+  function downloadAdvisorCard() {
+    if (!advisorPlan) return;
+    const text = advisorCardText();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const name =
+      `v12-card_day${advisorPlan.day}_${advisorPlan.player}_${stamp}.txt`;
+    const url = URL.createObjectURL(
+      new Blob([text], { type: "text/plain;charset=utf-8" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoke on the next tick — Safari cancels the download if the URL
+    // dies in the same frame as the click.
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+    if (advisorDownloadNote) {
+      advisorDownloadNote.textContent =
+        `// saved ${name} (${text.length.toLocaleString()} chars)`;
+    }
+  }
+
+  if (advisorExpandBtn) advisorExpandBtn.addEventListener("click", openAdvisorCard);
+  if (advisorDownloadBtn) {
+    advisorDownloadBtn.addEventListener("click", downloadAdvisorCard);
+  }
+  const _advisorModalClose = document.getElementById("advisor-modal-close");
+  if (_advisorModalClose) {
+    _advisorModalClose.addEventListener("click", closeAdvisorCard);
+  }
+  const _advisorModalAdopt = document.getElementById("advisor-modal-adopt");
+  if (_advisorModalAdopt) {
+    _advisorModalAdopt.addEventListener("click", () => {
+      adoptAdvisorPlan();
+      closeAdvisorCard();
+    });
+  }
+  for (const tab of document.querySelectorAll(".cc-advisor-modal-tab")) {
+    tab.addEventListener("click", () => {
+      advisorCardTab = String(tab.dataset.card || "orders");
+      renderAdvisorCard();
+    });
+  }
+  if (advisorModal) {
+    // Click the backdrop (but not the box) to dismiss.
+    advisorModal.addEventListener("click", (ev) => {
+      if (ev.target === advisorModal) closeAdvisorCard();
+    });
+  }
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && advisorModal && !advisorModal.hidden) {
+      closeAdvisorCard();
+    }
+  });
+
+  if (advisorAskBtn) advisorAskBtn.addEventListener("click", askAdvisor);
+  if (advisorCancelBtn) {
+    advisorCancelBtn.addEventListener("click", () => cancelAdvisor({}));
+  }
+  if (advisorTabPlan) {
+    advisorTabPlan.addEventListener("click", () => selectAdvisorTab("plan"));
+  }
+  if (advisorTabThink) {
+    advisorTabThink.addEventListener("click", () => selectAdvisorTab("think"));
+  }
+  if (advisorAdoptBtn) advisorAdoptBtn.addEventListener("click", adoptAdvisorPlan);
+  if (advisorShowBtn) {
+    // Hold-to-preview: the overlay is a glance, not a mode to get stuck in.
+    advisorShowBtn.addEventListener("mouseenter", showAdvisorOverlay);
+    advisorShowBtn.addEventListener("mouseleave", hideAdvisorOverlay);
+    advisorShowBtn.addEventListener("focus", showAdvisorOverlay);
+    advisorShowBtn.addEventListener("blur", hideAdvisorOverlay);
   }
 
   /** POST an orbit action queue (module-level twin of the inline submit in
@@ -6721,6 +7346,11 @@
       return;
     }
 
+    // v1.19 — force-cancel any V12 question still in flight. Past this
+    // point the orders are going, so an answer landing afterwards could
+    // only offer an [ adopt ] that has nowhere to land.
+    cancelAdvisor({ silent: true });
+
     // v0.8.1 — start the density-shade animation now that we know
     // we'll actually post to the server.
     const stopAnim = startTransmittingAnim(
@@ -6975,6 +7605,36 @@
   /** Cells masked while a probe streak is in flight. Cleared on landing
    *  or when the animation is force-cancelled (scrub / new frame). */
   const probeMaskedCells = new Set();
+  /** v1.19 — bumped by `cancelInflightReplayAnimations`. The reveal is a
+   *  staggered wavefront now, so its later rings sit in timers for a few
+   *  hundred ms after the landing beat. A scrub during that window used to
+   *  leave those timers live, and if the next frame re-masked the same
+   *  cells the orphan ring uncovered ground the new probe hadn't reached
+   *  yet. Timers compare against this and bail. */
+  let probeRevealEpoch = 0;
+  /** v1.19 — cells whose probe-crush splash a landing hook has taken
+   *  responsibility for this tick, as ``"x,y"``.
+   *
+   *  The splash has to go off when the unit that did the crushing visibly
+   *  arrives, so each animation branch fires it from its own landing hook
+   *  and stakes its cell here as it schedules that hook. The tick-level FX
+   *  pass then covers only what nobody claimed — a scrub (no animation
+   *  runs at all) or a delta that was skipped, e.g. an enemy action the
+   *  viewing seat cannot see. Without the record, forward playback either
+   *  double-fired the burst or dropped it depending on which side we
+   *  guessed, and neither is recoverable from the frame alone. */
+  const crushClaimedCells = new Set();
+  /** v1.19 — the same ledger for collision rings (§3.6 swap, simultaneous
+   *  drop, and the drop-onto-an-occupied-tile bounce). Kept separate from
+   *  ``crushClaimedCells`` because one cell can be both at once: a lander
+   *  can bounce off a defender AND crush a probe on the same tile, and the
+   *  two effects are claimed by different hooks. */
+  const collisionClaimedCells = new Set();
+  /** Every tile collided with anywhere in the current tick (v1.19). Distinct
+   *  from `collisionClaimedCells`, which tracks who owns FIRING each ring;
+   *  this is the read-only question "is this tile hit this tick?", asked by
+   *  deltas on other frames that must sequence themselves behind it. */
+  const tickCollisionCells = new Set();
 
   function cancelInflightReplayAnimations() {
     for (const node of liveAnimNodes) {
@@ -6990,6 +7650,7 @@
       cell.classList.remove("cell--probe-revealing");
     }
     probeMaskedCells.clear();
+    probeRevealEpoch += 1;
   }
 
   /**
@@ -7131,6 +7792,24 @@
         if (!at) continue;
         return { kind: "probe", to: at, glyph: "\u00B7", fg: ownerColor(row.owner), owner: row.owner };
       }
+      // v1.19 — the probe died on arrival: §3.16 mutual annihilation (two
+      // seats landing on one cell in the same hour) or a landing in that
+      // hour's collision crater. It is created and destroyed inside a
+      // single move, so it never reaches a frame's entity snapshot and the
+      // loop above finds nothing — which rendered the whole action as
+      // NOTHING, streak included. Two seats could burn a probe each on the
+      // same cell and the board would not so much as flicker. The launch
+      // itself is public (§3.15), so the streak still flies; it just
+      // arrives to a burst instead of granting vision.
+      const doomed = (
+        Array.isArray(curFrame.crushed_probes) ? curFrame.crushed_probes : []
+      ).find((e) => e && e.probe_owner === owner && Array.isArray(e.at));
+      if (doomed) {
+        return {
+          kind: "probe", to: doomed.at, glyph: "\u00B7",
+          fg: ownerColor(owner), owner, doomed: true,
+        };
+      }
       return null;
     }
     return null;
@@ -7199,9 +7878,104 @@
     s.className = "harvest-terrain-standin";
     s.style.background = beforeCell.bg || "";
     if (beforeCell.fg) s.style.color = beforeCell.fg;
+    // v1.19 — a stand-in for a STALE tile has to look stale. The dimming
+    // normally comes from `.cell--stale` on the cell, and the cell we are
+    // covering is fresh in this frame, so the stand-in would otherwise hold
+    // a remembered tile at full live brightness — reading as "you can see
+    // this now" a beat before the probe grants that.
+    if (beforeCell.stale) s.style.opacity = "var(--opa-stale)";
     s.innerHTML = renderTrailOverlayHtml(beforeCell) + esc(beforeCell.ch || "");
     cellEl.appendChild(s);
     return s;
+  }
+
+  /** v1.19 — hold a doomed probe on its cell until the thing that kills it
+   *  actually arrives.
+   *
+   *  The replay paints the RESOLVED end-state frame and animates deltas over
+   *  it, so a probe about to be crushed or superseded is already absent from
+   *  the board the instant the tick paints — it blinked out while its killer
+   *  was still visibly in the air, and the splash then went off over an empty
+   *  square. Fixing when the splash fires did nothing for this: the victim
+   *  has to still be standing when it does.
+   *
+   *  Only stands in for a probe that was on the board BEFORE this move. A
+   *  probe created and destroyed inside one move (§3.16 mutual annihilation)
+   *  was never visible, so there is nothing to preserve — and its arrival is
+   *  already being animated as the incoming streak.
+   *
+   *  Visibility matches the splash exactly (see :func:`playProbeCrushFx`), so
+   *  we never conjure a probe onto a tile the viewer isn't entitled to see.
+   *
+   *  @returns {HTMLElement[]} stand-ins for the caller to remove on landing.
+   */
+  function _layDoomedProbeStandins(host, prevFrame, curFrame, at) {
+    /** @type {HTMLElement[]} */
+    const out = [];
+    const events = Array.isArray(curFrame?.crushed_probes)
+      ? curFrame.crushed_probes : [];
+    if (!events.length || !Array.isArray(at)) return out;
+    const prevRows = Array.isArray(prevFrame?.entities) ? prevFrame.entities : [];
+    for (const ev of events) {
+      const xy = Array.isArray(ev?.at) ? ev.at : null;
+      if (!xy) continue;
+      if (Number(xy[0]) !== Number(at[0]) || Number(xy[1]) !== Number(at[1]))
+        continue;
+      if (!prevRows.some((r) => r && r.t === "probe" && r.id === ev.probe_id))
+        continue;
+      const cellEl = findReplayCell(host, xy[0], xy[1]);
+      if (!cellEl) continue;
+      const owner = ev.probe_owner || "p1";
+      if (cellEl.classList.contains("cell--fog") && replayViewSeat !== owner)
+        continue;
+      // v1.19 — stand in with the probe the board was ACTUALLY painting a
+      // beat ago, markup and all. A hand-rolled "·" dropped the lifetime
+      // rings and the profile colour, so even when it was on screen the
+      // doomed probe didn't look like the probe that had been sitting
+      // there — it read as a different, fainter thing appearing.
+      const _pw = replayDims.width;
+      const _prevCells = _frameSeatCells(prevFrame);
+      const before = Array.isArray(_prevCells) && _pw
+        ? _prevCells[Number(xy[1]) * _pw + Number(xy[0])]
+        : null;
+      let s = null;
+      const html = before && before.entity
+        ? entityOverlayHtml(before.entity) : "";
+      if (html) {
+        const tpl = document.createElement("template");
+        tpl.innerHTML = html.trim();
+        s = tpl.content.firstElementChild;
+      }
+      if (!(s instanceof HTMLElement)) {
+        s = document.createElement("span");
+        s.className = "entity-overlay";
+        s.style.color = ownerColour(owner);
+        s.textContent = "\u00B7";
+      }
+      // Sit above the terrain hold. `.harvest-terrain-standin` is an opaque
+      // inset:0 layer at z-index 4 and the entity overlay has no z-index at
+      // all, so without this the probe is painted behind it and vanishes the
+      // instant the hour opens — present in the DOM, invisible on screen,
+      // which is exactly how this survived a DOM-level census.
+      s.classList.add("entity-overlay--doomed");
+      cellEl.appendChild(s);
+      liveAnimNodes.add(s);
+      out.push(s);
+    }
+    return out;
+  }
+
+  /** Drop a set of landing-beat stand-ins — the doomed probes held by
+   *  :func:`_layDoomedProbeStandins`, or the remembered-tile holds laid by
+   *  :func:`collectNewlyRevealedCells`. Called from the landing hook so the
+   *  held state gives way in the same beat the unit arrives: a probe is gone
+   *  as it bursts rather than surviving its own explosion, and an echo is
+   *  promoted to live exactly when the vision that promotes it lands. */
+  function _dropStandins(standins) {
+    for (const s of standins || []) {
+      s.remove();
+      liveAnimNodes.delete(s);
+    }
   }
 
   /** Inner HTML for a harvester riding the orbital lifter (or the pickup
@@ -7230,6 +8004,22 @@
    * Bounce: illegal/collision drop — cargo stays on the lifter the whole
    *         pass and turns grey (damaged) at t=0.5, hauled back to orbit.
    */
+  /** Put a harvester back on the tile it is about to be lifted from.
+   *
+   *  The resolved frame already has the unit in orbit, so without this the
+   *  square is empty for the whole approach. Used both by the arc itself and,
+   *  when the lift is held back for a collision, from tick paint onwards. */
+  function _layPickupStandin(cellEl, delta) {
+    const s = document.createElement("span");
+    s.className = "entity-overlay";
+    s.style.color = delta.fg;
+    s.innerHTML = orbitCargoInnerHtml(
+      delta.glyph, delta.fg, Boolean(delta.damaged), delta.idx,
+    );
+    cellEl.appendChild(s);
+    return s;
+  }
+
   function runOrbitalArcAnimation(host, delta) {
     const isPickup = delta.kind === "pickup";
     // v0.9.14 — an illegal / collision drop never lands: the lifter
@@ -7265,11 +8055,13 @@
         ownHiddenOverlay = ov;
       }
     } else {
-      pickupStandin = document.createElement("span");
-      pickupStandin.className = "entity-overlay";
-      pickupStandin.style.color = delta.fg;
-      pickupStandin.innerHTML = orbitCargoInnerHtml(delta.glyph, delta.fg, Boolean(delta.damaged), delta.idx);
-      targetCell.appendChild(pickupStandin);
+      // A collision-gated pickup has already been standing on this tile
+      // since tick paint (see the pickup branch of runSingleDeltaAnimation);
+      // adopt that node rather than stacking a second one on top of it.
+      pickupStandin = delta._preStandin instanceof HTMLElement
+        ? delta._preStandin
+        : _layPickupStandin(targetCell, delta);
+      delta._preStandin = null;
     }
 
     const hostRect = host.getBoundingClientRect();
@@ -7369,6 +8161,12 @@
           // grey wreck glyph; it never appears on the tile (no sticker on
           // the flying cargo).
           cargoEl.innerHTML = orbitCargoInnerHtml(delta.glyph, delta.fg, true, null);
+          // v1.19 — this instant, the failed contact, is the collision. The
+          // ring used to be fired by the tick-level FX pass ~3s earlier, so
+          // the defender detonated while its attacker was still in orbit.
+          if (typeof delta._onDeposit === "function") {
+            try { delta._onDeposit(); } catch (_e) { /* best-effort UX */ }
+          }
         } else if (!isPickup) {
           // Drop: release cargo onto cell, depart empty
           cargoEl.remove();
@@ -7454,6 +8252,16 @@
     return _OS_LEAD_MS[kind] || 0;
   }
 
+  // The orbital arc runs 1100ms and hands over at its midpoint: a drop lets
+  // go, a bounce fails its set-down, a pickup takes hold. So the moment two
+  // harvesters actually meet is the inbound lead plus this.
+  const _OS_ARC_MID_MS = 550;
+
+  /** When, after tick paint, a collision on a tile visibly happens. */
+  function _osCollisionContactMs() {
+    return _osOrbitLeadMs("drop_bounce") + _OS_ARC_MID_MS;
+  }
+
   function runSingleDeltaAnimation(host, delta, prevFrame, curFrame) {
     if (delta.kind === "step") {
       const fromXY = /** @type {[number,number]} */ (delta.from);
@@ -7482,6 +8290,10 @@
         : null;
       const startRect = (fromCell || toCell).getBoundingClientRect();
       const endRect = toCell.getBoundingClientRect();
+      crushClaimedCells.add(`${toXY[0]},${toXY[1]}`);
+      const doomedStandins = _layDoomedProbeStandins(
+        host, prevFrame, curFrame, toXY,
+      );
       const ghost = spawnReplayGhost(host, startRect, delta.glyph, delta.fg);
       ghost.classList.add("replay-anim-ghost--step");
       const dx = endRect.left - startRect.left;
@@ -7491,6 +8303,13 @@
       }));
       cleanupGhostOnEnd(ghost, () => {
         if (srcStandin) srcStandin.remove();
+        // v1.19 — a probe under the destination dies to THIS arrival
+        // (§3.11.1), so it stands until the harvester touches down and
+        // then bursts as it is overrun. Previously the tick-level FX pass
+        // fired the splash at t=0 while the harvester was still sliding
+        // towards it, and the board had already erased the probe anyway.
+        _dropStandins(doomedStandins);
+        playProbeCrushFx(curFrame, toXY);
         spawnHarvestEffects(toCell, delta.harvestColor, terrainStandin, () => {
           for (const ov of hiddenStaticOverlays) ov.style.removeProperty("visibility");
           hiddenStaticOverlays.clear();
@@ -7499,6 +8318,24 @@
     } else if (delta.kind === "drop" || delta.kind === "drop_bounce") {
       if (typeof osOnEntityArrival === "function")
         osOnEntityArrival({ kind: delta.kind, owner: delta.owner }, null);
+      // v1.19 — take ownership of this tile's collision ring, if it has
+      // one, so it goes off on the contact beat rather than at tick paint.
+      // A simultaneous-drop pile-up fans out one bounce delta PER inbound
+      // harvester onto the same tile, so the claim doubles as the guard
+      // that only the first of them detonates it.
+      /** @type {(() => void)|null} */
+      let _fireCollision = null;
+      if (Array.isArray(delta.to)) {
+        const _cx = Number(delta.to[0]), _cy = Number(delta.to[1]);
+        const _key = `${_cx},${_cy}`;
+        const _here = (Array.isArray(curFrame?.collisions) ? curFrame.collisions : [])
+          .some((c) => Array.isArray(c?.at)
+            && Number(c.at[0]) === _cx && Number(c.at[1]) === _cy);
+        if (_here && !collisionClaimedCells.has(_key)) {
+          collisionClaimedCells.add(_key);
+          _fireCollision = () => playCollisionFx(curFrame, 0, [_cx, _cy]);
+        }
+      }
       // v1.7 — defer the dropped harvester's newly-revealed vision until the
       // lifter deposits it (arc midpoint, t=0.5), matching the probe reveal
       // mask. Without this the ground the harvester "sees" pops open the
@@ -7506,8 +8343,10 @@
       // when orbit sequencing is on, before the ~2.6s launch lead even runs).
       // A bounce never lands, so it reveals nothing.
       if (delta.kind === "drop" && Array.isArray(delta.to)) {
+        /** @type {HTMLElement[]} */
+        const _echoHolds = [];
         const _masks = collectNewlyRevealedCells(
-          host, prevFrame, curFrame, delta.to[0], delta.to[1],
+          host, prevFrame, curFrame, delta.to[0], delta.to[1], _echoHolds,
         );
         for (const m of _masks) {
           m.classList.add("cell--probe-pending");
@@ -7527,12 +8366,30 @@
         const _landStandin = _layTerrainStandin(
           findReplayCell(host, _lx, _ly), _beforeLand,
         );
-        if (_masks.length || _landStandin) {
-          delta._onDeposit = () => {
-            if (_landStandin) _landStandin.remove();
-            revealMaskedCells(_masks);
-          };
-        }
+        // v1.19 — always install the deposit hook. Besides the vision pop
+        // and the landing cell's stand-in, it now also owns the crush
+        // splash for a probe caught under the landing square (§3.11.1),
+        // which has to go off as the lifter lets go — and when orbit
+        // sequencing is on that is a ~2.6s lead after the frame paints.
+        // The old gate skipped the hook whenever a drop revealed nothing
+        // and recoloured nothing, which is precisely the case where the
+        // crush was the only thing left needing to be in time.
+        crushClaimedCells.add(`${_lx},${_ly}`);
+        const _doomed = _layDoomedProbeStandins(
+          host, prevFrame, curFrame, [_lx, _ly],
+        );
+        delta._onDeposit = () => {
+          if (_landStandin) _landStandin.remove();
+          revealMaskedCells(_masks, [_lx, _ly]);
+          _dropStandins(_echoHolds);
+          _dropStandins(_doomed);
+          playProbeCrushFx(curFrame, [_lx, _ly]);
+          if (_fireCollision) _fireCollision();
+        };
+      } else if (_fireCollision) {
+        // A bounce sets nothing down and reveals nothing, so the contact
+        // beat has exactly one job: detonate the tile it failed to take.
+        delta._onDeposit = _fireCollision;
       }
       const _lead = _osOrbitLeadMs(delta.kind);
       if (_lead > 0) {
@@ -7551,6 +8408,36 @@
         runOrbitalArcAnimation(host, delta);
       }
     } else if (delta.kind === "pickup") {
+      // v1.19 — a recovery off a tile that is ALSO being collided with this
+      // hour has to wait for the collision.
+      //
+      // A pickup had no lead at all, so it began at tick paint while an
+      // inbound drop was still held by its ~2.6s launch lead. The damaged
+      // harvester therefore lifted off and was clear of the board a full
+      // two seconds before the impact that damaged it was drawn — the
+      // caption said "DAMAGED — requires REPAIR" over a square nothing had
+      // hit yet. Engine ordering is right (the collision pre-pass resolves
+      // before the move); only the animation ran out of order.
+      //
+      // Deliberately scoped to a collision on THIS unit's own tile. A plain
+      // recovery elsewhere in the same hour keeps its immediate lift — the
+      // fault was the causal pair being shown backwards, not the pacing.
+      const _from = Array.isArray(delta.from) ? delta.from : null;
+      const _hitHere = Boolean(_from) && tickCollisionCells.has(
+        `${Number(_from[0])},${Number(_from[1])}`,
+      );
+      if (_hitHere) {
+        const _wait = _osCollisionContactMs();
+        const _h = host, _d = delta;
+        // Keep the unit standing on its tile for the whole wait. The frame
+        // already has it in orbit, so without this it blinks out at paint,
+        // leaves an empty square through the impact, and only reappears in
+        // time to be lifted — the collision would land on nothing.
+        const _cell = findReplayCell(host, _from[0], _from[1]);
+        if (_cell) delta._preStandin = _layPickupStandin(_cell, delta);
+        window.setTimeout(() => runOrbitalArcAnimation(_h, _d), _wait);
+        return _wait;
+      }
       runOrbitalArcAnimation(host, delta);
     } else if (delta.kind === "probe") {
       const toXY = /** @type {[number,number]} */ (delta.to);
@@ -7558,12 +8445,15 @@
       if (!toCell) return;
       hideStaticEntityOverlay(toCell);
 
+      /** @type {HTMLElement[]} */
+      const echoHolds = [];
       const pendingMasks = collectNewlyRevealedCells(
         host,
         prevFrame,
         curFrame,
         toXY[0],
         toXY[1],
+        echoHolds,
       );
       for (const m of pendingMasks) {
         m.classList.add("cell--probe-pending");
@@ -7578,31 +8468,58 @@
 
       if (typeof osOnEntityArrival === "function")
         osOnEntityArrival({ kind: "probe_emit", owner: delta.owner }, null);
+      crushClaimedCells.add(`${toXY[0]},${toXY[1]}`);
+      // The probe being superseded (or caught in the annihilation) holds
+      // its cell until this streak lands on top of it.
+      const doomedStandins = _layDoomedProbeStandins(
+        host, prevFrame, curFrame, toXY,
+      );
       const _probeGo = () => spawnProbeTrail(toCell, "#ffffff", delta.fg, () => {
         for (const ov of hiddenStaticOverlays) ov.style.removeProperty("visibility");
         hiddenStaticOverlays.clear();
-        // Ripple ring — uses pre-captured position and player color
-        const ripple = document.createElement("div");
-        ripple.className = "probe-ripple";
-        ripple.style.left = `${(landingRect.left + landingRect.width * 0.5).toFixed(1)}px`;
-        ripple.style.top  = `${(landingRect.top  + landingRect.height * 0.5).toFixed(1)}px`;
-        ripple.style.setProperty("--rr", String(rippleR));
-        ripple.style.setProperty("--rg", String(rippleG));
-        ripple.style.setProperty("--rb", String(rippleB));
-        document.body.appendChild(ripple);
-        ripple.addEventListener("animationend", () => ripple.remove(), { once: true });
-
-        for (const m of probeMaskedCells) {
-          m.classList.add("cell--probe-revealing");
+        // v1.19 — every probe killed on this cell bursts HERE, on the
+        // landing beat, because the thing that killed it is the thing that
+        // just arrived (§3.16 supersession, or a mutual annihilation).
+        // Fired from the tick-level FX pass instead, it went off up to two
+        // seconds early — the victim burst while its killer was still in
+        // the air. Scoped to the landing cell, because probes stagger
+        // (`spawnProbeTrail` jitters each start by up to 200ms) and two
+        // seats can be probing two different squares in the same hour:
+        // unscoped, whichever streak happened to land first detonated the
+        // other's victim too. `playProbeCrushFx` skips cells the viewing
+        // seat has fogged, so a House with no eyes on the cell still sees
+        // nothing, and its stale launch marker stands until the §3.15 sweep.
+        _dropStandins(doomedStandins);
+        playProbeCrushFx(curFrame, toXY);
+        // Ripple ring — uses pre-captured position and player color.
+        // A doomed probe skips it: the ripple IS the vision pop, and an
+        // annihilated probe grants no vision. It lands and dies.
+        if (!delta.doomed) {
+          const ripple = document.createElement("div");
+          ripple.className = "probe-ripple";
+          ripple.style.left = `${(landingRect.left + landingRect.width * 0.5).toFixed(1)}px`;
+          ripple.style.top  = `${(landingRect.top  + landingRect.height * 0.5).toFixed(1)}px`;
+          ripple.style.setProperty("--rr", String(rippleR));
+          ripple.style.setProperty("--rg", String(rippleG));
+          ripple.style.setProperty("--rb", String(rippleB));
+          document.body.appendChild(ripple);
+          ripple.addEventListener("animationend", () => ripple.remove(), { once: true });
         }
-        window.setTimeout(() => {
-          for (const m of probeMaskedCells) {
-            m.classList.remove("cell--probe-pending");
-            m.classList.remove("cell--probe-revealing");
-          }
-          probeMaskedCells.clear();
-        }, 280);
-      });
+
+        // v1.19 — reveal only the cells THIS probe masked. Sweeping the
+        // shared `probeMaskedCells` set lifted every in-flight probe's
+        // mask as well, and `spawnProbeTrail` jitters each start by up to
+        // 200ms precisely so simultaneous probes land staggered — so the
+        // first one down opened the second one's vision while its streak
+        // was still in the air. Two seats probing the same square in one
+        // hour (§3.16) is the worst case and the easiest to spot. The
+        // shared set is still the cancellation ledger, and
+        // `revealMaskedCells` deletes from it as it clears each cell.
+        revealMaskedCells(pendingMasks, toXY);
+        // Remembered tiles inside the new disc were held at their echo look
+        // rather than fog-blocked; they go live now, with the rest.
+        _dropStandins(echoHolds);
+      }, 540, delta.owner);
       const _plead = _osOrbitLeadMs("probe");
       if (_plead > 0) window.setTimeout(_probeGo, _plead);
       else _probeGo();
@@ -7686,6 +8603,21 @@
   function runReplayAnimationsTick(host, tick, beforeTickFrame) {
     cancelInflightReplayAnimations();
     let _maxLead = 0;   // longest orbit→surface sequencing lead this tick
+    // v1.19 — a tick bundles several frames (often several hours), and they
+    // all animate at once, each on its own lead. So a collision on an early
+    // frame and the recovery it caused on a later one are NOT in the same
+    // frame: the pickup branch checking its own `curFrame.collisions` found
+    // nothing and lifted off immediately, 2.6s before the impact. Census the
+    // whole tick up front so any delta can ask "is this tile being hit at
+    // some point during this tick?" rather than only "on my own frame?".
+    tickCollisionCells.clear();
+    for (const f of tick.frames || []) {
+      for (const c of (Array.isArray(f?.collisions) ? f.collisions : [])) {
+        if (Array.isArray(c?.at)) {
+          tickCollisionCells.add(`${Number(c.at[0])},${Number(c.at[1])}`);
+        }
+      }
+    }
     const singleSeat = replayViewSeat !== "obs" && replayViewSeat !== "both";
     for (let fi = 0; fi < tick.frames.length; fi++) {
       const curF = tick.frames[fi];
@@ -7707,8 +8639,13 @@
             && !_enemyDeltaVisibleToViewer(d, prevF, curF)) {
           continue;
         }
-        runSingleDeltaAnimation(host, d, prevF, curF);
-        _maxLead = Math.max(_maxLead, _osOrbitLeadMs(d.kind));
+        // A branch that defers itself beyond its kind's nominal lead (the
+        // collision-gated pickup) reports the delay it actually used, so
+        // the dwell below waits for it instead of cutting it off.
+        const _eff = runSingleDeltaAnimation(host, d, prevF, curF);
+        _maxLead = Math.max(
+          _maxLead, Number(_eff) || 0, _osOrbitLeadMs(d.kind),
+        );
       }
     }
     // Sequencing holds the surface landing back by _maxLead; extend the
@@ -7722,10 +8659,14 @@
   }
 
   /**
-   * Cells currently in the player's view (i.e. non-fog) that were
-   * *not* in the player's view on the previous frame and lie within
-   * probe-vision range of ``(dropX, dropY)``. These are the cells the
-   * streaking probe is responsible for revealing.
+   * Cells the incoming unit is responsible for opening, split by what the
+   * viewer could see there a beat ago.
+   *
+   * Returns the cells that went **fog → visible**, for the caller to fog-mask
+   * until the landing beat. Cells that were merely STALE (a remembered tile
+   * or probe echo) and are now live get a different treatment and are not
+   * returned: they are held at their remembered appearance in place, and the
+   * stand-ins are pushed onto ``echoHolds`` for the caller to drop on landing.
    *
    * Falls back to an empty list if dimensions are missing or the
    * previous frame's cell data is unavailable — in which case the
@@ -7736,6 +8677,8 @@
    * @param {any} curFrame
    * @param {number} dropX
    * @param {number} dropY
+   * @param {HTMLElement[]} [echoHolds] Out-param for the stale-tile holds.
+   * @returns {HTMLElement[]} cells to fog-mask.
    */
   /** Dense per-cell array the ACTIVE replay-view seat actually sees for a
    *  frame. OBS / "both" read the global ``cells``; a single seat reads its
@@ -7759,19 +8702,86 @@
    *  area only pops when the incoming unit actually lands, not when the board
    *  frame is first painted. Operates on the caller's own array so a
    *  concurrent probe reveal can't clear it out from under us. */
-  function revealMaskedCells(masks) {
+  /** How long a single cell takes to fade out of fog. The CSS transition on
+   *  `.cell--probe-pending::after` is 240ms; the slack lets it finish before
+   *  the class is pulled out from under it. */
+  const _REVEAL_FADE_MS = 280;
+  /** Gap between successive rings of the reveal wavefront. */
+  const _REVEAL_STEP_MS = 46;
+  /** Ceiling on the wavefront itself (the last ring still takes
+   *  `_REVEAL_FADE_MS` to fade after it starts). A frame-wide fog delta can
+   *  be far bigger than one probe disc — a catapult reposition opens a lot
+   *  of ground at once — and at a flat step per ring that would crawl. Rings
+   *  are squeezed to fit rather than allowed to run long. */
+  const _REVEAL_SWEEP_CAP_MS = 460;
+
+  function revealMaskedCells(masks, origin) {
     if (!Array.isArray(masks) || !masks.length) return;
-    for (const m of masks) m.classList.add("cell--probe-revealing");
-    window.setTimeout(() => {
-      for (const m of masks) {
+    const epoch = probeRevealEpoch;
+    const finish = (cells) => {
+      for (const m of cells) {
         m.classList.remove("cell--probe-pending");
         m.classList.remove("cell--probe-revealing");
         probeMaskedCells.delete(m);
       }
-    }, 280);
+    };
+    const lift = (cells) => {
+      if (epoch !== probeRevealEpoch) return;
+      for (const m of cells) m.classList.add("cell--probe-revealing");
+      window.setTimeout(() => {
+        if (epoch !== probeRevealEpoch) return;
+        finish(cells);
+      }, _REVEAL_FADE_MS);
+    };
+
+    const ox = Array.isArray(origin) ? Number(origin[0]) : NaN;
+    const oy = Array.isArray(origin) ? Number(origin[1]) : NaN;
+    if (!Number.isFinite(ox) || !Number.isFinite(oy)) {
+      lift(masks);
+      return;
+    }
+
+    // v1.19 — the disc used to lift in one go, which reads as a hard cut
+    // rather than a sensor opening. Lift it as a wavefront instead: the
+    // probe's own square, then its four orthogonal neighbours, then the
+    // diagonals, and outward to the edge.
+    //
+    // Banded on EUCLIDEAN distance, which is the disc's own metric: a probe
+    // opens `dx² + dy² <= r²` (49 cells at r=4), so distance bands ARE the
+    // disc's concentric rings and the front stays parallel to its edge all
+    // the way out. Chebyshev bands would lift each bounding square whole,
+    // putting a ring's corners and its edge-midpoints on the same beat, and
+    // the front would read as a box stamped over a circle. Euclidean also
+    // matches `.probe-ripple`, the ring FX drawn over the top, which is
+    // round. Rounding to half a cell keeps genuinely equidistant cells on
+    // one beat rather than scattering them over sub-millisecond deltas.
+    const bands = new Map();
+    for (const m of masks) {
+      const dx = Number(m.dataset.x) - ox;
+      const dy = Number(m.dataset.y) - oy;
+      const key = Number.isFinite(dx) && Number.isFinite(dy)
+        ? Math.round(Math.hypot(dx, dy) * 2) / 2
+        : 0;
+      const band = bands.get(key);
+      if (band) band.push(m);
+      else bands.set(key, [m]);
+    }
+
+    const keys = Array.from(bands.keys()).sort((a, b) => a - b);
+    const step = keys.length > 1
+      ? Math.min(_REVEAL_STEP_MS,
+                 Math.max(1, Math.round(_REVEAL_SWEEP_CAP_MS / (keys.length - 1))))
+      : 0;
+    keys.forEach((key, i) => {
+      const cells = bands.get(key);
+      if (i === 0) lift(cells);
+      else window.setTimeout(() => lift(cells), i * step);
+    });
   }
 
-  function collectNewlyRevealedCells(host, prevFrame, curFrame, dropX, dropY) {
+  function collectNewlyRevealedCells(
+    host, prevFrame, curFrame, dropX, dropY, echoHoldsOut,
+  ) {
     /** @type {HTMLElement[]} */
     const out = [];
     const width = replayDims.width;
@@ -7780,15 +8790,24 @@
     const cur = _frameSeatCells(curFrame);
     const prev = _frameSeatCells(prevFrame);
     if (!Array.isArray(cur) || !cur.length) return out;
+    const echoHolds = Array.isArray(echoHoldsOut) ? echoHoldsOut : [];
     // v1.7 — mask EVERY cell that flipped fog→visible on this frame, not just
-    // a small disk around (dropX, dropY). A probe opens a Chebyshev-4 square
-    // (up to ~49 cells, RULEBOOK §3.11), so the old Euclidean radius-2 gate
+    // a small disk around (dropX, dropY). A probe opens a Euclidean radius-4
+    // disc (49 cells, RULEBOOK §3.11), so the old Euclidean radius-2 gate
     // left the whole outer ring of the vision pop showing the instant the
     // frame painted — well before the streak landed. Each replay frame is a
     // single unit's action, so the frame-wide fog→visible delta is exactly
     // the vision that action is responsible for revealing. (dropX / dropY are
     // retained for signature compatibility but no longer gate the scan.)
     void dropX; void dropY;
+    // v1.19 — a cell that was already VISIBLE, even as a stale memory tile
+    // or a probe echo, must not be fog-masked. The old test asked "was this
+    // fresh before?", so a remembered tile counted the same as pitch fog and
+    // got the fog block dropped on it: intel the viewer already held blinked
+    // out and came back, as though the incoming probe had un-seen the ground
+    // on its way in. Only true fog gets the fog block. A stale tile is
+    // instead HELD at its remembered look, so it keeps reading as an echo
+    // right up to the moment the probe lands and promotes it to live.
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const idx = y * width + x;
@@ -7797,14 +8816,23 @@
         // Currently visible means not fog and not stale.
         const isFreshNow = c.kind !== "fog" && !c.stale;
         if (!isFreshNow) continue;
-        let wasFreshBefore = false;
-        if (Array.isArray(prev) && prev[idx]) {
-          const p = prev[idx];
-          wasFreshBefore = p.kind !== "fog" && !p.stale;
-        }
-        if (wasFreshBefore) continue;
+        const p = Array.isArray(prev) ? prev[idx] : null;
+        // No previous frame to compare against: treat as a fog reveal, which
+        // is what this did before the split and is the safe side to err on
+        // (masking too much only delays a pop; masking too little leaks).
+        const wasFog = !p || p.kind === "fog";
         const cellEl = findReplayCell(host, x, y);
-        if (cellEl) out.push(cellEl);
+        if (!cellEl) continue;
+        if (wasFog) {
+          out.push(cellEl);
+        } else if (p.stale) {
+          const hold = _layTerrainStandin(cellEl, p);
+          if (hold) {
+            liveAnimNodes.add(hold);
+            echoHolds.push(hold);
+          }
+        }
+        // Already fresh and still fresh: nothing changed, nothing to hold.
       }
     }
     return out;
@@ -8194,7 +9222,7 @@
    *  freshly painted frame. The ring is positioned in screen-space
    *  on top of the cell at ``(x, y)`` using the map's pixel grid; we
    *  read the actual cell rect to stay in sync with the zoom slider. */
-  function playCollisionFx(frame, delayMs = 0) {
+  function playCollisionFx(frame, delayMs = 0, at = null, skip = null) {
     if (!collisionFxLayer || !mapPlayer) return;
     if (reduceMotionMq.matches) return;
     const events = Array.isArray(frame?.collisions) ? frame.collisions : [];
@@ -8202,6 +9230,12 @@
     for (const ev of events) {
       const xy = Array.isArray(ev?.at) ? ev.at : null;
       if (!xy) continue;
+      // v1.19 — same claim protocol as the probe-crush splash: a cell is
+      // either detonated by the landing beat that caused it, or swept up
+      // here. See the call in the tick runner.
+      if (at && (Number(xy[0]) !== Number(at[0]) || Number(xy[1]) !== Number(at[1])))
+        continue;
+      if (skip && skip.has(`${Number(xy[0])},${Number(xy[1])}`)) continue;
       const owners = Array.isArray(ev?.owners) && ev.owners.length
         ? ev.owners
         : ["p1"];
@@ -8227,8 +9261,24 @@
    * roughly the same vibe as the collision ring but smaller and
    * monochrome (a probe is much smaller than a harvester, so the
    * splash matches the energy of the impact). Skips on reduced-motion.
+   *
+   * v1.19 — ``at`` scopes the burst to one cell. A probe dies because
+   * something ARRIVED on top of it, so the splash belongs to that
+   * arrival's landing beat, and every caller now fires from inside its
+   * own landing hook. Two units can land on two different probes in the
+   * same hour, though, and an unscoped call from the first one to touch
+   * down would detonate the other's victim early — so the caller passes
+   * the cell it just landed on and gets only that cell's deaths.
+   * Omitting ``at`` fires the whole frame, minus any cell listed in
+   * ``skip`` — how the tick-level pass sweeps up deaths no landing hook
+   * claimed (a scrub, where no animation ran and so there is no beat to
+   * be in time with, or a delta that was skipped entirely).
+   *
+   * @param {any} frame
+   * @param {[number,number]|null} [at]
+   * @param {Set<string>|null} [skip] Cells as ``"x,y"`` to leave alone.
    */
-  function playProbeCrushFx(frame) {
+  function playProbeCrushFx(frame, at = null, skip = null) {
     if (!collisionFxLayer || !mapPlayer) return;
     if (reduceMotionMq.matches) return;
     const events = Array.isArray(frame?.crushed_probes) ? frame.crushed_probes : [];
@@ -8237,12 +9287,26 @@
     for (const ev of events) {
       const xy = Array.isArray(ev?.at) ? ev.at : null;
       if (!xy) continue;
+      if (at && (Number(xy[0]) !== Number(at[0]) || Number(xy[1]) !== Number(at[1])))
+        continue;
+      if (skip && skip.has(`${Number(xy[0])},${Number(xy[1])}`)) continue;
       const owner = ev?.probe_owner || "p1";
       const colour = ownerColour(owner);
       const cellEl = mapPlayer.querySelector(
         `[data-x="${xy[0]}"][data-y="${xy[1]}"]`,
       );
-      if (!cellEl || cellEl.classList.contains("cell--fog")) continue;
+      if (!cellEl) continue;
+      // v1.19 — you always see your OWN probe die, fog or not. A probe
+      // killed on arrival (§3.16 annihilation, or a landing in that hour's
+      // crater) grants no vision, so the cell it died on paints as fog for
+      // the very seat that launched it — and the fog gate then swallowed
+      // the only feedback that seat had. You watched the streak fly in and
+      // absolutely nothing happened. Nothing leaks by showing it: that seat
+      // chose the target and already knows the probe is gone. Another
+      // House's probe dying on a cell you cannot see stays hidden, because
+      // that WOULD be intel — it tells you they had a probe there.
+      if (cellEl.classList.contains("cell--fog") && replayViewSeat !== owner)
+        continue;
       const cellRect = cellEl.getBoundingClientRect();
       const cx = cellRect.left - hostRect.left + cellRect.width / 2;
       const cy = cellRect.top - hostRect.top + cellRect.height / 2;
@@ -8267,12 +9331,11 @@
 
   /** v0.9.4 rev3 — EMP launch animation.
    *
-   *  EXACT same diagonal streak as the probe drop, just with a
-   *  different glyph + colour. The ghost spawns shifted to the
-   *  upper-right (``translate(360px,-360px) scale(0.55)``) and
-   *  transitions on a 420ms cubic-bezier to the target cell —
-   *  identical to ``replay-anim-ghost--probe`` (see
-   *  :func:`runSingleDeltaAnimation`'s probe-deploy branch).
+   *  Same streak as the probe drop, just a different colour: both go
+   *  through :func:`spawnProbeTrail`. v1.19 — that means a salvo's
+   *  missiles now come down on their own bearings rather than three
+   *  copies of one fixed diagonal, which suits a salvo even better than
+   *  it suits probes.
    *
    *  No bloom, no ring, no glow — those were rejected. The only
    *  follow-up FX is the rhombus cloud field painted per-tick by
@@ -8302,7 +9365,9 @@
         const cellEl = mapPlayer.querySelector(
           `[data-x="${xy[0]}"][data-y="${xy[1]}"]`,
         );
-        if (cellEl) cells.push(cellEl);
+        // v1.19 — carry the firing seat with each target so the missile
+        // comes in on that House's bearing, same as its probes do.
+        if (cellEl) cells.push({ el: cellEl, owner: ev.owner });
       }
     }
     if (!cells.length) return;
@@ -8340,8 +9405,8 @@
         }
       });
     };
-    for (const cellEl of cells) {
-      spawnProbeTrail(cellEl, "#00e8ff", "#00e8ff", onLanded);
+    for (const shot of cells) {
+      spawnProbeTrail(shot.el, "#00e8ff", "#00e8ff", onLanded, 540, shot.owner);
     }
   }
 
@@ -8437,7 +9502,56 @@
    * trailColor  — color of the 1-px trail (white for probe, cyan for EMP)
    * onLand      — called once when t≥1 (ripple, mask reveal, EMP expansion…)
    * durationMs  — travel time; fade plays out on top of this */
-  function spawnProbeTrail(toLandingCell, trailColor, probeColor, onLand, durationMs = 540) {
+  /** Rolling counter behind the per-probe approach bearing in
+   *  :func:`spawnProbeTrail`. Module-level so probes launched in the same
+   *  hour — separate calls, no shared context — still fan out instead of
+   *  each independently rolling the dice and sometimes matching. */
+  let _probeTrailSeq = Math.floor(Math.random() * 4096);
+
+  // v1.19 — which slice of sky a seat's craft fall out of.
+  //
+  // A probe is launched from that House's own orbital platform, so it
+  // should arrive from a consistent direction. Read across a season it
+  // becomes a tell: you clock "that came from THEIR side" a beat before
+  // you read the colour. Seats are dealt adjacent bands in seat order, so
+  // in the usual two-handed game p1 comes in over your left shoulder and
+  // p2 over your right.
+  //
+  // Angles are screen-space degrees (y grows downward), so the whole
+  // hemisphere is negative: -158 is low on the left, -22 low on the
+  // right, -90 straight overhead. Staying inside those limits keeps craft
+  // falling ONTO the board — a bearing below the horizon reads as
+  // something coming up out of the ground.
+  const _SKY_LO = -158, _SKY_HI = -22;
+
+  function _seatSkyBand(owner) {
+    // Sorted, not insertion-ordered: the whole point is that a seat's
+    // bearing is the same every time, so it must not depend on the order
+    // a payload happened to serialise its profiles in.
+    const seats = Object.keys(__SOC_PLAYER_META__ || {}).sort((a, b) => {
+      const na = parseInt(String(a).replace(/\D+/g, ""), 10);
+      const nb = parseInt(String(b).replace(/\D+/g, ""), 10);
+      return Number.isFinite(na) && Number.isFinite(nb)
+        ? na - nb
+        : String(a).localeCompare(String(b));
+    });
+    let i = seats.indexOf(String(owner));
+    let n = seats.length;
+    if (i < 0) {
+      // No profile for this seat yet (early boot), or an effect with no
+      // seat behind it at all. Fall back to the seat id's own number.
+      const m = /^p(\d+)$/.exec(String(owner || ""));
+      i = m ? Math.max(0, parseInt(m[1], 10) - 1) : 0;
+      n = Math.max(n, i + 1);
+    }
+    n = Math.max(2, n);
+    const band = (_SKY_HI - _SKY_LO) / n;
+    return { centre: _SKY_LO + band * (i + 0.5), band };
+  }
+
+  function spawnProbeTrail(
+    toLandingCell, trailColor, probeColor, onLand, durationMs = 540, owner = null,
+  ) {
     if (reduceMotionMq.matches) {
       if (typeof onLand === "function") window.setTimeout(onLand, 0);
       return;
@@ -8451,8 +9565,30 @@
     // Viewport coords for landing centre — captured now while cell is in DOM
     const toX = cellRect.left + cw / 2;
     const toY = cellRect.top  + cellRect.height / 2;
-    const fromX = toX + 360;
-    const fromY = toY - 360;
+    // v1.19 — every trail used to enter on the same fixed (+360, -360)
+    // diagonal, so an hour with several probes read as one repeated sprite
+    // rather than several craft converging. Each now comes down its own
+    // bearing, inside the band its OWNER launches from (`_seatSkyBand`).
+    //
+    // Bearings are handed out on a golden-ratio sequence rather than drawn
+    // at random: independent draws collide often enough that two probes in
+    // the same hour would sometimes still overlap, which is the exact thing
+    // this fixes. The sequence spreads consecutive callers about as far
+    // apart as possible within the band, and a few degrees of jitter keeps
+    // successive hours from looking mechanically identical.
+    //
+    // The spread only uses part of the band, and the jitter is small, so
+    // neighbouring seats' traffic stays visibly separated instead of
+    // blurring into one indistinguishable rain from every direction.
+    _probeTrailSeq = (_probeTrailSeq + 1) % 4096;
+    const _sky = _seatSkyBand(owner);
+    const _spread = ((_probeTrailSeq * 0.6180339887) % 1) - 0.5;
+    const _angDeg =
+      _sky.centre + _spread * _sky.band * 0.62 + (Math.random() * 6 - 3);
+    const _ang = (_angDeg * Math.PI) / 180;
+    const _dist = 450 + Math.random() * 120;
+    const fromX = toX + Math.cos(_ang) * _dist;
+    const fromY = toY + Math.sin(_ang) * _dist;
 
     const dx = toX - fromX, dy = toY - fromY;
     const len = Math.sqrt(dx * dx + dy * dy);
@@ -11694,6 +12830,13 @@
     // multiple times" while scrolling.
     const tickChanged = replayTickIdx !== lastPaintedReplayTickIdx;
 
+    // v1.19 — reset per-tick crush-splash ownership before any animation
+    // stakes a claim. Cleared here rather than inside
+    // runReplayAnimationsTick because a jump never calls that function,
+    // and stale claims from the previous forward tick would then swallow
+    // the scrub's splashes.
+    crushClaimedCells.clear();
+    collisionClaimedCells.clear();
     if (decided === "forward" && !reduceMotionMq.matches) {
       const beforeTickFrame = tick.firstFrameIdx > 0
         ? nightReplayFrames[tick.firstFrameIdx - 1]
@@ -11718,11 +12861,32 @@
     // harvester drop/step lands on a probe (RULEBOOK §3.11.1).
     for (let i = tick.firstFrameIdx; i <= tick.lastFrameIdx; i += 1) {
       const f = nightReplayFrames[i];
+      // v1.19 — a collision detonates on the beat the arriving unit fails
+      // to set down, not when the tick paints. A bounce is held back by the
+      // 2600ms orbit-sequencing lead and then flies a ~1100ms arc, so the
+      // tile was exploding a full three seconds before the lifter that
+      // caused it appeared on screen: the defender blew up and was hauled
+      // off while its attacker had not yet attempted the landing. Deltas
+      // that will fire it themselves claim the cell (see
+      // `collisionClaimedCells`); what's left has no beat to be in time
+      // with — a scrub, or an action the viewing seat cannot see — so it
+      // still fires here.
       if (f && Array.isArray(f.collisions) && f.collisions.length) {
-        playCollisionFx(f, decided === "forward" ? 160 : 0);
+        playCollisionFx(
+          f, decided === "forward" ? 160 : 0, null, collisionClaimedCells,
+        );
       }
+      // v1.19 — a crush splash is fired by the landing hook of whatever did
+      // the crushing: the drop's deposit beat, the step ghost's arrival, or
+      // the probe streak's touchdown. This loop runs the instant the tick
+      // paints, with every one of those units still visibly in flight, so
+      // firing a claimed cell here is what made the burst pop in isolation
+      // with nothing arriving to explain it. What's left unclaimed still
+      // needs covering: a scrub runs no animations at all, and a delta can
+      // be skipped outright (an enemy action the viewing seat can't see).
+      // Those have no beat to be in time with, so they fire here.
       if (f && Array.isArray(f.crushed_probes) && f.crushed_probes.length) {
-        playProbeCrushFx(f);
+        playProbeCrushFx(f, null, crushClaimedCells);
       }
     }
     // v0.9 — weapon FX (RULEBOOK §4.9). Forward playback only,
@@ -14668,6 +15832,11 @@
       // v0.9.12 — surface the cross-browser "waiting for: pN" strip from
       // the per-seat pending map (only meaningful in a multi-human game).
       renderWaitingStrip(st);
+      // v1.19 — the ASK V12 control lives or dies on this payload: it is
+      // only offered on a night this seat has not yet sent (see
+      // updateAdvisorVisibility), and leaving that state also drops any
+      // answer still on screen.
+      updateAdvisorVisibility(st);
       // v1.11 — "agent is thinking · Ns" pill for slow (Cortex/harness)
       // seats that the server pre-fires while the human deliberates. Start
       // the lightweight solo poller so the pill keeps ticking between the
@@ -15711,6 +16880,10 @@
       const respBody = await res.json();
       sessionId = respBody.session_id;
       window.__SOC_LAST_NEWGAME__ = respBody;
+      // v1.19 — whether V12 can be asked for advice is a property of the
+      // game (its backend) and the machine (its credentials), so it is
+      // settled once here rather than re-probed on every status poll.
+      void refreshAdvisorAvailability();
       // v0.9.9 — reset the live-mode orbit auto-pop guard so the new
       // session's first catapult settlement actually pops the modal
       // (rather than being shadow-suppressed by a stale guard left
@@ -16481,6 +17654,7 @@
       return;
     }
     sessionId = id;
+    void refreshAdvisorAvailability();
     if (phaseLine) phaseLine.textContent = "# joining session…";
     let st = null;
     try {

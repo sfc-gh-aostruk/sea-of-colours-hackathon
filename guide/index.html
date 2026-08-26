@@ -746,6 +746,19 @@
           </p>
         </div>
 
+        <div class="gd-note gd-note--warn">
+          <b class="tag">Run this in your own terminal</b>
+          <p>
+            Type it into a terminal window yourself. Do <b>not</b> ask an AI
+            coding assistant to start the server for you &mdash; the server
+            it launches belongs to that assistant's shell session, and when
+            the session ends or the assistant moves on to the next task, the
+            server is killed with it. Your game dies mid&#8209;night and it
+            looks exactly like the app crashing. Leave your own terminal
+            open for as long as you want to play.
+          </p>
+        </div>
+
         <div class="gd-note">
           <b class="tag">What that second line means</b>
           <p>
@@ -1382,6 +1395,28 @@ PY</pre>
             because there is nothing left to compare against &mdash; and
             matches between teams stop being like-for-like. The fork costs
             a second.
+          </p>
+        </div>
+
+        <div class="gd-note">
+          <b class="tag">Ask V12 mid&#8209;game</b>
+          <p>
+            On a Snowflake game, the night orders panel grows an
+            <b>&#9671; ask V12</b> button. It runs the shipped agent's full
+            think&#8209;and&#8209;plan pass over <em>your</em> board and hands
+            back what it would do &mdash; its reasoning on one tab, the
+            compiled orders on the other. Hover <b>show on map</b> to see the
+            orders on the board, numbered by the hour each would fire, and
+            <b>adopt plan</b> drops them into your queue so you can edit them
+            before you transmit. It never plays your turn.
+          </p>
+          <p>
+            Useful two ways: as a second opinion while you learn the game,
+            and as a way to watch your fork's reasoning change as you edit
+            it. One caveat &mdash; because V12 is not actually playing your
+            seat, it keeps no memory between asks. Each answer reasons from
+            the position in front of it, where the same agent playing an
+            opposing seat carries its journal from night to night.
           </p>
         </div>
 

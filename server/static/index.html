@@ -679,6 +679,146 @@
                 </div>
               </fieldset>
 
+              <!-- v1.19 — ASK V12. A read-only second opinion on the
+                   position from the shipped LLM harness: it runs the full
+                   THINK/PLAN pipeline against your board, submits nothing
+                   and writes no memory, and you decide whether to take it.
+                   Hidden unless the game is Snowflake-backed AND Cortex
+                   credentials resolve (see /api/game/{id}/advisor), and
+                   only ever shown on a night you have not yet sent. -->
+              <section id="cc-advisor" class="cc-advisor" hidden>
+                <div class="cc-advisor-bar">
+                  <button
+                    type="button"
+                    id="advisor-ask"
+                    class="cli-btn cc-advisor-ask"
+                    title="Ask V12 what it would do on this board. It does not play your turn."
+                  >
+                    <span class="cc-advisor-mark" aria-hidden="true">◇</span>
+                    <span>ask V12</span>
+                  </button>
+                  <span id="advisor-timer" class="cc-advisor-timer" hidden>
+                    <span class="cc-advisor-spin" aria-hidden="true">·</span>
+                    <span id="advisor-elapsed">0.0s</span>
+                  </span>
+                  <button
+                    type="button"
+                    id="advisor-cancel"
+                    class="cli-btn cc-advisor-cancel"
+                    hidden
+                  >[ cancel ]</button>
+                </div>
+                <p id="advisor-error" class="cc-advisor-error" hidden></p>
+
+                <div id="advisor-result" class="cc-advisor-result" hidden>
+                  <div class="cc-advisor-tabs" role="tablist">
+                    <button
+                      type="button"
+                      id="advisor-tab-plan"
+                      class="cli-btn cc-advisor-tab"
+                      role="tab"
+                      aria-selected="true"
+                    >[ plan ]</button>
+                    <button
+                      type="button"
+                      id="advisor-tab-think"
+                      class="cli-btn cc-advisor-tab"
+                      role="tab"
+                      aria-selected="false"
+                    >[ thinking ]</button>
+                    <span class="cc-advisor-meta dim" id="advisor-meta"></span>
+                  </div>
+                  <div
+                    id="advisor-pane-plan"
+                    class="cc-advisor-pane"
+                    role="tabpanel"
+                  ></div>
+                  <div
+                    id="advisor-pane-think"
+                    class="cc-advisor-pane"
+                    role="tabpanel"
+                    hidden
+                  ></div>
+                  <div class="cc-advisor-foot">
+                    <button
+                      type="button"
+                      id="advisor-show"
+                      class="cli-btn cc-advisor-show"
+                      title="Hold to preview the proposed orders on the map, numbered by hour"
+                    >[ show on map ]</button>
+                    <button
+                      type="button"
+                      id="advisor-expand"
+                      class="cli-btn cc-advisor-expand"
+                      title="Open the full card: prompt, reasoning and proposed orders"
+                    >[ full card ]</button>
+                    <button
+                      type="button"
+                      id="advisor-adopt"
+                      class="cli-btn cc-advisor-adopt"
+                    >[ adopt plan ]</button>
+                    <span class="cc-advisor-note dim">
+                      // advice is per-position: V12 keeps no memory of a seat it isn't playing
+                    </span>
+                  </div>
+                </div>
+              </section>
+
+              <!-- v1.19 — ASK V12 full card. The inline pane is a glance;
+                   this is the read-everything view, plus a download of the
+                   whole exchange (untruncated prompt + reasoning + orders)
+                   so a fork author can diff what the model actually saw. -->
+              <div
+                id="advisor-modal"
+                class="cc-advisor-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="advisor-modal-title"
+                hidden
+              >
+                <div class="cc-advisor-modal-box">
+                  <header class="cc-advisor-modal-head">
+                    <h2 id="advisor-modal-title">V12 &mdash; full card</h2>
+                    <span class="cc-advisor-modal-meta dim" id="advisor-modal-meta"></span>
+                    <button
+                      type="button"
+                      id="advisor-modal-close"
+                      class="cli-btn cc-advisor-modal-close"
+                      aria-label="Close"
+                    >[ close ]</button>
+                  </header>
+                  <nav class="cc-advisor-modal-tabs" role="tablist">
+                    <button type="button" role="tab" data-card="orders"
+                            class="cli-btn cc-advisor-modal-tab" aria-selected="true"
+                    >[ orders ]</button>
+                    <button type="button" role="tab" data-card="think"
+                            class="cli-btn cc-advisor-modal-tab" aria-selected="false"
+                    >[ reasoning ]</button>
+                    <button type="button" role="tab" data-card="options"
+                            class="cli-btn cc-advisor-modal-tab" aria-selected="false"
+                    >[ option menu ]</button>
+                    <button type="button" role="tab" data-card="prompt"
+                            class="cli-btn cc-advisor-modal-tab" aria-selected="false"
+                    >[ prompt ]</button>
+                  </nav>
+                  <div class="cc-advisor-modal-body" id="advisor-modal-body"></div>
+                  <footer class="cc-advisor-modal-foot">
+                    <button
+                      type="button"
+                      id="advisor-download"
+                      class="cli-btn cc-advisor-download"
+                      title="Download prompt + reasoning + proposed orders as a text file"
+                    >[ download card ]</button>
+                    <button
+                      type="button"
+                      id="advisor-modal-adopt"
+                      class="cli-btn cc-advisor-adopt"
+                    >[ adopt plan ]</button>
+                    <span class="cc-advisor-note dim" id="advisor-download-note"></span>
+                  </footer>
+                </div>
+              </div>
+
               <div class="cc-orders-foot">
                 <button
                   type="button"

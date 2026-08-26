@@ -18,6 +18,12 @@ from anywhere — other room, other city, phone on cellular.
 No install, no account, no flags, no firewall change. Both clients sync
 every 2.5s.
 
+> **Host the game from your own terminal.** Never start the server via an
+> AI coding assistant: the process belongs to that assistant's shell
+> session and is killed when the session ends. In multiplayer that is not
+> just your problem — the tunnel goes down with the server, so every
+> guest is dropped mid-game and their invite links stop resolving.
+
 ## What the button actually does
 
 It asks the server for a public URL, which `server/tunnel.py` gets by

@@ -52,7 +52,7 @@ from sea_of_colours.render import cell_visual
 from sea_of_colours.snowpark import backend as soc_backend
 from sea_of_colours.snowpark.backend import get_store
 from sea_of_colours.snowpark import engine as soc_engine
-from sea_of_colours.game.session import MAX_SEATS
+from sea_of_colours.game.session import MAX_SEATS, Phase
 
 
 # v0.9.6 — N-seat games (1..MAX_SEATS) use canonical slugs ``p1`` … ``pN``.
@@ -259,7 +259,11 @@ def _drive_bots(game_id: str, *, max_turns: int = 64) -> None:
                     return  # waiting on a human / cooling-down bot
                 # Everyone submitted but the phase hasn't advanced — resolve
                 # the night locally (orbit auto-resolves on submit).
-                before = cur
+                # v1.19 — this read an undefined ``cur`` and raised NameError
+                # instead of resolving, killing the worker on the one path
+                # that exists to unstick a fully-submitted night. The
+                # comparison below wants the phase/day we came in on.
+                before = (phase, day)
                 try:
                     soc_engine.run_night(store, game_id)
                 except Exception as exc:  # pragma: no cover — defensive
@@ -1635,6 +1639,156 @@ def api_game_view(
         return soc_engine.get_view(_store_for(game_id), game_id, player)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _advisor_availability(game_id: str) -> tuple[bool, str]:
+    """Can this game offer "ask V12" right now, and if not, why not?
+
+    Two independent things have to be true, and they fail for different
+    reasons, so they are reported separately rather than as one shrug:
+
+    * **Cortex credentials.** The advisor is a live LLM round trip. With no
+      PAT the harness does not raise — it quietly falls through to its
+      fallback and returns a plan nobody thought about, which is worse
+      than no button at all.
+    * **A Snowflake-backed game.** Not a technical requirement of the call
+      (inference is just an HTTPS request with a PAT, and the advisor
+      writes no memory), but it keeps one rule in the product instead of
+      two: LLM agents are offered on Snowflake games. A button that
+      appears on a memory game while ``tabula_v12`` is missing from that
+      same game's seat dropdown would read as a bug.
+    """
+    from sea_of_colours.orchestrator_2.cortex_chat import credentials_status
+
+    store = _store_for(game_id)
+    if soc_backend.snowpark_session_for(store) is None:
+        return (False, "this game is stored in memory, not Snowflake")
+    ready, reason = credentials_status()
+    if not ready:
+        return (False, f"Snowflake credentials missing: needs {reason}")
+    return (True, "")
+
+
+@app.get("/api/game/{game_id}/advisor")
+def api_game_advisor_status(game_id: str) -> dict[str, Any]:
+    """Whether the V12 advisor button should exist for this game.
+
+    Cheap and side-effect free — the client asks on load so it can decide
+    whether to render the control at all.
+    """
+    available, reason = _advisor_availability(game_id)
+    return {"available": available, "reason": reason}
+
+
+@app.post("/api/game/{game_id}/advisor")
+def api_game_advisor(
+    game_id: str,
+    player: str = Query("p1"),
+) -> dict[str, Any]:
+    """Ask V12 what it would do on this seat's board, WITHOUT playing it.
+
+    Runs the harness's read-only advisor path (``submit=False``), which
+    executes the whole THINK -> PLAN -> PACKAGE -> SANITIZE pipeline and
+    returns the trace, but submits nothing and writes no memory. That last
+    part is the important one: the seat belongs to a human, and V12's
+    journal / hazard memory / reflection anchor are keyed by
+    ``(session, seat)``. Writing them here would fabricate a history of
+    turns V12 never played, and the human's own choices would silently
+    become "what V12 did last night" in a later prompt.
+
+    The cost of that decision is that the advice is *stateless* — each
+    call reasons from the live board and last night's engine-truth replay,
+    with no thread back through earlier nights. It is a second opinion on
+    this position, not a season-long strategy, and the UI says so.
+    """
+    if not _is_valid_seat_slug(player):
+        raise HTTPException(status_code=400, detail="unknown player slug")
+
+    available, reason = _advisor_availability(game_id)
+    if not available:
+        raise HTTPException(status_code=409, detail=reason)
+
+    store = _store_for(game_id)
+    try:
+        status = soc_engine.get_session_status(store, game_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if player not in (status.get("players") or []):
+        raise HTTPException(status_code=404, detail=f"no seat {player}")
+    if status.get("is_season_complete"):
+        raise HTTPException(status_code=409, detail="the season is over")
+    phase = str(status.get("phase") or "").lower()
+    if phase != Phase.PLANNING.value:
+        # The harness's orbit branch SUBMITS — it has no read-only path —
+        # so routing an orbit turn here would silently play the seat.
+        raise HTTPException(
+            status_code=409,
+            detail=f"the advisor covers night planning; this seat is in {phase}",
+        )
+
+    from sea_of_colours.orchestrator_2.harnesses.tabula_v12 import harness as v12
+
+    view = soc_engine.get_view(store, game_id, player)
+    started = time.time()
+    try:
+        res = v12.run(
+            store=store, session_id=game_id, player=player, view=view,
+            submit=False,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface any harness fault as 502
+        raise HTTPException(
+            status_code=502, detail=f"V12 failed to answer: {exc}",
+        ) from exc
+
+    if res.get("submitted_policy"):
+        # Belt and braces. If a future edit ever makes the advisor path
+        # submit, fail loudly here rather than quietly stealing the turn.
+        raise HTTPException(
+            status_code=500,
+            detail="advisor submitted a policy — refusing to report it",
+        )
+
+    extras = res.get("extras") or {}
+    directive = extras.get("thinker_directive") or {}
+    return {
+        "ok": True,
+        "player": player,
+        "day": int(status.get("day") or 0),
+        "elapsed_ms": int((time.time() - started) * 1000),
+        "moves": res.get("moves") or [],
+        "thinking": {
+            "reasoning": extras.get("thinker_reasoning") or "",
+            "api": extras.get("thinker_api") or "",
+            "ms": int(extras.get("thinker_ms") or 0),
+            "retried": bool(extras.get("thinker_retried")),
+            "option_menu": extras.get("option_menu_block") or "",
+            "intent": extras.get("agent_intent") or "",
+            "reflection": extras.get("agent_reflection") or "",
+        },
+        # v1.19 — the FULL, untruncated prompts for each pass. The harness
+        # has always returned these "so a human can audit the input the same
+        # way the model sees it"; the advisor just never forwarded them. The
+        # audit table's copy is capped at 32k, so this is the only place the
+        # whole thing is available. Powers the card download.
+        "prompts": {
+            "think": extras.get("thinker_prompt") or "",
+            "plan": extras.get("plan_prompt") or "",
+            "mover": extras.get("mover_prompt") or "",
+        },
+        "plan": {
+            "posture": directive.get("posture") or "",
+            "note": directive.get("note") or "",
+            "plan_ids": list(directive.get("plan") or []),
+            "targets": directive.get("targets") or [],
+            "avoid": directive.get("avoid") or [],
+            "chaff_react": directive.get("chaff_react"),
+            "situational": directive.get("situational") or "",
+            "selected_options": list(extras.get("selected_option_ids") or []),
+            "sanitizer_changes": list(extras.get("sanitizer_changes") or []),
+            "packager_used": bool(extras.get("packager_used")),
+            "fallback_used": bool(extras.get("fallback_used")),
+        },
+    }
 
 
 @app.get("/api/game/{game_id}/observer")

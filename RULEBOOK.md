@@ -1,6 +1,6 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.14
+Version: 1.15
 Last updated: 2026-08-26
 
 This is the single source of truth for the world, the fiction, and how
@@ -1335,11 +1335,41 @@ destroy each other**. None survive.
 - A structured public log row records the collision —
   e.g. ``probe collision at (12,8); probe_p1_3, probe_p2_5 all destroyed``.
 
-In both cases the cell itself is unaffected (no terrain damage);
+**(c) An incumbent caught under an annihilation dies with it (v1.15).**
+If the cell was *already* held by an older probe and **two or more**
+probes land on it in the same hour, the incumbent is destroyed **too**,
+as a collision casualty: `destroyed_reason = "probe_collision"`, and
+**no House is credited a supersede**. Supersession (a) is something a
+*surviving* newcomer does; when the arrivals wipe each other out nobody
+ever took the cell, so there is no supersede to award. The square is
+left empty.
+
+- Two rivals can therefore clear a rival's established probe off a
+  square, at the price of **both** their own probes — a deliberate 2-for-1
+  trade against the incumbent, not a free removal.
+- Read with (b): the hour is **one event**. The number of arrivals is not
+  the mechanism — three or four land and die exactly as two do, and so
+  does whatever was already standing.
+
+**(d) A latecomer on the same hour dies too (v1.15).** Once (b) or (c)
+has cleared a square, a further probe landing on it **on the same
+`(day, hour)`** is also destroyed (`probe_collision`). The square is
+empty by then, so a naive pairwise reading would let the latecomer
+survive and quietly inherit a contested seam — this closes that. The
+sweep is scoped to the exact stamp: an arrival an **hour later the same
+Nox** finds the square clean and lands normally, with full vision.
+
+In all cases the cell itself is unaffected (no terrain damage);
 follow-on probes the next Nox can land there without inheriting any
 collision state. Simultaneity is judged on the resolution turn (day +
 hour): same turn ⇒ mutual destruction (b); any time gap ⇒ supersession
 (a).
+
+**Seat order is not a factor (v1.15).** §3.10's parallel resolution
+applies in full: every probe launched on an hour arrives on that hour,
+and the engine's seat-by-seat application order is an implementation
+detail with no rules standing. Outcome, ledger reason and kill-feed
+attribution are all identical whichever seat the resolver reaches first.
 
 The rule has a sibling — see §3.17 for the *harvester-on-harvester*
 collision rule (mutual **damage**, not destruction). Both express
@@ -2369,6 +2399,56 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.15 — 2026-08-26
+
+**§3.16 now rules on the square, not just on the probes landing on it.**
+The section was explicit that two or more probes landing on one cell in
+the same hour all destroy each other, and silent on what happens to an
+**older probe already standing there**. The engine answered by accident:
+resolving seat by seat, the first arrival superseded the incumbent and
+the second then annihilated with the first. The body count came out
+right, but the incumbent was filed as `probe_superseded` and the
+`probes_superseded` kill-feed credit went to whichever seat the resolver
+reached first — a seat that lost its own probe in the same instant.
+
+- **New §3.16(c).** An incumbent caught under a simultaneous annihilation
+  is destroyed as a **collision casualty** (`probe_collision`), and **no
+  House is credited a supersede**. Supersession is an act by a surviving
+  newcomer; when the arrivals wipe each other out, nobody took the cell.
+  Two rivals can clear an established probe off a square at the cost of
+  both their own — a 2-for-1 trade, not a free removal.
+- **New §3.16(d).** The same-hour latecomer sweep is now *written down*.
+  A probe landing on a square already cleared by an annihilation **on the
+  same `(day, hour)`** is destroyed too, so a pairwise reading can't let
+  it quietly inherit a contested seam. This behaviour shipped in v0.9.17
+  and the code cited a "§3.16 E4" that has never existed in this
+  document. The sweep is scoped to the exact stamp — an arrival an hour
+  later finds the square clean and lands normally.
+- **Seat order has no rules standing** (§3.16, §3.10). Stated explicitly
+  because the old outcome was reachable only by reading the resolver's
+  loop as if it were the rule. Ledger reason and kill-feed attribution
+  are now finalised once the hour's full picture is known, so they no
+  longer depend on which seat resolved first.
+
+**Every probe death on a square now surfaces to the watcher.** The
+`crushed_probes` replay payload — the pixel-splash channel — was only
+ever filled by the harvester crush it was built for. A superseded probe
+blinked out with no cue, and an annihilation rendered *nothing at all*,
+incoming streak included, because a probe destroyed on arrival never
+reaches a frame's entity snapshot for the animator to diff. Two seats
+could burn a probe each on one square and the board would not flicker.
+All three §3.16 paths now file a record carrying its `reason`, and the
+splash fires on the **landing beat** rather than at frame paint (it used
+to go off up to two seconds early — the victim burst while its killer was
+still in the air). Fog is unchanged: the splash still skips a square the
+viewing seat can't see, so a House that watched the launch but not the
+death keeps its §3.15 marker until that marker's own expiry.
+
+No constants changed. Engine: `spawn_probe` /
+`_finalise_probe_contest` in
+[`sea_of_colours/game/session.py`](sea_of_colours/game/session.py).
+Tests: `tests/test_probe_death_fx.py`.
 
 ### v1.14 — 2026-08-26
 

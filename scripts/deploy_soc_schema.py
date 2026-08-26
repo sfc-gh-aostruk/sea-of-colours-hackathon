@@ -3,8 +3,10 @@
 
 Default behaviour (NON-DESTRUCTIVE):
   1. snowflake/soc_schema.sql       — CREATE TABLE IF NOT EXISTS
-  2. snowflake/soc_views.sql        — CREATE OR REPLACE VIEW
-  3. snowflake/soc_procedures.sql   — Snowpark Python stored procs (Phase 2)
+  2. sea_of_colours/orchestrator_2/snowflake/orchestrator_v2_schema.sql
+                                    — SOC_AGENT_BINDING + SOC_AGENT_MEMORY
+  3. snowflake/soc_views.sql        — CREATE OR REPLACE VIEW
+  4. snowflake/soc_procedures.sql   — Snowpark Python stored procs (Phase 2)
 
 Tables are NEVER dropped here. Phase 2 files are deployed only when they
 exist on disk, so this script is safe to run after Phase 1 alone.
@@ -56,6 +58,9 @@ DEFAULT_ROLE = os.environ.get("SF_ROLE", "ACCOUNTADMIN")
 
 HERE = Path(__file__).resolve().parent.parent
 SNOWFLAKE_DIR = HERE / "snowflake"
+# orchestrator_2 keeps its tables next to the code that owns them. They are
+# still part of the one deploy an attendee runs — nothing else creates them.
+ORCHESTRATOR_SQL_DIR = HERE / "sea_of_colours" / "orchestrator_2" / "snowflake"
 
 
 def _load_sf_props(path: str) -> dict:
@@ -356,6 +361,17 @@ def main() -> int:
     session.sql(f"USE SCHEMA {sch}").collect()
 
     deploy_sql_file(session, SNOWFLAKE_DIR / "soc_schema.sql", label="schema")
+    # v1.19 — SOC_AGENT_MEMORY / SOC_AGENT_BINDING moved here when
+    # orchestrator_2 landed, and this file was never added to the deploy, so
+    # no account has ever had them. V12 mirrors its journal, hazard memory and
+    # frontier memory to SOC_AGENT_MEMORY best-effort inside bare excepts, so
+    # the absence was silent: the in-process cache carried a headless season
+    # fine, and a live season lost the lot whenever the server restarted.
+    deploy_sql_file(
+        session,
+        ORCHESTRATOR_SQL_DIR / "orchestrator_v2_schema.sql",
+        label="orchestrator_2 schema",
+    )
     deploy_sql_file(session, SNOWFLAKE_DIR / "soc_views.sql", label="views")
 
     if not args.schema_only:

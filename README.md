@@ -31,6 +31,12 @@ pip install -r requirements.txt
 python run_web.py
 ```
 
+> **Start the server in your own terminal — not through an AI coding
+> agent.** A server an agent launches is a child of that agent's shell
+> session: when the session ends or the agent moves on, the server dies
+> with it and your game dies mid-night. It looks exactly like the app
+> crashing. Open a terminal, run it yourself, and leave it running.
+
 Open <http://127.0.0.1:8000> and hit **Quick game** — that spawns you vs
 `RED_HARVEST_LITE` and drops you straight on the board. **Play** opens
 the launcher instead, if you want to choose the map, the seats or the
