@@ -52,9 +52,18 @@ pytest                   # tests/ (pythonpath=. via pytest.ini)
   `memory`. `SOC_BACKEND` overrides, and an explicit value is strict
   (the server exits rather than falling back). **Auto never resolves to
   a live backend under pytest** — detection keys off a config file most
-  dev machines have, and `init_session` wipes the target schema, so
-  that guard is what stops a test run writing to your account. Tests
-  that need a specific store set `SOC_BACKEND` themselves.
+  dev machines have, so that guard is what stops a test run writing to
+  your account. Tests that need a specific store set `SOC_BACKEND`
+  themselves.
+- **Backend is per *game*, not per process (v1.14).** `SOC_BACKEND` only
+  sets the *default*; the New Game modal picks per game and
+  `backend.store_for_session(id)` routes each session to its owner. Two
+  rules follow: anything game-scoped must resolve its store from the
+  game id (`_store_for` in `server/app.py`), and code must never ask
+  "is the process on Snowflake?" — ask the store, via
+  `backend.snowpark_session_for(store)`. `tests/test_per_game_backend.py`
+  pins both, including a scan that fails if a V12 module reads the
+  frozen `SOC_BACKEND` constant again.
 - A dev server is usually already running (see the terminals folder). Check
   before starting another.
 

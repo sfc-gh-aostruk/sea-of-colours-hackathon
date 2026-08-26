@@ -10,25 +10,32 @@ python run_web.py
 
 > The storage backend is auto-detected. With no Snowflake setup you land
 > on the in-process `memory` store, and the server says so on boot.
-> Nothing below is required to reach that state — sections 1 and 2 are
-> each opt-in, and independent of one another.
+> Nothing below is required to reach that state.
 
-There are two — **independent** — reasons to bring a Snowflake account
-into it. You can do either without the other:
+Beyond playing, there are two reasons to bring a Snowflake account into
+it. They are **technically independent** — either works without the
+other — but they use **different credentials**, which is the single
+most confusing thing on this page:
 
 1. **Running / improving V12** — the reference Cortex agent
    (`sea_of_colours/orchestrator_2/harnesses/tabula_v12/`). It calls
    Snowflake Cortex's inference API to think; everything else about it
-   is plain Python running on your machine. **PAT only — no schema
-   deploy.**
-2. **Persistent, Snowflake-backed game history** (`SOC_BACKEND=snowflake`)
-   — optional, only useful if you want every season durably written to
-   real tables instead of living in server memory. **Key-pair auth +
-   a schema deploy.**
+   is plain Python on your machine. **A Programmatic Access Token, and
+   nothing else — no extra install, no schema deploy.**
+2. **Persistent game history** (`SOC_BACKEND=snowflake`) — every season
+   written to real tables instead of living in server memory.
+   **Key-pair auth + one extra dependency + a schema deploy.**
 
-Note these use **different credentials**: a Programmatic Access Token
-for Cortex, a key-pair for Snowpark. Setting one up does not set up the
-other. Most people want (1).
+Setting up one does not set up the other: a PAT will not open a Snowpark
+session, and a key pair will not authenticate a Cortex call.
+
+**If you're here for the hackathon, do both.** (1) lets you play V12;
+(2) is what the iteration tooling reads — `turn_suite.py`,
+`replay_turn.py` and `advise_v12.py` all work from persisted sessions,
+and the launcher only offers LLM agents on a persistent backend, because
+an LLM game you can't reopen teaches you nothing. Budget about ten
+minutes for (2); the key-pair step is the fiddly one and §2 spells it
+out.
 
 ## 1. Playing against / building V12 — PAT only, no schema deploy
 
@@ -78,10 +85,14 @@ directly, same as the heuristic agents.
    `ready: True` and a response containing `pong` means you're set.
 7. **Play a game against V12** — seat P2 as `V12` in the New Game
    launcher, or run it headless with
-   `python scripts/run_matchup_v12.py --modes heur lite`. V12 does
-   **not** need the Snowflake backend — that's section 2 and entirely
-   separate. A PAT-only `sf_config` deliberately does not flip the
-   backend, so adding one here won't start writing to your account.
+   `python scripts/run_matchup_v12.py --modes heur lite`. A PAT-only
+   `sf_config` deliberately does not flip the storage backend, so
+   finishing this section won't start writing to your account.
+
+   > The headless runner works on a PAT alone. The **launcher** offers
+   > LLM seats only on a persistent backend, so if you haven't done §2
+   > yet the V12 option won't be in the dropdown — that's the storage
+   > rule, not a credentials problem.
 
 ### Cost / rate-limit notes
 
@@ -93,27 +104,54 @@ directly, same as the heuristic agents.
   matches; Cortex inference billing is per-token, independent of
   warehouse compute (no warehouse is even required for this path).
 
-## 2. Optional: persistent Snowflake-backed sessions (`SOC_BACKEND=snowflake`)
+## 2. Persistent Snowflake-backed sessions (`SOC_BACKEND=snowflake`)
 
-Only needed if you want every season durably written to real Snowflake
-tables (`SOC_SESSION`, `SOC_REPLAY_FRAME`, etc.) instead of living in
-server memory for the life of the process. This is a bigger setup step
-and pulls in an extra dependency:
+**Hackathon attendees: do this one too.** Section 1 is enough to *play*
+against V12, but the agent-iteration tooling — `scripts/turn_suite.py`,
+`scripts/replay_turn.py`, `scripts/advise_v12.py` — all read persisted
+sessions, and improving your agent is the point of the day. Without this
+you can play a game but not take one apart afterwards. It also unlocks
+the LLM agents in the New Game launcher, which are restricted to
+persistent backends for exactly that reason.
+
+It writes every season to real tables (`SOC_SESSION`,
+`SOC_REPLAY_FRAME`, …) instead of living in server memory, and pulls in
+one extra dependency:
 
 ```bash
 pip install -r requirements-snowflake.txt
 ```
 
-1. Extend your `sf_config` with key-pair auth (this path uses a Snowpark
-   session, not the PAT — different auth mechanism, same file):
+1. **Generate a key pair.** This path authenticates with a Snowpark
+   session rather than the PAT — a different mechanism, same config
+   file. Two commands, in whatever directory you keep keys:
+   ```bash
+   openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt
+   openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+   ```
+   `-nocrypt` gives an unencrypted key, which is what the loader expects;
+   an encrypted one fails with a passphrase error.
+2. **Register the public key on your Snowflake user.** Snowflake wants
+   the base64 body *only* — no `-----BEGIN/END-----` lines, no newlines.
+   This prints exactly what to paste:
+   ```bash
+   awk 'NR>2 {print prev} {prev=$0}' rsa_key.pub | tr -d '\n'
+   ```
+   Then, in Snowsight:
+   ```sql
+   ALTER USER <your_username> SET RSA_PUBLIC_KEY='<the single line from above>';
+   ```
+   Getting `JWT token is invalid` later almost always means a stray
+   newline or a header line survived this step.
+3. **Extend your `sf_config`** with the user and the *private* key path:
    ```
    account=<your_account_identifier>
    user=<your_username>
    private_key_file=/path/to/your/rsa_key.p8
    ```
-   See [Snowflake's key-pair auth docs](https://docs.snowflake.com/en/user-guide/key-pair-auth)
-   for generating `rsa_key.p8` and registering the public key on your user.
-2. Check where you're about to deploy. The defaults are hackathon-scoped
+   (Snowflake's own [key-pair auth docs](https://docs.snowflake.com/en/user-guide/key-pair-auth)
+   cover rotation and encrypted keys if you want them.)
+4. Check where you're about to deploy. The defaults are hackathon-scoped
    so they can't collide with an existing SOC install in the same
    account:
    ```bash
@@ -122,23 +160,32 @@ pip install -r requirements-snowflake.txt
    ```
    Override with `SOC_DATABASE` / `SOC_SCHEMA` / `SOC_WAREHOUSE` (or the
    `database=` / `schema=` / `warehouse=` keys in `sf_config`).
-3. Deploy. The database, schema and an XSMALL auto-suspending warehouse
+5. Deploy. The database, schema and an XSMALL auto-suspending warehouse
    are all created if absent, so this works on a brand-new trial
    account. Non-destructive — safe to re-run:
    ```bash
    python scripts/deploy_soc_schema.py
    ```
-4. Run with the Snowflake backend:
+6. Confirm the whole path is live:
    ```bash
-   SOC_BACKEND=snowflake python run_web.py
+   python scripts/quickstart_check.py
    ```
+7. Start the server as usual — with key-pair auth in `sf_config` it now
+   auto-detects Snowflake, so you don't need to set anything:
+   ```bash
+   python run_web.py
+   ```
+   Storage is a **per-game** choice from v1.14: the New Game launcher
+   offers Snowflake or Memory per season, so you can still take a fast
+   throwaway game against a heuristic without a warehouse round-trip per
+   move. `SOC_BACKEND` only sets the default the launcher starts on.
 
-> ⚠️ **NEW GAME wipes the target schema.** Every `init_session` clears
-> every `SOC_*` table — including previous seasons' replay frames —
-> before writing the new one. On the Snowflake backend that is a real,
-> durable delete against whatever `SOC_DATABASE` points at, so run the
-> `--dry-run` check above before pointing this at a deployment whose
-> history you care about.
+> **Seasons accumulate; nothing is wiped.** `init_session` mints a fresh
+> `session_id` and the row coexists with every earlier season, so
+> starting a new game never touches your history. Wiping is opt-in and
+> explicit — `store.wipe_all_sessions()`, or `--wipe-first` on
+> `scripts/run_season.py`. Still worth running the `--dry-run` above so
+> you know which deployment you're pointed at.
 
 ### Deploy flags
 
@@ -167,12 +214,13 @@ procedure's `IMPORTS =` clause resolves to live code.
   tokens per turn, calling the chat-completions endpoint directly with
   a PAT. That cost applies whether or not you deploy this schema.
 
-### One season at a time
+### Seasons accumulate
 
-`init_session` wipes every `SOC_*` row — including the previous
-season's replay frames, agent invocations and log lines — then writes
-the new season as the only row. Nothing accumulates across seasons, on
-any backend. Archiving seasons before the wipe is deliberately deferred.
+Every game is a new `session_id` alongside the last, on any backend —
+the season picker lists them all, and replays stay available. If you do
+want a clean slate, `store.wipe_all_sessions()` is public and
+`scripts/run_season.py --wipe-first` exposes it; nothing calls it for
+you. Archiving-before-wipe is deliberately deferred.
 
 ## Troubleshooting
 
@@ -184,4 +232,8 @@ any backend. Archiving seasons before the wipe is deliberately deferred.
 | `ModuleNotFoundError: snowflake.snowpark` | You set `SOC_BACKEND=snowflake` without `pip install -r requirements-snowflake.txt`. Unset it to auto-detect, or install the extras. Not needed for V12 / the PAT path above. |
 | `SOC_BACKEND=snowflake was requested but the store could not be opened` | Explicit requests are strict by design — the server exits rather than silently writing your season to the in-memory store. The next line names the fix. |
 | Boot says `store backend: memory` when you wanted Snowflake | Auto-detect needs *both* the Snowpark extras and `private_key_file=` in `sf_config`; the boot line says which one is missing. A PAT alone is section 1 and never selects this backend. |
-| Sessions disappear when you restart the server | You're on `memory`. Section 2 makes them durable; `GET /api/meta/backend` confirms which store is live. |
+| Sessions disappear when you restart the server | That game was on `memory` — either the server default, or the launcher's STORAGE choice. Pick Snowflake for that game; `GET /api/meta/backend` shows the default and every option. |
+| `JWT token is invalid` / authentication fails on a fresh key pair | Almost always the public key: `RSA_PUBLIC_KEY` must be the base64 body with no `-----BEGIN/END-----` lines and no newlines. Re-run the `awk`/`tr` one-liner in §2 step 2 and re-`ALTER USER`. |
+| Key loading fails with a passphrase error | The key was generated encrypted. Regenerate with `-nocrypt` as in §2 step 1. |
+| The V12 option is missing from the New Game dropdown | You've selected the Memory backend, which is heuristics-only — an LLM game that isn't persisted leaves nothing for the turn suite or the advisor to read. Switch STORAGE to Snowflake, or complete §2 if it's greyed out. |
+| Snowflake is greyed out in the launcher's STORAGE row | The modal shows the reason inline (missing extras, no `private_key_file=`, key file absent). Fix that and reopen the launcher — no restart needed. |

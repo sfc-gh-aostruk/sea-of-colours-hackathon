@@ -218,7 +218,21 @@ def _with_cortex_creds(monkeypatch, tmp_path):
     monkeypatch.setenv("SF_CONFIG_FILE", str(cfg))
 
 
-def test_new_game_refuses_llm_seat_without_credentials(client, monkeypatch):
+def _persistent_backend(monkeypatch, tmp_path):
+    """A durable backend an LLM seat is allowed on, without Snowflake.
+
+    v1.14 refuses LLM seats on ``memory`` (nothing to replay afterwards),
+    and auto-detection always picks ``memory`` under pytest, so a test
+    about *credentials* has to name a persistent backend or it ends up
+    asserting the storage rule by accident. ``file`` is the offline one.
+    """
+    monkeypatch.setenv("SOC_STORE_DIR", str(tmp_path / "seasons"))
+    return "file"
+
+
+def test_new_game_refuses_llm_seat_without_credentials(
+    client, monkeypatch, tmp_path,
+):
     _no_cortex_creds(monkeypatch)
     r = client.post(
         "/api/game/new",
@@ -226,6 +240,7 @@ def test_new_game_refuses_llm_seat_without_credentials(client, monkeypatch):
             "seed": 3, "width": 16, "height": 10,
             "players": ["p1", "p2"],
             "agents": {"p1": "human", "p2": "tabula_v12"},
+            "backend": _persistent_backend(monkeypatch, tmp_path),
         },
     )
     assert r.status_code == 400
@@ -244,6 +259,7 @@ def test_new_game_allows_llm_seat_with_credentials(client, monkeypatch, tmp_path
             "seed": 3, "width": 16, "height": 10,
             "players": ["p1", "p2"],
             "agents": {"p1": "human", "p2": "tabula_v12"},
+            "backend": _persistent_backend(monkeypatch, tmp_path),
         },
     )
     assert r.status_code == 200

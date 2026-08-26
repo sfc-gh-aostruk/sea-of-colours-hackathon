@@ -218,7 +218,10 @@ def _drive_bots(game_id: str, *, max_turns: int = 64) -> None:
     background worker (``_kick_bots``); human submits are non-blocking and
     the browser polls /status for the resolution this produces.
     """
-    store = _store()
+    # Route by game, not by process: the bot worker outlives the request
+    # that started it, and driving a memory game against the Snowflake
+    # store would find no session and quietly do nothing.
+    store = _store_for(game_id)
     for _ in range(max_turns):
         with _game_lock(game_id):
             status = soc_engine.get_session_status(store, game_id)
@@ -353,13 +356,14 @@ def _boot_banner() -> None:
         print(f"[soc]   {label}: {res.fix}", file=sys.stderr, flush=True)
     if not res.persists:
         # Be precise about what memory does and doesn't cost you. It is
-        # the supported zero-setup path: human seats, both heuristics,
-        # and the in-process V12 harness (which reaches Cortex over REST
-        # with a PAT) all work fine. The only thing you lose is
-        # durability across a restart.
+        # the supported zero-setup path and a full game — but since v1.14
+        # the launcher keeps LLM seats on a persistent backend, so say so
+        # here rather than letting someone discover it as a missing
+        # dropdown entry.
         print(
-            "[soc]   human seats, RED_HARVEST/_LITE and V12 all work on "
-            "memory; you only lose seasons across a restart.",
+            "[soc]   full game vs RED_HARVEST/_LITE on memory; seasons are "
+            "lost on restart and LLM agents need a persistent backend "
+            "(docs/SNOWFLAKE_SETUP.md §2).",
             file=sys.stderr,
             flush=True,
         )
@@ -474,8 +478,201 @@ def _rgb(triple: tuple[int, int, int]) -> str:
 
 
 def _store():
-    """Return the configured SOC_* storage backend."""
+    """The process-default storage backend.
+
+    Only for work that isn't about one particular game (boot, listings,
+    creating a season). Anything game-scoped must use :func:`_store_for`,
+    or it will read a memory game out of Snowflake and find nothing.
+    """
     return get_store()
+
+
+def _store_for(game_id: str):
+    """The store that owns ``game_id``.
+
+    v1.14 — games choose their own backend in the New Game modal, so one
+    process can serve a fast memory game and a persisted Snowflake season
+    side by side. Ids created before this existed, or by another process,
+    aren't in the registry and fall back to the default — which is the
+    backend that wrote them.
+    """
+    return soc_backend.store_for_session(game_id)
+
+
+def _snowflake_store_status() -> tuple[bool, str, str]:
+    """Can a game actually be created on the Snowflake store right now?
+
+    ``snowflake_readiness()`` is a *file* check by design — it opens no
+    connection, so it stays cheap enough to run on every boot. That
+    leaves a gap this has to close: a fully configured machine behind a
+    network policy, an expired key, or an undeployed schema all read as
+    "ready" and would only fail at spawn time, as a 500.
+
+    The boot probe already learned the truth, so fold its verdict in. If
+    auto-detection tried Snowflake and could not open it, the resolution
+    fell back to memory carrying the real error — surface that instead of
+    accepting a choice that is certain to fail.
+
+    Returns ``(ready, reason, fix)``, matching ``snowflake_readiness()``.
+    """
+    ready, why, fix = soc_backend.snowflake_readiness()
+    if not ready:
+        return (False, why, fix)
+    res = soc_backend.resolution()
+    if res.requested == "auto" and res.name != "snowflake":
+        return (False, res.reason, res.fix)
+    return (True, why, fix)
+
+
+def _backend_options() -> list[dict[str, Any]]:
+    """The per-game backend choices the New Game modal may offer.
+
+    Memory is always available. Snowflake appears only when the store
+    path is genuinely set up (extras installed, key-pair config, key file
+    present) and carries the reason + fix when it isn't, so the modal can
+    explain a greyed-out option instead of just hiding it.
+
+    """
+    default = soc_backend.resolution().name
+    ready, why, fix = _snowflake_store_status()
+    options: list[dict[str, Any]] = [
+        {
+            "value": "memory",
+            "label": "Memory",
+            "blurb": "Instant moves. The season vanishes when the server stops.",
+            "available": True,
+            "persists": False,
+            # Heuristics only: an LLM match you can't replay defeats the
+            # point of the iteration loop — see _llm_backend_conflict.
+            "allows_llm": False,
+            "reason": "",
+            "fix": "",
+        },
+        {
+            "value": "snowflake",
+            "label": "Snowflake",
+            "blurb": "Every move written to your account. Slower, and the "
+                     "season is still there tomorrow.",
+            "available": ready,
+            "persists": True,
+            "allows_llm": True,
+            "reason": "" if ready else why,
+            "fix": "" if ready else fix,
+        },
+    ]
+    # A server explicitly started on `file` or `multi` should keep
+    # offering what it was started with, rather than silently dropping
+    # the operator onto memory.
+    if default not in ("memory", "snowflake"):
+        options.append({
+            "value": default,
+            "label": default.title(),
+            "blurb": f"The backend this server was started with "
+                     f"(SOC_BACKEND={default}).",
+            "available": True,
+            "persists": True,
+            "allows_llm": True,
+            "reason": "",
+            "fix": "",
+        })
+    for opt in options:
+        opt["default"] = opt["value"] == default
+    return options
+
+
+def _resolve_requested_backend(raw: Any) -> str:
+    """Validate a New Game backend choice; empty means the server default."""
+    name = str(raw or "").strip().lower()
+    if not name:
+        return soc_backend.resolution().name
+    if name not in soc_backend.VALID_BACKENDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{name}' is not a storage backend — expected one of "
+                f"{', '.join(soc_backend.VALID_BACKENDS)}."
+            ),
+        )
+    if name in ("snowflake", "multi"):
+        ready, why, fix = _snowflake_store_status()
+        if not ready:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"The Snowflake store isn't set up on this machine: "
+                    f"{why}."
+                    + (f" Fix: {fix}." if fix else "")
+                    + " See docs/SNOWFLAKE_SETUP.md §2, or pick the Memory "
+                      "backend for a game that lasts until the server stops."
+                ),
+            )
+    return name
+
+
+def _llm_backend_conflict(backend_name: str, agents: dict[str, str]) -> str:
+    """Why these seats can't run on this backend — ``""`` when they can.
+
+    Memory is the fast, disposable mode: nothing is written down, so an
+    LLM turn leaves no reasoning card to reopen and no season to replay.
+    That costs more than it sounds like — the whole agent-iteration
+    toolchain (``turn_suite.py``, ``replay_turn.py``, ``advise_v12.py``)
+    reads persisted sessions, so an LLM match played on memory teaches
+    you nothing you can go back and inspect. Since the hackathon is
+    precisely about that loop, LLM seats want a durable store and memory
+    stays what it is good at: instant games against a heuristic.
+
+    Note this is a *product* line, not a technical limit — V12 itself
+    runs fine on memory (Cortex is a REST call with a PAT and never
+    touches the store; its memory modules keep a process-local cache).
+    The setup story is what makes it the right line: the Snowflake store
+    is a standard setup step (docs/SNOWFLAKE_SETUP.md §2), so anyone
+    ready to run an LLM agent has one.
+    """
+    if backend_name != "memory":
+        return ""
+    seats = _llm_seats(agents)
+    if not seats:
+        return ""
+    return (
+        f"{', '.join(seats)} run an LLM agent. Those play on a persistent "
+        f"backend so the season, and the agent's reasoning for every turn, "
+        f"are still there to replay afterwards — which is what the turn "
+        f"suite and the advisor read. Pick Snowflake, or seat a heuristic "
+        f"opponent for a fast memory game."
+    )
+
+
+def _merged_sessions() -> list[dict[str, Any]]:
+    """Every session across the backends this process has open.
+
+    A single ``list_sessions`` would hide half the picker the moment a
+    memory game and a Snowflake season coexist. Rows are tagged with the
+    backend that holds them, first store wins on a duplicate id, and one
+    unreachable store never blanks the list.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for name, store in soc_backend.stores_in_use():
+        try:
+            rows = soc_engine.list_sessions(store).get("sessions") or []
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[soc] list_sessions({name}) failed: {exc}",
+                  file=sys.stderr, flush=True)
+            continue
+        for row in rows:
+            sid = str(row.get("session_id") or "")
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            enriched = dict(row)
+            enriched["backend"] = name
+            # The composite store tags rows with a finer source of its
+            # own ("snowflake" / "local"); only fill the gap it leaves.
+            if not enriched.get("source"):
+                enriched["source"] = name
+            soc_backend.register_session_backend(sid, name)
+            out.append(enriched)
+    return out
 
 
 # ── Slow-agent (Cortex / harness) live bot fan-out ──────────────────────
@@ -719,6 +916,13 @@ def api_game_new(
     if isinstance(raw_agents, dict):
         for k, v in raw_agents.items():
             agents[str(k)] = str(v).strip().lower() or "human"
+    # v1.14 — the backend is a per-game choice now. Resolve it before the
+    # credential preflight so an unreachable store fails on the store's
+    # own terms rather than as a confusing agent error.
+    backend_name = _resolve_requested_backend(body.get("backend"))
+    conflict = _llm_backend_conflict(backend_name, agents)
+    if conflict:
+        raise HTTPException(status_code=400, detail=conflict)
     _preflight_llm_credentials(agents)
     visibility_mode = str(body.get("visibility_mode") or "hidden").strip().lower()
     if visibility_mode not in ("hidden", "open"):
@@ -739,8 +943,23 @@ def api_game_new(
 
     if seed is None:
         seed = random.randrange(2**31)
+    try:
+        target_store = soc_backend.get_store_for(backend_name)
+    except Exception as exc:
+        # Last line of defence. The readiness check is offline and the
+        # boot probe is a snapshot, so a warehouse can still go away
+        # between boot and this click — which must read as "your store is
+        # unreachable", not as a 500 on New Game.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Could not open the {backend_name} store: {exc}. "
+                f"Fix: {soc_backend._fix_for(exc)}. Or pick the Memory "
+                f"backend to play now."
+            ),
+        ) from exc
     created = soc_engine.init_session(
-        _store(),
+        target_store,
         seed=seed,
         width=width,
         height=height,
@@ -750,13 +969,22 @@ def api_game_new(
         visibility_mode=visibility_mode,
         player_profiles=player_profiles,
     )
-    # v1.11 — kick the background bot worker so any Cortex/harness seat
-    # starts thinking the moment the game exists, in parallel with the
-    # human opening the board (agent plays on the human's time).
-    if _game_has_slow_bot(agents) and isinstance(created, dict):
+    if isinstance(created, dict):
         gid = created.get("session_id")
         if isinstance(gid, str) and gid:
-            _kick_bots(gid)
+            # Register before kicking bots: the worker resolves its own
+            # store by id, and an unregistered game falls back to the
+            # process default — which for a memory game on a Snowflake
+            # server is the wrong store entirely.
+            soc_backend.register_session_backend(gid, backend_name)
+            created["backend"] = backend_name
+            created["persists"] = backend_name != "memory"
+            # v1.11 — kick the background bot worker so any Cortex/harness
+            # seat starts thinking the moment the game exists, in parallel
+            # with the human opening the board (agent plays on the human's
+            # time).
+            if _game_has_slow_bot(agents):
+                _kick_bots(gid)
     return created
 
 
@@ -779,7 +1007,7 @@ def api_game_latest() -> dict[str, Any]:
     # Walk in last-touched order until we find a non-eval session — the
     # watcher's "open the most recent game" affordance shouldn't pop
     # straight into an eval replay (those have their own UI at /evals).
-    for row in _store().list_sessions():
+    for row in _merged_sessions():
         if _is_eval_session(row):
             continue
         return {
@@ -813,9 +1041,14 @@ def api_sessions(
     the CLI runner's printed watch URL); the response then contains
     zero or one entry depending on whether the slug matches.
     """
-    store = _store()
+    sessions = _merged_sessions()
     if season:
-        row = soc_engine.find_session_by_slug(store, season)
+        target = str(season).strip().lower()
+        row = next(
+            (s for s in sessions
+             if (s.get("season_slug") or "").lower() == target),
+            None,
+        )
         if row and _is_eval_session(row):
             # Slug-resolution still works for eval sessions (handy
             # for sharing deep links) but we hide them from the
@@ -823,11 +1056,9 @@ def api_sessions(
             # canonical surface for them.
             return {"sessions": []}
         return {"sessions": [row] if row else []}
-    payload = soc_engine.list_sessions(store)
-    payload["sessions"] = [
-        s for s in payload.get("sessions") or [] if not _is_eval_session(s)
-    ]
-    return payload
+    return {
+        "sessions": [s for s in sessions if not _is_eval_session(s)],
+    }
 
 
 @app.delete("/api/game/{game_id}")
@@ -838,7 +1069,7 @@ def api_game_delete(game_id: str) -> dict[str, Any]:
     Routes to whichever backend owns the id under the composite store, so
     a local file season and a Snowflake season are both deletable from the
     same picker. Deleting a missing id is a no-op (still returns ok)."""
-    store = _store()
+    store = _store_for(game_id)
     row = store.load_session(game_id)
     if row is not None and _is_eval_session(row):
         raise HTTPException(
@@ -846,6 +1077,7 @@ def api_game_delete(game_id: str) -> dict[str, Any]:
             detail="eval sessions can't be deleted from the watcher",
         )
     store.delete_session(game_id)
+    soc_backend.forget_session_backend(game_id)
     return {"ok": True, "session_id": game_id}
 
 
@@ -1080,7 +1312,7 @@ def api_evals_sessions(
 @app.get("/api/game/{game_id}/status")
 def api_game_status(game_id: str) -> dict[str, Any]:
     try:
-        status = soc_engine.get_session_status(_store(), game_id)
+        status = soc_engine.get_session_status(_store_for(game_id), game_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1110,7 +1342,7 @@ def api_game_orbit(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     actions_field: Any = payload.get("actions", payload.get("commands"))
     if actions_field is None:
         actions_field = []
-    pre_status = soc_engine.get_session_status(_store(), game_id)
+    pre_status = soc_engine.get_session_status(_store_for(game_id), game_id)
     slow = _game_has_slow_bot(pre_status.get("agents") or {})
 
     # ── Fast path: no slow agent — unchanged legacy behaviour. ──────────
@@ -1118,11 +1350,12 @@ def api_game_orbit(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with _game_lock(game_id):
             try:
                 result = soc_engine.submit_orbit_actions(
-                    _store(), game_id, player, actions_field, auto_fire_bots=True,
+                    _store_for(game_id), game_id, player, actions_field,
+                    auto_fire_bots=True,
                 )
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
-        status = soc_engine.get_session_status(_store(), game_id)
+        status = soc_engine.get_session_status(_store_for(game_id), game_id)
         return {
             "ok": result["ok"],
             "errors": result.get("errors") or [],
@@ -1139,7 +1372,7 @@ def api_game_orbit(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     # ── Slow path: NON-BLOCKING (mirrors api_game_policy). ──────────────
     lk = _try_lock(game_id, _AGENT_SUBMIT_LOCK_WAIT_S)
     if lk is None:
-        status = soc_engine.get_session_status(_store(), game_id)
+        status = soc_engine.get_session_status(_store_for(game_id), game_id)
         return {
             "ok": True,
             "agent_busy": True,
@@ -1157,7 +1390,8 @@ def api_game_orbit(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         try:
             result = soc_engine.submit_orbit_actions(
-                _store(), game_id, player, actions_field, auto_fire_bots=False,
+                _store_for(game_id), game_id, player, actions_field,
+                auto_fire_bots=False,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1165,7 +1399,7 @@ def api_game_orbit(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         lk.release()
     if result.get("ok"):
         _kick_bots(game_id)
-    status = soc_engine.get_session_status(_store(), game_id)
+    status = soc_engine.get_session_status(_store_for(game_id), game_id)
     orbit_resolved = (
         str(pre_status.get("phase")) == "orbit"
         and str(status.get("phase") or "") != "orbit"
@@ -1193,7 +1427,7 @@ def api_game_policy(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     moves_field: Any = payload.get("moves", payload.get("commands"))
     if moves_field is None:
         moves_field = []
-    pre_status = soc_engine.get_session_status(_store(), game_id)
+    pre_status = soc_engine.get_session_status(_store_for(game_id), game_id)
     slow = _game_has_slow_bot(pre_status.get("agents") or {})
 
     # ── Fast path: no slow agent — unchanged legacy behaviour. ──────────
@@ -1203,7 +1437,8 @@ def api_game_policy(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with _game_lock(game_id):
             try:
                 result = soc_engine.submit_policy(
-                    _store(), game_id, player, moves_field, auto_fire_bots=True,
+                    _store_for(game_id), game_id, player, moves_field,
+                    auto_fire_bots=True,
                 )
             except KeyError as exc:
                 # v0.9.5 — surface the full traceback so we can pin down the
@@ -1214,7 +1449,7 @@ def api_game_policy(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 print("[soc] submit_policy KeyError traceback ↑↑↑\n",
                       file=sys.stderr, flush=True)
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
-        status = soc_engine.get_session_status(_store(), game_id)
+        status = soc_engine.get_session_status(_store_for(game_id), game_id)
         return {
             "ok": result["ok"],
             "errors": result.get("errors") or [],
@@ -1237,7 +1472,7 @@ def api_game_policy(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     # the browser keeps its frame and retries once the agent lands.
     lk = _try_lock(game_id, _AGENT_SUBMIT_LOCK_WAIT_S)
     if lk is None:
-        status = soc_engine.get_session_status(_store(), game_id)
+        status = soc_engine.get_session_status(_store_for(game_id), game_id)
         return {
             "ok": True,
             "agent_busy": True,
@@ -1253,7 +1488,8 @@ def api_game_policy(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         try:
             result = soc_engine.submit_policy(
-                _store(), game_id, player, moves_field, auto_fire_bots=False,
+                _store_for(game_id), game_id, player, moves_field,
+                auto_fire_bots=False,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1261,7 +1497,7 @@ def api_game_policy(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         lk.release()
     if result.get("ok"):
         _kick_bots(game_id)  # background: fire agent + resolve
-    status = soc_engine.get_session_status(_store(), game_id)
+    status = soc_engine.get_session_status(_store_for(game_id), game_id)
     # Resolved inline only if the agent had already submitted (both_ready).
     night_resolved = (
         str(pre_status.get("phase")) == "planning"
@@ -1288,7 +1524,7 @@ def api_game_replay(
 ) -> dict[str, Any]:
     try:
         reply = soc_engine.get_replay(
-            _store(), game_id, day_from=day_from, day_to=day_to,
+            _store_for(game_id), game_id, day_from=day_from, day_to=day_to,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1367,7 +1603,7 @@ def api_game_replay(
 def api_game_summary(game_id: str) -> dict[str, Any]:
     """End-of-game results payload (rankings, tallies, manifest, chart)."""
     try:
-        return soc_engine.get_endgame_summary(_store(), game_id)
+        return soc_engine.get_endgame_summary(_store_for(game_id), game_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1376,7 +1612,7 @@ def api_game_summary(game_id: str) -> dict[str, Any]:
 def api_game_day_index(game_id: str) -> dict[str, Any]:
     """Compact per-day metadata for the Phase-4 scrub bar header."""
     try:
-        reply = soc_engine.get_replay(_store(), game_id)
+        reply = soc_engine.get_replay(_store_for(game_id), game_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
@@ -1394,7 +1630,7 @@ def api_game_view(
     if not _is_valid_seat_slug(player):
         raise HTTPException(status_code=400, detail="unknown player slug")
     try:
-        return soc_engine.get_view(_store(), game_id, player)
+        return soc_engine.get_view(_store_for(game_id), game_id, player)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1403,7 +1639,7 @@ def api_game_view(
 def api_game_observer(game_id: str) -> dict[str, Any]:
     """Omniscient observer mosaic — for the GRAPHICS drawer only."""
     try:
-        return soc_engine.get_observer(_store(), game_id)
+        return soc_engine.get_observer(_store_for(game_id), game_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1429,7 +1665,7 @@ def api_game_agent_log(
     """
     if player is not None and not _is_valid_seat_slug(player):
         raise HTTPException(status_code=400, detail="unknown player slug")
-    store = _store()
+    store = _store_for(game_id)
     if not hasattr(store, "list_agent_invocations"):
         # In-memory store has no agent-log persistence; return empty
         # so the frontend's lazy-fetch path silently no-ops.
@@ -1538,7 +1774,9 @@ def api_agent_think(
             detail=f"runtime must be one of {sorted(_HEURISTIC_RUNTIMES)}",
         )
     try:
-        return run_agent_turn(_store(), game_id, player, runtime_override=runtime)
+        return run_agent_turn(
+            _store_for(game_id), game_id, player, runtime_override=runtime,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1565,6 +1803,9 @@ def api_meta_backend() -> dict[str, Any]:
     ``reason`` matters as much as ``backend``: with auto-detection the
     answer to "where did my game go?" is usually a sentence about a
     missing dependency or config, not the backend name.
+
+    v1.14 — ``backend`` is only the *default* now. ``options`` is what
+    the New Game modal renders, one entry per per-game choice.
     """
     res = soc_backend.resolution()
     return {
@@ -1574,6 +1815,7 @@ def api_meta_backend() -> dict[str, Any]:
         "fix": res.fix,
         "persists": res.persists,
         "summary": res.summary(),
+        "options": _backend_options(),
     }
 
 

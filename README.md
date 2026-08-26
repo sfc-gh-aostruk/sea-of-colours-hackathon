@@ -304,11 +304,12 @@ python run_web.py                # auto-detect storage; prints what it chose
 pytest                           # engine + orchestrator suites
 ```
 
-**Storage is auto-detected.** Unset means *auto*: `snowflake` when the
-Snowpark deps and key-pair auth are both present, otherwise the
-in-process `memory` store. `SOC_BACKEND` overrides it, and an explicit
-value is strict — the server exits rather than quietly falling back, so
-a persistent season never lands somewhere you didn't intend.
+**Storage is auto-detected, then chosen per game.** Unset means *auto*:
+`snowflake` when the Snowpark deps and key-pair auth are both present,
+otherwise the in-process `memory` store. `SOC_BACKEND` overrides that
+*default*, and an explicit value is strict — the server exits rather
+than quietly falling back, so a persistent season never lands somewhere
+you didn't intend.
 
 ```bash
 SOC_BACKEND=memory    python run_web.py   # fully offline, in-process only
@@ -316,8 +317,20 @@ SOC_BACKEND=file      python run_web.py   # offline but durable, one JSON per se
 SOC_BACKEND=snowflake python run_web.py   # require Snowflake; fail loudly if unusable
 ```
 
-`GET /api/meta/backend` reports the resolved backend, the reason, and
-whether it persists; the landing-page badge shows the same thing.
+From v1.14 each game also picks its own store in the New Game launcher's
+**STORAGE** row, and one server happily runs both at once — a throwaway
+memory game against a heuristic alongside a persisted Snowflake season.
+Two consequences worth knowing:
+
+- **Memory games are heuristics-only.** An LLM match that isn't written
+  down leaves nothing for `replay_turn.py`, `turn_suite.py` or the
+  advisor to read back, which is the part of the loop that makes an
+  agent better. LLM seats therefore want a persistent backend.
+- **Quick game always uses memory** — it's the "just let me play"
+  button, and it shouldn't cost a warehouse round-trip per move.
+
+`GET /api/meta/backend` reports the default, the reason, and every
+per-game option; the landing-page badge shows the default.
 
 **Hosting a shared game:** run one uvicorn worker without `--reload`
 (the cross-player submit lock is a per-process `threading.Lock`), pin

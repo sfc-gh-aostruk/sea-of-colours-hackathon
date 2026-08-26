@@ -91,13 +91,10 @@ def _mem_key(session_id: str, player: str) -> str:
 
 
 def _sf_session(store: Optional[Any]):
-    """Live Snowpark session, or None when offline / not the snowflake backend."""
+    """Live Snowpark session, or None when this game isn't on Snowflake."""
     try:
-        from sea_of_colours.snowpark.backend import get_store, SOC_BACKEND
-        if SOC_BACKEND != "snowflake":
-            return None
-        sf = store if store is not None else get_store()
-        return getattr(sf, "session", None)
+        from sea_of_colours.snowpark.backend import snowpark_session_for
+        return snowpark_session_for(store)
     except Exception:
         return None
 

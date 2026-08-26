@@ -7348,6 +7348,14 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
   color: var(--fg);
 }
 .cc-newgame-visopt input { accent-color: var(--green); }
+/* v1.14 — an unavailable storage backend stays listed but dimmed, with
+   its reason in the label. Hiding it reads as "this build can't do
+   Snowflake" rather than "you haven't set it up yet". */
+.cc-newgame-visopt.is-disabled {
+  color: var(--dim);
+  cursor: not-allowed;
+}
+.cc-newgame-visopt.is-disabled input { cursor: not-allowed; }
 .cc-newgame-modal-foot {
   display: flex;
   align-items: center;

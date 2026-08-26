@@ -143,11 +143,8 @@ def _persist(
     kind: str = _KIND,
 ) -> None:
     try:
-        from sea_of_colours.snowpark.backend import get_store, SOC_BACKEND
-        if SOC_BACKEND != "snowflake":
-            return
-        sf_store = store if store is not None else get_store()
-        session = getattr(sf_store, "session", None)
+        from sea_of_colours.snowpark.backend import snowpark_session_for
+        session = snowpark_session_for(store)
         if session is None:
             return
         payload = _json.dumps(
@@ -177,11 +174,8 @@ def _hydrate(
 ) -> Set[Cell]:
     out: Set[Cell] = set()
     try:
-        from sea_of_colours.snowpark.backend import get_store, SOC_BACKEND
-        if SOC_BACKEND != "snowflake":
-            return out
-        sf_store = store if store is not None else get_store()
-        session = getattr(sf_store, "session", None)
+        from sea_of_colours.snowpark.backend import snowpark_session_for
+        session = snowpark_session_for(store)
         if session is None:
             return out
         rows = session.sql(

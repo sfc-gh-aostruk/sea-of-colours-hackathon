@@ -200,8 +200,11 @@
     var currentInterval = null;
 
     var buttonDescriptions = {
-      "btn-quick": "start immediately against RED_HARVEST_LITE, no setup",
-      "btn-play": "play against agents and algorithms for supremacy",
+      // v1.14 — say what it costs as well as what it gives. Quick game
+      // pins the memory backend, so it is fast and nothing is kept; the
+      // launcher is where you choose an LLM agent and a saved season.
+      "btn-quick": "a fast practice game against the RED_HARVEST_LITE bot — nothing is saved",
+      "btn-play": "the full launcher: pick your opponent, the map, and whether the season is saved",
       "btn-multiplayer": "play with other human friends as well as agents",
       "btn-replay": "relive past games and learn new strategies"
     };

@@ -15047,6 +15047,9 @@
       p4: "red_harvest_lite",
     },
     visibility: "hidden",
+    // v1.14 — storage is a per-game choice. "" means "whatever the
+    // server defaults to"; the real value arrives with the options.
+    backend: "",
     player_profiles: {
       p1: { display_name: "", tag: "", color: "" },
       p2: { display_name: "", tag: "", color: "" },
@@ -15063,16 +15066,28 @@
   // roster, so the modal still works if the fetch fails.
   let _AGENT_ROSTER = null;
   const _AGENT_ROSTER_FALLBACK = [
-    { value: "human", label: "HUMAN — pilot from this browser" },
-    { value: "red_harvest_lite", label: "RED_HARVEST_LITE — heuristic bot, no weapons (start here)" },
-    { value: "red_harvest", label: "RED_HARVEST — heuristic bot, weapons on" },
-    { value: "tabula_v12", label: "V12 — LLM agent (needs a Snowflake PAT · slow)" },
+    { value: "human", label: "HUMAN — pilot from this browser", needs_llm: false },
+    { value: "red_harvest_lite", label: "RED_HARVEST_LITE — heuristic bot, no weapons (start here)", needs_llm: false },
+    { value: "red_harvest", label: "RED_HARVEST — heuristic bot, weapons on", needs_llm: false },
+    { value: "tabula_v12", label: "V12 — LLM agent (needs a Snowflake PAT · slow)", needs_llm: true },
   ];
 
   function agentRoster() {
     return (_AGENT_ROSTER && _AGENT_ROSTER.length)
       ? _AGENT_ROSTER
       : _AGENT_ROSTER_FALLBACK;
+  }
+
+  /** The roster minus anything the chosen backend won't run.
+   *  Memory games are heuristics-only: an LLM match leaves no persisted
+   *  season, so there's nothing for the turn suite or the advisor to
+   *  read back — which is the whole point of playing one. */
+  function agentRosterForBackend() {
+    const backend = selectedBackend();
+    if (backend && backend.allows_llm === false) {
+      return agentRoster().filter((e) => !e.needs_llm);
+    }
+    return agentRoster();
   }
 
   /** Refresh the roster from the server. Called before the New Game
@@ -15084,6 +15099,92 @@
       const j = await r.json();
       if (j && Array.isArray(j.agents) && j.agents.length) _AGENT_ROSTER = j.agents;
     } catch (_e) { /* keep the fallback */ }
+  }
+
+  // v1.14 — per-game storage backend. Memory is instant but disposable;
+  // Snowflake persists the season (and the agent's reasoning, which is
+  // what the replay tooling reads). Options come from the server so an
+  // unavailable Snowflake store can be shown greyed-out with the reason
+  // instead of vanishing, which reads as a missing feature.
+  let _BACKEND_OPTIONS = null;
+  const _BACKEND_OPTIONS_FALLBACK = [
+    {
+      value: "memory", label: "MEMORY", available: true, persists: false,
+      allows_llm: false, default: true,
+      blurb: "Instant moves. The season vanishes when the server stops.",
+    },
+  ];
+
+  function backendOptions() {
+    return (_BACKEND_OPTIONS && _BACKEND_OPTIONS.length)
+      ? _BACKEND_OPTIONS
+      : _BACKEND_OPTIONS_FALLBACK;
+  }
+
+  function selectedBackend() {
+    const opts = backendOptions();
+    const chosen = opts.find((o) => o.value === newGameModalState.backend);
+    if (chosen && chosen.available) return chosen;
+    return opts.find((o) => o.default && o.available)
+      || opts.find((o) => o.available)
+      || opts[0];
+  }
+
+  async function loadBackendOptions() {
+    try {
+      const r = await fetch("/api/meta/backend", { cache: "no-store" });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && Array.isArray(j.options) && j.options.length) {
+        _BACKEND_OPTIONS = j.options;
+        const cur = j.options.find((o) => o.value === newGameModalState.backend);
+        if (!cur || !cur.available) {
+          const def = j.options.find((o) => o.default && o.available)
+            || j.options.find((o) => o.available);
+          newGameModalState.backend = def ? def.value : "";
+        }
+      }
+    } catch (_e) { /* keep the fallback */ }
+  }
+
+  /** Render the STORAGE radio group. Unavailable backends stay visible
+   *  but disabled, captioned with the reason and the fix — a hidden
+   *  option looks like the feature doesn't exist. */
+  function renderNewGameBackends() {
+    const host = document.getElementById("ngm-backend");
+    if (!host) return;
+    host.innerHTML = "";
+    const active = selectedBackend();
+    for (const opt of backendOptions()) {
+      const label = document.createElement("label");
+      label.className = "cc-newgame-visopt";
+      if (!opt.available) label.classList.add("is-disabled");
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "ngm-backend";
+      radio.value = opt.value;
+      radio.disabled = !opt.available;
+      radio.checked = !!active && opt.value === active.value;
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        newGameModalState.backend = opt.value;
+        // The roster depends on the backend (no LLM seats on memory), so
+        // the seat list has to be rebuilt, not just re-labelled.
+        renderNewGameSeats();
+      });
+
+      const span = document.createElement("span");
+      let text = `${opt.label.toUpperCase()} — ${opt.blurb || ""}`.trim();
+      if (!opt.available && opt.reason) {
+        text += ` [unavailable: ${opt.reason}${opt.fix ? ` · ${opt.fix}` : ""}]`;
+      }
+      span.textContent = text;
+
+      label.appendChild(radio);
+      label.appendChild(span);
+      host.appendChild(label);
+    }
   }
   
   // v0.9.18 — color palette for player customization (fetched from /api/game/palette)
@@ -15216,7 +15317,8 @@
       // hardcoded version meant teams shipped an agent they couldn't
       // select. _AGENT_ROSTER is the last fetched copy, with the
       // shipped roster as a cold-start fallback.
-      for (const entry of agentRoster()) {
+      const roster = agentRosterForBackend();
+      for (const entry of roster) {
         const opt = document.createElement("option");
         opt.value = entry.value;
         opt.textContent = entry.label;
@@ -15224,7 +15326,14 @@
       }
       // Default rivals to the no-weapons bot: a first-timer shouldn't be
       // mined and EMP'd before they know what a parcel is.
-      sel.value = newGameModalState.agents[sid] || (i === 0 ? "human" : "red_harvest_lite");
+      let want = newGameModalState.agents[sid] || (i === 0 ? "human" : "red_harvest_lite");
+      // Switching to a memory game drops the LLM entries, and a <select>
+      // silently blanks when its value is gone — which would post an
+      // empty agent. Fall back to the safe default instead.
+      if (!roster.some((e) => e.value === want)) {
+        want = i === 0 ? "human" : "red_harvest_lite";
+      }
+      sel.value = want;
       newGameModalState.agents[sid] = sel.value;
       sel.addEventListener("change", () => {
         newGameModalState.agents[sid] = sel.value;
@@ -15365,6 +15474,9 @@
     // the tab is the kind of papercut that reads as "my agent didn't
     // work".
     await loadAgentRoster();
+    // Same reasoning: deploying a schema mid-session shouldn't need a
+    // hard refresh before Snowflake becomes selectable.
+    await loadBackendOptions();
     
     // v0.9.18 — fetch color palette if not already loaded
     if (__SOC_COLOR_PALETTE__.length === 0) {
@@ -15389,6 +15501,8 @@
     const inlineCap = document.getElementById("new-game-cap");
     const modalCap = document.getElementById("ngm-cap");
     if (inlineCap && modalCap) modalCap.value = inlineCap.value;
+    // Backends before seats: the roster is filtered by the choice.
+    renderNewGameBackends();
     renderNewGameSeats();
     updateNewGameSeatCountButtons();
     modal.hidden = false;
@@ -15454,6 +15568,7 @@
       players,
       agents,
       visibility_mode: newGameModalState.visibility,
+      backend: (selectedBackend() || {}).value || "",
       player_profiles: Object.keys(player_profiles).length > 0 ? player_profiles : undefined,
     });
     if (statusEl) statusEl.textContent = "// session live.";
@@ -15485,6 +15600,8 @@
       if (opts && opts.player_profiles) {
         body.player_profiles = opts.player_profiles;
       }
+      // v1.14 — omitted means "server default", so only send a real pick.
+      if (opts && opts.backend) body.backend = opts.backend;
       const res = await fetch("/api/game/new", {
         method: "POST",
         cache: "no-store",
@@ -17900,9 +18017,16 @@
         // and no way to know it, so the four decisions between launching
         // the server and the first move were pure stall. The launcher is
         // still there for anyone who wants to change something.
+        //
+        // v1.14 — pinned to the memory backend rather than the server
+        // default. This is the "just let me play" button, and on a
+        // machine with Snowflake credentials the default would make
+        // every move a warehouse round-trip — the slowest possible
+        // version of the fastest possible path.
         newGame({
           players: ["p1", "p2"],
           agents: { p1: "human", p2: "red_harvest_lite" },
+          backend: "memory",
         });
       }
     } catch (_e) { /* non-fatal */ }

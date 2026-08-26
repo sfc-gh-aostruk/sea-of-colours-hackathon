@@ -16,6 +16,12 @@ the agent invoker share:
 resolves to ``snowflake`` only when the whole Snowpark path is actually
 usable and falls back to ``memory`` otherwise.
 
+v1.14 — that resolution is now only the *default*. Individual games may
+pick their own backend in the New Game modal, and
+:func:`store_for_session` routes each session to whichever store owns it.
+Ask the store, never the :data:`SOC_BACKEND` constant, when the answer
+should be about one game.
+
 v1.12 — auto-detect replaces a bare ``snowflake`` default. That
 default was the worst first-run bug in the repo: ``snowpark`` ships only
 in the *optional* ``requirements-snowflake.txt``, so a by-the-book
@@ -317,6 +323,116 @@ def get_store() -> SocStore:
     return _get_memory_store()
 
 
+# ── per-game backend routing (v1.14) ────────────────────────────────────
+# The backend used to be a per-*process* decision, which split badly:
+# anyone with key-pair credentials — i.e. everyone likely to demo this —
+# auto-detected to Snowflake and paid a warehouse round-trip per action
+# having never asked for one. The New Game modal now chooses per game and
+# this registry remembers which store owns which session.
+#
+# In-process only, deliberately. A memory session cannot outlive the
+# process *by definition*, so a registry that dies with the process loses
+# nothing that still exists; ids we don't recognise fall back to the
+# process default, which is the backend that wrote every session created
+# before this existed.
+_session_backends: dict[str, str] = {}
+_session_backend_lock = threading.Lock()
+
+
+def get_store_for(name: str) -> SocStore:
+    """The store for an explicitly named backend, ignoring the default.
+
+    Reuses the same singletons as :func:`get_store`, so serving a
+    Snowflake game and a memory game from one process costs one Snowpark
+    connection, not two.
+    """
+    key = (name or "").strip().lower()
+    if key == "snowflake":
+        return _get_snowflake_store()
+    if key == "file":
+        return _get_file_store()
+    if key == "multi":
+        return _get_multi_store()
+    if key == "memory":
+        return _get_memory_store()
+    raise ValueError(
+        f"unknown backend {name!r} — expected one of {', '.join(VALID_BACKENDS)}"
+    )
+
+
+def register_session_backend(session_id: str, name: str) -> None:
+    """Record which backend owns ``session_id`` for the rest of this process."""
+    with _session_backend_lock:
+        _session_backends[str(session_id)] = (name or "").strip().lower()
+
+
+def backend_for_session(session_id: str) -> str:
+    """The backend owning ``session_id``, or the process default if unknown."""
+    with _session_backend_lock:
+        return _session_backends.get(str(session_id)) or _active()
+
+
+def forget_session_backend(session_id: str) -> None:
+    """Drop a deleted session's routing entry."""
+    with _session_backend_lock:
+        _session_backends.pop(str(session_id), None)
+
+
+def store_for_session(session_id: str) -> SocStore:
+    """The store that owns ``session_id``.
+
+    Every engine entry point already takes its store as the first
+    argument, so per-game routing needs nothing from the engine — only
+    that callers ask this instead of :func:`get_store`.
+    """
+    return get_store_for(backend_for_session(session_id))
+
+
+def stores_in_use() -> list[tuple[str, SocStore]]:
+    """``(name, store)`` for the default backend plus any other one opened.
+
+    Session listings have to merge across these or the picker shows half
+    the games. Extras are included only once something has actually
+    opened them, so listing never pays to build a Snowpark connection
+    that no game asked for.
+    """
+    out: list[tuple[str, SocStore]] = []
+    default = _active()
+    try:
+        out.append((default, get_store()))
+    except Exception:
+        pass
+    for name, store in (
+        ("memory", _memory_store),
+        ("file", _file_store),
+        ("snowflake", _snowflake_store),
+        ("multi", _multi_store),
+    ):
+        if store is not None and name != default:
+            out.append((name, store))
+    return out
+
+
+def snowpark_session_for(store: Optional[SocStore] = None):
+    """The live Snowpark session behind ``store``, or ``None``.
+
+    v1.14 — ask this instead of comparing against :data:`SOC_BACKEND`.
+    That constant is frozen at import and, now that the backend is chosen
+    per *game*, describes the process rather than the game whose turn is
+    being taken. A server that auto-detected Snowflake but is serving a
+    memory game would otherwise persist that game's agent memory into the
+    account — memory that game can never read back.
+
+    Best-effort by contract: every caller is a persistence side-path that
+    must not crash a turn, so an unopenable store reads as "no session".
+    """
+    try:
+        target = store if store is not None else get_store()
+    except Exception:
+        return None
+    return getattr(target, "session", None)
+
+
 def probe_store() -> BackendResolution:
     """Open the store once at boot so failures land next to the command.
 
@@ -388,6 +504,8 @@ def reset_for_tests() -> None:
     """Reset module-level singletons. Tests only — never call from app code."""
     global _memory_store, _file_store, _snowflake_store, _multi_store
     global _snowpark_session, _resolution, SOC_BACKEND
+    with _session_backend_lock:
+        _session_backends.clear()
     with _lock:
         _memory_store = None
         _file_store = None

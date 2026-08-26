@@ -1469,6 +1469,17 @@
               </label>
             </div>
           </div>
+          <!-- v1.14 — the backend is a per-game choice. Options are
+               rendered by app.js from /api/meta/backend so an unavailable
+               Snowflake store can be shown greyed-out with its reason,
+               rather than silently missing. -->
+          <div class="cc-newgame-row">
+            <label class="cc-newgame-label">STORAGE</label>
+            <div id="ngm-backend" class="cc-newgame-visgroup" role="radiogroup"
+                 aria-label="Storage backend">
+              <!-- Populated by app.js. -->
+            </div>
+          </div>
         </div>
         <footer class="cc-newgame-modal-foot">
           <button id="new-game-modal-spawn" type="button"

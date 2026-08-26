@@ -185,13 +185,20 @@ def check_cortex(r: Report, network: bool) -> None:
 
 
 def check_snowpark(r: Report, network: bool) -> None:
-    """The persistence path. Entirely optional."""
+    """The persistence path.
+
+    Not needed to *play* — you get a full game against the heuristics
+    without it — but it is what the agent-iteration tooling reads, and
+    the launcher only offers LLM seats on a persistent backend. So this
+    reports SKIP rather than FAIL, while naming what's still closed off.
+    """
     from sea_of_colours.snowpark import backend as soc_backend
 
     ready, why, fix = soc_backend.snowflake_readiness()
     if not ready:
         r.line(SKIP, "Snowflake backend", why,
-               fix or "docs/SNOWFLAKE_SETUP.md §2 — optional")
+               fix or "docs/SNOWFLAKE_SETUP.md §2 — needed for LLM agents "
+                      "in the launcher and the turn-replay tooling")
         return
     r.line(PASS, "Snowflake backend", "deps and key-pair config present")
 

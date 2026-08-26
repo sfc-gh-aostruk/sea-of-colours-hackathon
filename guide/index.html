@@ -708,7 +708,7 @@
             <span class="mark">&#10003;</span>
             <span>
               <b>Checkpoint.</b> <code>pytest -q</code> should report roughly
-              <code>892 passed, 4 skipped</code> in a few seconds, with
+              <code>938 passed, 4 skipped</code> in a few seconds, with
               <b>exactly one</b> failure:
               <code>test_heuristic_passes_known_scenarios[two_seams_choose_one]</code>.
               That one is a known pre-existing bug in a heuristic eval, not
@@ -724,9 +724,9 @@
         <p class="gd-kicker">02 &middot; First run</p>
         <h2>Start the server</h2>
         <p class="gd-lede">
-          One command &mdash; but the environment variable in front of it is not
-          optional, and leaving it off is the single most common way to get
-          stuck.
+          One command, no environment variables. The server works out where to
+          keep game state from what you actually have installed, and says so on
+          the second line.
         </p>
 
         <div class="gd-frame">
@@ -753,15 +753,17 @@
             actually have installed. With no Snowflake setup it uses
             <code>memory</code> &mdash; every session lives in the server
             process. That is the right answer for now: it costs nothing and
-            the whole game works, including both heuristics and the V12
-            agent. The only thing you give up is keeping seasons across a
-            restart, and <a href="#snowflake">section 05</a> fixes that if
-            you want it.
+            the full game against either heuristic works. What you give up is
+            keeping seasons across a restart, and with it the LLM agents,
+            which the launcher offers only on a persistent backend so that
+            every AI game can be replayed afterwards.
+            <a href="#snowflake">Section 05</a> sets that up.
           </p>
           <p class="dim">
-            You can always force the choice with
-            <code>SOC_BACKEND=memory|file|snowflake</code>, and the badge in
-            the bottom-right corner of the page names the backend in use.
+            <code>SOC_BACKEND=memory|file|snowflake</code> forces the
+            <em>default</em>; from v1.14 each game also picks its own in the
+            launcher's <b>STORAGE</b> row. The badge in the bottom-right corner
+            names the server default.
           </p>
         </div>
 
@@ -804,7 +806,7 @@
           <code>Quick game</code> to get the launcher.
         </p>
         <p>
-          The launcher asks four things, and the defaults are the right
+          The launcher asks five things, and the defaults are the right
           answer for a first game.
         </p>
 
@@ -853,6 +855,17 @@
               <td>
                 Fog of war. <code>OPEN</code> makes every seat omniscient &mdash;
                 useful for watching two bots, wrong for playing.
+              </td>
+            </tr>
+            <tr>
+              <td>STORAGE</td>
+              <td><code>whatever is offered</code></td>
+              <td>
+                <code>MEMORY</code> is instant and forgets the season when the
+                server stops; <code>SNOWFLAKE</code> keeps it, and is the only
+                one that offers LLM seats &mdash; an AI game you cannot replay
+                is one you cannot learn from. If Snowflake is greyed out, the
+                row says which setup step is missing.
               </td>
             </tr>
           </table>
@@ -970,8 +983,11 @@
           <p>
             <strong>(b) Persisting games to Snowflake tables</strong>
             (<code>SOC_BACKEND=snowflake</code>) needs key-pair auth and a schema
-            deploy. Different credential, different purpose, entirely optional
-            &mdash; it is at the bottom of this section.
+            deploy. Different credential, different purpose &mdash; a PAT will
+            not open a Snowpark session and a key pair will not authenticate a
+            Cortex call. It is at the bottom of this section, and if you are
+            here for the hackathon you want it too: the replay and turn-suite
+            tooling reads persisted games.
           </p>
         </div>
 
@@ -1052,30 +1068,65 @@ PY</pre>
 
         <div class="gd-frame">
           <div class="gd-frame-head">
-            <span class="gd-frame-title">Optional &middot; Persist games to Snowflake</span>
-            <span class="gd-frame-sub">skip unless you want durable seasons</span>
+            <span class="gd-frame-title">Step 6 &middot; Persist games to Snowflake</span>
+            <span class="gd-frame-sub">about ten minutes &middot; unlocks the iteration loop</span>
           </div>
           <p>
-            Everything above ran on the <code>memory</code> backend. If you
-            want every season written to real tables, this is a separate
-            setup with
-            <a href="https://docs.snowflake.com/en/user-guide/key-pair-auth">key-pair auth</a>
-            &mdash; note that the PAT from section 1 is <em>not</em> enough,
-            and deliberately so: wanting to play against V12 shouldn't
-            silently start writing to your account.
+            Everything above ran on the <code>memory</code> backend, which
+            forgets a season the moment the server stops. That is fine for
+            practice games, but the tooling you will use to actually improve
+            your agent &mdash; <code>replay_turn.py</code>,
+            <code>turn_suite.py</code>, <code>advise_v12.py</code> &mdash; reads
+            games back off a persistent store, and the launcher only offers LLM
+            seats on one for the same reason. This is that store.
+          </p>
+          <p class="dim">
+            It authenticates with
+            <a href="https://docs.snowflake.com/en/user-guide/key-pair-auth">key-pair auth</a>,
+            not the PAT from step 1 &mdash; deliberately, so that wanting to
+            play against V12 never silently starts writing to your account.
           </p>
           <div class="gd-term">
             <button class="gd-copy" type="button">[ COPY ]</button>
 <pre><span class="s">$</span> pip install -r requirements-snowflake.txt
 
-<span class="c"># add to ~/.ssh/sf_config:  user=... private_key_file=/path/rsa_key.p8</span>
+<span class="c"># 1. generate an UNENCRYPTED key pair (-nocrypt matters)</span>
+<span class="s">$</span> openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt
+<span class="s">$</span> openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+
+<span class="c"># 2. print the key body alone — no BEGIN/END lines, no newlines</span>
+<span class="s">$</span> awk 'NR&gt;2 {print prev} {prev=$0}' rsa_key.pub | tr -d '\n'</pre>
+          </div>
+          <p>
+            Paste that single line into Snowsight:
+          </p>
+          <div class="gd-term">
+            <button class="gd-copy" type="button">[ COPY ]</button>
+<pre><span class="k">ALTER USER</span> &lt;your_username&gt; <span class="k">SET</span> RSA_PUBLIC_KEY='&lt;the one line&gt;';</pre>
+          </div>
+          <div class="gd-term">
+            <button class="gd-copy" type="button">[ COPY ]</button>
+<pre><span class="c"># 3. add to ~/.ssh/sf_config:  user=... private_key_file=/path/rsa_key.p8</span>
 
 <span class="s">$</span> python scripts/deploy_soc_schema.py --dry-run
 <span class="o">Target: SOC_HACKATHON_DB.SEA_OF_COLOURS (warehouse SOC_HACKATHON_WH)</span>
 
 <span class="s">$</span> python scripts/deploy_soc_schema.py
+<span class="s">$</span> python scripts/quickstart_check.py
 <span class="s">$</span> python run_web.py
 <span class="o">[soc] store backend: snowflake (SOC_HACKATHON_DB.SEA_OF_COLOURS)</span></pre>
+          </div>
+          <div class="gd-note gd-note--warn">
+            <b class="tag">If auth fails later</b>
+            <p>
+              <code>JWT token is invalid</code> is nearly always the public key:
+              Snowflake wants the base64 body only, so a surviving
+              <code>-----BEGIN-----</code> line or a stray newline breaks it.
+              Re-run the <code>awk</code> one-liner and
+              <code>ALTER USER</code> again. A passphrase error instead means
+              the key was generated encrypted &mdash; regenerate with
+              <code>-nocrypt</code>.
+            </p>
           </div>
           <p class="dim">
             Once key-pair auth is in <code>sf_config</code> the server picks
@@ -1091,13 +1142,25 @@ PY</pre>
             install; override with <code>SOC_DATABASE</code> /
             <code>SOC_SCHEMA</code> / <code>SOC_WAREHOUSE</code>.
           </p>
-          <div class="gd-note gd-note--stop">
-            <b class="tag">Destructive</b>
+          <div class="gd-note gd-note--info">
+            <b class="tag">Seasons accumulate</b>
             <p>
-              On the Snowflake backend, <code>[ &gt; NEW GAME ]</code> wipes the
-              session tables in the target schema. Always check
-              <code>--dry-run</code> points where you think it does before you
-              deploy into an account that has anything else in it.
+              Starting a new game never deletes an old one &mdash; each is a
+              fresh session alongside the last, and they all stay in the season
+              picker. Wiping exists but you have to ask for it
+              (<code>run_season.py --wipe-first</code>). Still worth checking
+              <code>--dry-run</code> points where you think it does before
+              deploying into an account with other things in it.
+            </p>
+          </div>
+          <div class="gd-note gd-note--info">
+            <b class="tag">You can still play fast</b>
+            <p>
+              Storage is chosen <em>per game</em>. The launcher's
+              <b>STORAGE</b> row offers Snowflake or Memory, and
+              <b>Quick game</b> on the title screen always uses Memory &mdash;
+              so having a schema deployed never means every practice game costs
+              a warehouse round-trip per move.
             </p>
           </div>
         </div>

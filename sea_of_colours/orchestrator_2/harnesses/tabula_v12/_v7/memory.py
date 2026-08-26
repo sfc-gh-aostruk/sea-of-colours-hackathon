@@ -86,11 +86,8 @@ def save_entry(
     # stays importable in offline test environments without a live
     # Snowflake session.
     try:
-        from sea_of_colours.snowpark.backend import get_store, SOC_BACKEND
-        if SOC_BACKEND != "snowflake":
-            return
-        sf_store = store if store is not None else get_store()
-        session = getattr(sf_store, "session", None)
+        from sea_of_colours.snowpark.backend import snowpark_session_for
+        session = snowpark_session_for(store)
         if session is None:
             return
         payload = _json.dumps(entry, default=str)
@@ -207,11 +204,8 @@ def _hydrate_from_snowflake(
 ) -> None:
     """Best-effort load of prior memory entries from SOC_AGENT_MEMORY."""
     try:
-        from sea_of_colours.snowpark.backend import get_store, SOC_BACKEND
-        if SOC_BACKEND != "snowflake":
-            return
-        sf_store = store if store is not None else get_store()
-        session = getattr(sf_store, "session", None)
+        from sea_of_colours.snowpark.backend import snowpark_session_for
+        session = snowpark_session_for(store)
         if session is None:
             return
         rows = session.sql(

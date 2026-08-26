@@ -92,6 +92,7 @@ weapons decision for the attendee to make.
 | 3 | Easy install & first-run verification pass — **the north-star phase**; untangle the two Snowflake dependencies, preserve the multiplayer/tunnel suite. Treat it as a product goal, not a checkbox | 🟢 substantially done (2026-08-25, v1.12) — backend auto-detects, boot probe + actionable errors, `quickstart_check.py`, one-click Quick game, docs reconciled; verified from a fresh venv on base requirements. Remaining: a walk-through against a genuinely fresh **trial account** (all Snowflake checks so far were offline or against an existing account) |
 | 4 | Simplify the Orbital phase down to purchasing + weapons buying (drop refine/catapult/jettison); re-teach all three agents the new orbit | ✅ done (2026-08-25, **v1.13**) — engine, view, both agents, UI, RULEBOOK §4 and the attendee docs all reconciled; 916 tests green. Catapult graphics **kept** and resized to the settlement manifest. Follow-up below: the orbit eval scenarios still name retired verbs |
 | 4.5 | **Multiplayer audit** — the suite is a hackathon requirement and is partly broken; needs its own pass | pending — see below |
+| 4.6 | **Per-game backend choice** — pick Memory or Snowflake in the New Game modal instead of once per process; Memory means fast, no persistence, no LLM agent | ✅ done (2026-08-26, **v1.14**) — routing, merged listing, modal dropdown, Quick game pinned to memory; frozen-constant trap fixed and pinned by a test. **The rationale changed during implementation — see "as built" below.** 937 tests green |
 | 5 | Finish/polish the interactive manual (`manual/`) | pending |
 | 6 | Hackathon Guide (onboarding, sibling to `manual/`) | 🟡 first cut landed (2026-08-25) — `guide/index.html`; revisit after Phases 3/4 change the install story and the orbit |
 | 7 | In-game read-only agent advisor — invoke V12/RED_HARVEST mid-turn from the UI: reasoning card (readable + txt dump), magenta board overlay, adopt-into-your-policy | pending — V12 dispatch path now verified (Phase 2 notes), so the advisor can reuse it |
@@ -1190,6 +1191,167 @@ they were breaking the documented happy path; the rest is open.
   and the docs routes but nothing asserts that a seat link resolves to a
   playable seat. A cheap `TestClient` test over `/` → `/play` redirect
   and seat binding would have caught the QR bug.
+
+## Phase 4.6 — Per-game backend choice (NEXT — agreed, not started)
+
+**Status: planned 2026-08-25, implementation deferred to the next
+session. Nothing has been written yet.**
+
+### Why
+
+Backend selection is currently per *process*, resolved once at boot from
+`SOC_BACKEND` (auto-detecting). That produces a bad split:
+
+- An **attendee** on a clean laptop auto-detects to `memory` and gets a
+  fast game. Correct.
+- A **Snowflake employee** — anyone with the Snowpark extras and a
+  key-pair `sf_config`, i.e. everyone likely to demo this — auto-detects
+  to `snowflake`, so every single move is a warehouse round-trip. The
+  game is noticeably slow and they never chose it. (Verified on the
+  author's machine: `_resolve(None)` → `snowflake`.)
+
+Rather than change the default, the user's call is to **choose per game,
+in the New Game modal**, defaulting to whatever the process auto-detects
+(so attendees still get memory automatically and nothing regresses).
+
+### The two modes
+
+| | Snowflake (default where available) | Memory |
+| --- | --- | --- |
+| Speed | a warehouse write per action | in-process dict |
+| Persistence | seasons survive restart; replay works | gone on restart |
+| Agents offered | human, heuristics, **and the LLM agent** | human + heuristics **only** |
+
+**Memory games deliberately do not offer the LLM agent.** This is the
+user's decision and it is a *product* one, not a technical limit —
+worth recording because the code does not force it:
+
+> V12 runs perfectly well on the memory backend. Cortex inference is a
+> plain REST call with a PAT and never touches the store. What it
+> *silently loses* is its memory systems — `hazard_memory.py`,
+> `frontier.py` and `_v7/memory.py` all early-return unless the backend
+> is Snowflake, so persistent hazard memory, enemy-landing tracking and
+> the per-session narrative memory quietly switch off.
+>
+> A half-working V12 is worse than no V12: attendees would draw
+> conclusions about their agent from a run where its memory was off, and
+> memory systems are exactly what the hackathon is meant to teach.
+> Hiding the LLM option on memory games keeps the mode honest — "fast
+> local play, heuristics only" — and keeps the Snowflake story intact
+> where it matters.
+
+### Design (mapped, ready to implement)
+
+The engine needs **no changes**: every `engine.py` entry point already
+takes `store` as its first argument. `CompositeSocStore`
+(`multi_store.py`) is a working blueprint for session→store routing.
+
+1. **`backend.py`** — add a public `get_store_for(name)` (thin switch
+   over the existing private `_get_*_store()` factories, reusing the
+   singletons so no extra connections) plus a thread-safe in-process
+   `session_id → backend` registry.
+2. **`server/app.py`** — add `_store_for(game_id)` and swap the ~25
+   bare `_store()` call sites. **Include `_drive_bots`** (line ~221),
+   the background bot worker — it is easy to miss and would drive a
+   memory game against the Snowflake store.
+3. **`POST /api/game/new`** — accept a `backend` field, resolve the
+   store before `init_session`, register the session against it, and
+   echo it back so the client can display it.
+4. **Session listing** — `GET /api/sessions` must merge across the
+   stores actually in use, or the picker loses half the seasons. Reuse
+   the `CompositeSocStore.list_sessions` union/dedupe/`source`-tag
+   pattern rather than writing a second one.
+5. **New Game modal** (`app.js` ~15474) — a backend dropdown defaulting
+   to the auto-detected backend. Disable the Snowflake option with the
+   reason when `snowflake_readiness()` says it is not available, and
+   hide/disable the LLM agent option when Memory is selected.
+
+### ⚠ The trap to fix first
+
+`SOC_BACKEND` is a **module-level constant frozen at import time**
+(`backend.py:220`), and the four V12 memory call sites compare against
+it:
+
+```
+hazard_memory.py:147, hazard_memory.py:181,
+frontier.py:97, _v7/memory.py:90, _v7/memory.py:211
+```
+
+With per-session backends this check becomes wrong: a server booted on
+Snowflake serving a *memory* game would still let V12 write that game's
+memory into Snowflake. Those sites already receive a `store` argument —
+switch them from "is the **process** on snowflake?" to "does **this
+store** have a live Snowpark session?" (`getattr(store, "session",
+None)`, which they already fall back to checking). That is both the fix
+and a decoupling worth having anyway.
+
+### Out of scope (decided)
+
+- **No durable backend column.** The registry is in-process only.
+  Memory sessions do not survive a restart *by definition*, so losing
+  the mapping loses nothing that still exists.
+- **`multi` stays a server-wide mode**, not a per-game choice.
+
+### Phase 4.6 — as built (2026-08-26, v1.14)
+
+Implemented as designed, with **one premise corrected and one policy
+decision changed**. Both are worth reading before touching this again.
+
+**The stated reason for "no LLM on memory" was wrong.** The plan above
+says V12 "silently loses its memory systems" on the memory backend.
+It doesn't: `hazard_memory`, `frontier` and `_v7/memory` all populate a
+*process-local* cache unconditionally and only hydrate from Snowflake
+when that cache is cold. Within one server process V12's memory works
+normally, and a memory game dies with the process anyway — so nothing
+usable is lost. What is genuinely lost is the durable audit trail and
+the ability to reopen the season.
+
+**The real reason, and the decision.** That distinction matters because
+of who it affects: playing V12 needs only a PAT (`SNOWFLAKE_SETUP.md`
+§1), while the store needs key-pair auth (§2), so the two can diverge.
+The question became *what the setup instruction says*, not what people
+happen to have. Decided: **§2 is a standard hackathon setup step**, on
+the grounds that the whole agent-iteration toolchain
+(`turn_suite.py`, `replay_turn.py`, `advise_v12.py`) reads persisted
+sessions — a PAT-only attendee could play V12 but never take a game
+apart, which is the part of the day that teaches anything. So LLM seats
+are refused on memory **unconditionally**, and §2 was rewritten as
+expected rather than optional, with the `openssl` key ceremony spelled
+out inline (it was previously an outbound link, and it is the most
+error-prone step in the repo).
+
+If that call is ever revisited, the gate is one function —
+`_llm_backend_conflict` in `server/app.py` — plus the `allows_llm` flag
+in `_backend_options`.
+
+**What landed**
+
+- `backend.py`: `get_store_for(name)`, an in-process
+  `session_id → backend` registry (`register/backend_for/forget`),
+  `store_for_session`, `stores_in_use`, and `snowpark_session_for(store)`.
+- `server/app.py`: `_store_for(game_id)` on every game-scoped call site
+  (including `_drive_bots`), `_merged_sessions()` behind `/api/sessions`
+  and `/api/game/latest`, a `backend` field on `POST /api/game/new` that
+  is validated, registered and echoed back, and `options` on
+  `/api/meta/backend`.
+- Frontend: a STORAGE radio group in the New Game modal, unavailable
+  backends shown greyed-out *with the reason* rather than hidden, the
+  agent roster filtered by the choice, and Quick game pinned to memory.
+- `tests/test_per_game_backend.py` — routing, merged listing, the
+  memory/LLM line, and a source scan that fails if any V12 module reads
+  the frozen `SOC_BACKEND` constant again.
+
+**Two docs bugs found and fixed on the way**
+
+- `SNOWFLAKE_SETUP.md` warned twice, and `AGENTS.md` once, that
+  **NEW GAME wipes the target schema**. It doesn't — `init_session` has
+  been append-only since v0.5, nothing in the new-game path calls
+  `wipe_all_sessions`, and `tests/test_session_persistence.py` exists to
+  pin that. A false destructive warning on the persistent backend is
+  exactly the thing that pushes people onto memory.
+- The guide still told readers the env var in front of `run_web.py` was
+  "not optional" — stale since Phase 3's auto-detection — and quoted a
+  pytest baseline of 892.
 
 ## Phase 5 — Manual pass
 
