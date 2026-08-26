@@ -29,7 +29,9 @@ Routes::
 from __future__ import annotations
 
 import json
+import os
 import random
+import subprocess
 import sys
 import threading
 import time
@@ -1905,11 +1907,114 @@ def _lan_ip() -> Optional[str]:
     return ip
 
 
-@app.get("/api/meta/lan")
-def api_meta_lan() -> dict[str, Any]:
-    """Report the host's LAN IP so the invite modal can build a phone-
-    reachable URL (and QR) instead of ``localhost`` — which on a phone
-    points at the phone itself. ``lan_ip`` is ``None`` when offline."""
+def _lan_port_open(ip: str, port: int, timeout: float = 0.4) -> bool:
+    """Does *this* server actually accept connections on ``ip:port``?
+
+    v1.15 — knowing the host's LAN IP is not the same as being reachable
+    at it, and conflating the two silently broke every LAN invite. The
+    default `run_web.py` binds 127.0.0.1, so the modal would resolve a
+    perfectly correct LAN address, encode it in a QR, and the phone would
+    get connection-refused with nothing on screen to explain why.
+
+    A TCP connect to our own advertised address settles the bind
+    question exactly: if nothing is listening there, this fails, and
+    that is the case that was silently breaking every LAN invite.
+
+    It is **not** proof a phone can connect. A same-host connection to
+    your own LAN IP is short-circuited by the kernel and never traverses
+    the network stack the macOS application firewall filters, so a
+    machine in "block all incoming" + stealth mode still answers itself
+    while refusing the phone. Treat True as "the server is listening",
+    not "the network is clear" — which is why the invite modal still
+    names the firewall as a possible cause.
+
+    Short timeout: this is a same-machine round trip, and the invite
+    modal is waiting on it.
+    """
     import socket as _socket
 
-    return {"lan_ip": _lan_ip(), "hostname": _socket.gethostname()}
+    try:
+        with _socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+_FIREWALL_CACHE: dict[str, Optional[bool]] = {}
+
+
+def _macos_firewall_blocks_incoming() -> Optional[bool]:
+    """Is the macOS application firewall set to block incoming?
+
+    This is the difference between the two reasons a LAN invite fails,
+    and they need opposite fixes: a loopback bind is solved by
+    ``run_web.py --lan``, a blocking firewall is not solved by anything
+    on our side. Telling someone who already used ``--lan`` to use
+    ``--lan`` is worse than saying nothing.
+
+    Returns None when the question doesn't apply (not macOS) or can't be
+    answered, so callers can stay quiet rather than guess. Cached: the
+    answer changes about once a year and this is on the invite path.
+    """
+    if "blocks" in _FIREWALL_CACHE:
+        return _FIREWALL_CACHE["blocks"]
+    result: Optional[bool] = None
+    fw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+    if sys.platform == "darwin" and os.path.exists(fw):
+        try:
+            out = subprocess.run(
+                [fw, "--getglobalstate"],
+                capture_output=True, text=True, timeout=2.0,
+            ).stdout.lower()
+            # "State = 2" is block-all. State 1 lets allowed apps through,
+            # which we can't judge from here, so only the unambiguous
+            # case warns — crying wolf here would push people onto a
+            # tunnel they don't need.
+            result = "state = 2" in out or "blocking all" in out
+        except Exception:
+            result = None
+    _FIREWALL_CACHE["blocks"] = result
+    return result
+
+
+@app.get("/api/meta/lan")
+def api_meta_lan(request: Request) -> dict[str, Any]:
+    """Report the host's LAN IP *and whether it is usable*.
+
+    The invite modal builds phone-reachable URLs from this instead of
+    ``localhost``, which on a phone points at the phone itself.
+    ``lan_ip`` is ``None`` when offline; ``lan_reachable`` is False when
+    the address exists but this server is not listening on it, which is
+    the default for ``python run_web.py`` and needs ``--lan``.
+    """
+    import socket as _socket
+
+    ip = _lan_ip()
+    port = request.url.port or (443 if request.url.scheme == "https" else 80)
+    reachable = bool(ip) and _lan_port_open(ip, port)
+    firewalled = _macos_firewall_blocks_incoming()
+    if not reachable and firewalled:
+        # Both causes present as the same silent timeout, and this one
+        # can't be fixed by a flag — so name it first, or they'll keep
+        # restarting the server and getting nowhere.
+        hint = ("macOS is set to block all incoming connections, so other "
+                "devices can't reach this server even on the same Wi-Fi. "
+                "Turn it off in System Settings → Network → Firewall, or "
+                "use a tunnel, which needs no firewall change.")
+    elif not reachable:
+        hint = ("This server is only listening on localhost, so a phone "
+                "cannot reach it. Restart with: python run_web.py --lan")
+    elif firewalled:
+        hint = ("macOS is set to block all incoming connections. This "
+                "server answers itself, but a phone may still be refused "
+                "— if it hangs, that's why.")
+    else:
+        hint = ""
+    return {
+        "lan_ip": ip,
+        "lan_port": port,
+        "lan_reachable": reachable,
+        "lan_firewalled": firewalled,
+        "lan_hint": hint,
+        "hostname": _socket.gethostname(),
+    }

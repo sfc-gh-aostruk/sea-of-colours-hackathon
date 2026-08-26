@@ -6,23 +6,45 @@ see the [README](../README.md) and [RULEBOOK.md](../RULEBOOK.md).
 
 ## TL;DR
 
-1. Start the server (single worker, backend pinned so it doesn't
-   auto-detect into something you didn't intend mid-party):
-   ```bash
-   PYTHONPATH=. SOC_BACKEND=memory uvicorn server.app:app --host 0.0.0.0 --port 8000
-   ```
-   Use `SOC_BACKEND=snowflake` instead if you want the match to survive a
-   server restart — that needs the schema deployed first.
-2. Start a tunnel and copy the public URL it prints:
-   ```bash
-   cloudflared tunnel --url http://localhost:8000
-   # -> https://<random-words>.trycloudflare.com
-   ```
-3. **Open the laptop on the tunnel URL** (not `localhost`). Play as `p1`.
-4. Hit **NEW GAME** with 2+ seats set to **HUMAN**. The **INVITE PLAYERS**
-   modal pops up with a **scannable QR + link per seat**.
-5. Scan `p2`'s QR on the phone (works on cellular or any network). Both clients
-   land in the same game and sync every 2.5s.
+There are two ways to let other devices in. Pick by where the players are.
+
+### Everyone on the same Wi-Fi (simplest)
+
+```bash
+python run_web.py --lan
+# [soc] LAN hosting: other devices join at http://192.168.1.42:8000/
+```
+
+`--lan` binds every interface and turns auto-reload off. Then hit
+**NEW GAME** with 2+ seats set to **HUMAN**; the **INVITE PLAYERS** modal
+gives a scannable QR and link per seat, already addressed to your LAN IP.
+
+> **`python run_web.py` on its own will not work for this.** It binds
+> `127.0.0.1`, so other devices can't reach it at all — and until v1.15
+> the invite modal still printed a LAN QR, which simply timed out on the
+> phone. The modal now checks and tells you.
+
+### Players elsewhere, or a firewall in the way
+
+```bash
+python run_web.py                                  # loopback is fine here
+cloudflared tunnel --url http://localhost:8000     # -> https://<words>.trycloudflare.com
+```
+
+**Open the laptop on the tunnel URL** (not `localhost`), then create the
+game. Invite links are built from whatever URL the laptop is browsing, so
+this is what makes them work for everyone. The tunnel reaches `localhost`
+itself, which is why `--lan` isn't needed on this path.
+
+Both clients sync every 2.5s.
+
+### Storage
+
+The **STORAGE** row in the launcher decides whether the match survives a
+restart. Memory is fine for one sitting and needs no setup; Snowflake
+keeps the season (schema deploy required — `docs/SNOWFLAKE_SETUP.md` §2).
+Since v1.14 that is a per-game choice, so `SOC_BACKEND` no longer needs
+pinning before a party.
 
 ## Seat links live at `/play`, not `/`
 
@@ -61,23 +83,23 @@ changes if you restart `cloudflared` (a free quick-tunnel gets a new random
 
 For phone-next-to-laptop with no tunnel:
 
-1. Find the laptop IP: macOS **System Settings → Wi-Fi → Details → IP address**,
-   or `ipconfig getifaddr en0`. The server also reports it at `/api/meta/lan`.
-2. On the laptop, browse `http://<LAN-IP>:8000/` and start the game; or open
-   `localhost` and let the invite modal rewrite to the LAN IP automatically.
-3. The phone must be on the **same Wi-Fi**, and the macOS firewall must allow
-   incoming connections to Python (see troubleshooting).
+1. Start with `python run_web.py --lan`. It prints the address other
+   devices should use, and binds the interfaces they'll arrive on.
+2. On the laptop, browse `localhost` as usual and start the game — the
+   invite modal rewrites links to the LAN IP for you. (Browsing the LAN
+   IP directly works too.)
+3. The phone must be on the **same Wi-Fi**, and the macOS firewall must
+   allow incoming connections (see troubleshooting). `GET /api/meta/lan`
+   reports both facts — whether the server is actually listening on the
+   LAN, and whether the firewall is set to block — so check it there
+   before debugging the phone.
 
 ## Mobile interface notes
 
-> ⚠️ **`/mobile` is known broken and should not be relied on.** There are
-> two mobile implementations in the tree: the main SPA (`/play`), which
-> is responsive and implements everything described below, and
-> `server/static/mobile.html` (`/mobile`), a 953-line standalone fork
-> that has not been touched since the initial commit while `app.js` moved
-> on. The invite modal still offers a `/mobile` QR alongside the normal
-> one — ignore it and use the `/play` link, which works on a phone.
-> Retiring `/mobile` is tracked in the build plan.
+> **`/mobile` was retired in v1.13.** It was a 953-line standalone fork,
+> frozen since the initial commit while `app.js` moved on, and the main
+> SPA had long since grown the better phone UX. `/mobile` now redirects
+> to `/play` and the invite modal offers one QR per seat rather than two.
 
 - The phone client is the main SPA; a `?player=pN` link boots it into a
   playable, fog-of-war seat (not the read-only watcher).
@@ -96,17 +118,24 @@ For phone-next-to-laptop with no tunnel:
 
 ## Hosting rules (don't break sync)
 
-- **Pin the backend explicitly** rather than relying on auto-detect, so
-  the host knows what it's running. All browsers hit the same process,
-  so `SOC_BACKEND=memory` is fine for one sitting and needs no setup —
-  it just won't survive a restart. For a match you can resume, use
-  `SOC_BACKEND=snowflake` (creds load from `SF_CONFIG_FILE` /
-  `~/.ssh/sf_config`).
-- **One uvicorn worker, no `--reload`.** The cross-player submit lock is a
-  per-process `threading.Lock`.
+- **One uvicorn worker, no `--reload`.** The cross-player submit lock is
+  a per-process `threading.Lock`, and a memory-backed season lives in
+  that process — so an incidental file save mid-party doesn't just
+  hiccup, it resets everyone. `run_web.py --lan` turns reload off for
+  you; if you hand-roll a uvicorn command, leave `--reload` out.
+- **Choose storage when you create the game**, in the launcher's STORAGE
+  row. All browsers hit the same process either way.
 
 ## Troubleshooting
 
+- **Start here:** open `http://localhost:8000/api/meta/lan`. It answers
+  the two questions that cause almost every LAN failure —
+  `lan_reachable` (is this server actually listening where the QR
+  points?) and `lan_firewalled` (is macOS set to block incoming?) — and
+  `lan_hint` names the fix. The invite modal shows the same thing.
+- **Phone opens the QR and nothing happens / it times out:** you almost
+  certainly started with plain `python run_web.py`, which is loopback
+  only. Restart with `--lan`.
 - **`ERR_CONNECTION_RESET` on the phone (LAN):** the macOS firewall is blocking
   incoming connections. Check with
   `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate` and

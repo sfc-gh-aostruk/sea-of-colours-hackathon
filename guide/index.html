@@ -1237,19 +1237,31 @@ PY</pre>
           </div>
           <div class="gd-term">
             <button class="gd-copy" type="button">[ COPY ]</button>
-<pre><span class="c"># bind to all interfaces — one worker, no --reload</span>
-<span class="c"># backend pinned so a host who has done section 05 still keeps</span>
-<span class="c"># the whole match in a single process</span>
-<span class="s">$</span> PYTHONPATH=. SOC_BACKEND=memory uvicorn server.app:app --host 0.0.0.0 --port 8000
+<pre><span class="c"># everyone on the same Wi-Fi — binds every interface, reload off</span>
+<span class="s">$</span> python run_web.py --lan
+<span class="o">[soc] LAN hosting: other devices join at http://192.168.1.42:8000/</span>
 
-<span class="c"># in a second terminal: a public URL anyone can open</span>
+<span class="c"># players elsewhere — a public URL anyone can open</span>
 <span class="s">$</span> cloudflared tunnel --url http://localhost:8000</pre>
           </div>
           <p>
-            Share the tunnel URL. Everyone opens it, picks their seat, and plays
-            from their own device. Spawn the session with the right number of
-            seats set to <code>HUMAN</code>.
+            On Wi-Fi, spawn the session with the right number of seats set to
+            <code>HUMAN</code> and hand out the QR codes. On a tunnel, share the
+            tunnel URL and <strong>open the laptop on it too</strong> before
+            spawning &mdash; invite links are built from whatever address the
+            host is browsing.
           </p>
+          <div class="gd-note gd-note--stop">
+            <b class="tag">Plain <code>run_web.py</code> won't do</b>
+            <p>
+              Without <code>--lan</code> the server listens on
+              <code>localhost</code> only, so no other device can reach it &mdash;
+              the QR just times out on the phone. Until v1.15 nothing said so.
+              If you're unsure, open <code>/api/meta/lan</code>: it reports
+              whether the address in your QR is actually being served, and
+              whether your firewall is set to block incoming connections.
+            </p>
+          </div>
           <p class="dim">
             The docs ride along: <code>&lt;url&gt;/guide/</code>,
             <code>&lt;url&gt;/manual/</code> and
@@ -1260,15 +1272,17 @@ PY</pre>
           <div class="gd-note gd-note--warn">
             <b class="tag">Two rules that keep sync intact</b>
             <p>
-              <strong>One uvicorn worker, no <code>--reload</code></strong> &mdash;
-              the cross-player submit lock is per-process.
+              <strong>No auto-reload.</strong> The cross-player submit lock is
+              per-process, so a stray file save doesn't hiccup &mdash; it resets
+              everyone's season. <code>--lan</code> turns reload off for you.
             </p>
             <p>
-              <code>memory</code> is per-process, so a restart loses the game.
-              If you want it to survive one, host on
-              <code>SOC_BACKEND=snowflake</code> instead (see
-              <a href="#snowflake">05</a>). A free quick-tunnel also gets a new
-              random address every time <code>cloudflared</code> restarts.
+              <strong>Pick your storage when you spawn.</strong> A
+              <code>MEMORY</code> game dies with the process; choose
+              <code>SNOWFLAKE</code> in the launcher's STORAGE row if the match
+              should survive a restart (see <a href="#snowflake">05</a>). A free
+              quick-tunnel also gets a new random address every time
+              <code>cloudflared</code> restarts.
             </p>
           </div>
           <p class="dim">

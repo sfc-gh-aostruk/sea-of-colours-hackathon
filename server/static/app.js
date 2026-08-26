@@ -803,6 +803,10 @@
    *  /api/meta/lan, so invite links / QR codes are phone-reachable rather
    *  than ``localhost``. ``null`` = not fetched yet, ``""`` = unavailable. */
   let _lanOrigin = /** @type {string|null} */ (null);
+  /** v1.15 — why the LAN origin is unusable, when it is. The server can
+   *  tell the difference between "no network" and "bound to loopback",
+   *  and only the second one has a fix worth printing. */
+  let _lanHint = "";
   /** Rationale capture, bucketed by (seat -> day -> [entries]). Each
    *  entry: { ts, day, seat, agent_id, runtime, text }. Populated
    *  both from the live "agent think" handler AND from a lazy fetch
@@ -16002,14 +16006,22 @@
     try {
       const r = await fetch("/api/meta/lan", { cache: "no-store" });
       const j = await r.json();
-      if (j && j.lan_ip) {
+      // v1.15 — having a LAN IP is not the same as being reachable at
+      // it. `run_web.py` binds loopback by default, so this used to
+      // resolve a correct address, print a QR for it, and leave the
+      // phone with connection-refused and no explanation. The server
+      // now tests its own advertised address; refuse to build an origin
+      // we know is dead, and carry the reason so the modal can say it.
+      if (j && j.lan_ip && j.lan_reachable) {
         const port = window.location.port ? `:${window.location.port}` : "";
         _lanOrigin = `${window.location.protocol}//${j.lan_ip}${port}`;
       } else {
         _lanOrigin = "";
       }
+      _lanHint = (j && j.lan_hint) || "";
     } catch (_e) {
       _lanOrigin = "";
+      _lanHint = "";
     }
     return _lanOrigin;
   }
@@ -16048,18 +16060,56 @@
     
     const title = document.createElement("div");
     title.className = "cc-share-title";
-    title.textContent = "// MULTIPLAYER TUNNEL REQUIRED";
-    
+    title.textContent = "// THIS SERVER ISN'T REACHABLE FROM OTHER DEVICES";
+
+    // v1.15 — this used to assert "your firewall blocks incoming
+    // connections", which was a guess and usually the wrong one: the
+    // default `run_web.py` binds 127.0.0.1, so nothing was listening on
+    // the LAN to be blocked. We now only get here after the server has
+    // actually failed to connect to its own advertised address, so lead
+    // with the likely cause and give the cheap fix first.
     const warning = document.createElement("div");
     warning.className = "cc-share-sub";
     warning.style.color = "#FF8A1E";
     warning.style.marginBottom = "16px";
-    warning.innerHTML = `⚠️ You're browsing on <code>localhost</code> — multiplayer links won't work reliably.<br>Your firewall blocks incoming connections (even same WiFi).`;
-    
+    warning.innerHTML =
+      `⚠️ Another device can't open a connection to this machine, so invite ` +
+      `links would fail silently.<br>Usually that means the server is ` +
+      `listening on <code>localhost</code> only — sometimes a firewall.`;
+
     const solution = document.createElement("div");
     solution.className = "cc-share-sub";
     solution.style.marginBottom = "12px";
-    solution.innerHTML = `<strong>Solution:</strong> Start a Cloudflare quick tunnel (free, no account needed):`;
+    solution.innerHTML =
+      `<strong>Everyone on the same Wi-Fi?</strong> Restart the server this ` +
+      `way and reopen this page — no install needed:`;
+
+    const lanBox = document.createElement("div");
+    lanBox.style.cssText = "background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:12px;margin:12px 0;font-family:monospace;font-size:13px;";
+    const lanText = document.createElement("div");
+    lanText.textContent = "python run_web.py --lan";
+    lanText.style.marginBottom = "8px";
+    const lanCopy = document.createElement("button");
+    lanCopy.type = "button";
+    lanCopy.className = "cli-btn";
+    lanCopy.textContent = "[ COPY COMMAND ]";
+    lanCopy.style.fontSize = "11px";
+    lanCopy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText("python run_web.py --lan");
+        lanCopy.textContent = "[ COPIED ]";
+        setTimeout(() => { lanCopy.textContent = "[ COPY COMMAND ]"; }, 1500);
+      } catch (e) {}
+    });
+    lanBox.appendChild(lanText);
+    lanBox.appendChild(lanCopy);
+
+    const orTunnel = document.createElement("div");
+    orTunnel.className = "cc-share-sub";
+    orTunnel.style.marginBottom = "12px";
+    orTunnel.innerHTML =
+      `<strong>Players elsewhere, or a firewall in the way?</strong> Use a ` +
+      `Cloudflare quick tunnel (free, no account):`;
     
     const commandBox = document.createElement("div");
     commandBox.style.cssText = "background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:12px;margin:12px 0;font-family:monospace;font-size:13px;";
@@ -16096,6 +16146,8 @@
     card.appendChild(title);
     card.appendChild(warning);
     card.appendChild(solution);
+    card.appendChild(lanBox);
+    card.appendChild(orTunnel);
     card.appendChild(commandBox);
     card.appendChild(steps);
     
@@ -16225,7 +16277,16 @@
             input.value = lanUrl;
             renderQrInto(qr, lanUrl);
           });
-          lanNote.textContent = `Links point at ${origin} — phones must be on the same Wi-Fi. For remote players, run a tunnel and open the laptop on its URL.`;
+          // A reachable bind still isn't a clear path: the self-test
+          // can't see the host firewall, so carry that warning through
+          // rather than letting the phone time out unexplained.
+          lanNote.textContent = _lanHint
+            ? `Links point at ${origin}, but ${_lanHint}`
+            : `Links point at ${origin} — phones must be on the same Wi-Fi. For remote players, run a tunnel and open the laptop on its URL.`;
+        } else if (_lanHint) {
+          // The common case, and it has an exact fix — say it rather
+          // than leaving them to conclude multiplayer is broken.
+          lanNote.textContent = `${_lanHint} A tunnel works too, and reaches players who aren't on your Wi-Fi.`;
         } else {
           lanNote.textContent =
             "Couldn't detect a LAN address — links use this machine's origin. On another device, swap in this computer's IP (or use a tunnel).";
@@ -16254,12 +16315,22 @@
       host === "127.0.0.1" ||
       host === "::1" ||
       host === "[::1]";
-    
-    if (isLoopback) {
-      showTunnelHelperModal(sid, humans);
-    } else {
+
+    if (!isLoopback) {
       showShareLinksModalDirect(sid, humans);
+      return;
     }
+    // v1.15 — browsing on localhost used to mean "assume the worst and
+    // demand a tunnel". But a host started with `run_web.py --lan` is
+    // browsing localhost *and* perfectly reachable from a phone, and
+    // sending that person off to install cloudflared is a wrong answer
+    // that costs them ten minutes. Ask the server whether its own LAN
+    // address accepts connections, and only fall back to the tunnel
+    // helper when it genuinely doesn't.
+    void fetchLanOrigin().then((origin) => {
+      if (origin) showShareLinksModalDirect(sid, humans);
+      else showTunnelHelperModal(sid, humans);
+    });
   }
 
   /** After spawning a game: if 2+ human seats, bind the host to the first

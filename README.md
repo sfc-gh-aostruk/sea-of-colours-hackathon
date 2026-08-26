@@ -59,8 +59,13 @@ contact Snowflake, `--tests` to run the suite).
 ### 2 · Play the person next to you
 
 Give 2+ seats the **HUMAN** agent in the NEW GAME modal and you get an
-invite link and QR per seat. Run a tunnel, browse the laptop on the
-tunnel URL, and share the link:
+invite link and QR per seat. Everyone on the same Wi-Fi:
+
+```bash
+python run_web.py --lan     # plain run_web.py is loopback-only
+```
+
+For players elsewhere, run a tunnel and browse the laptop on its URL:
 
 ```bash
 cloudflared tunnel --url http://localhost:8000
@@ -332,15 +337,19 @@ Two consequences worth knowing:
 `GET /api/meta/backend` reports the default, the reason, and every
 per-game option; the landing-page badge shows the default.
 
-**Hosting a shared game:** run one uvicorn worker without `--reload`
-(the cross-player submit lock is a per-process `threading.Lock`), pin
-the backend so it can't auto-detect mid-party, and browse the laptop on
-the tunnel URL so invite QRs are phone-reachable.
+**Hosting a shared game:**
 
 ```bash
-PYTHONPATH=. SOC_BACKEND=memory uvicorn server.app:app --host 0.0.0.0 --port 8000
-cloudflared tunnel --url http://localhost:8000
+python run_web.py --lan                          # same Wi-Fi
+cloudflared tunnel --url http://localhost:8000   # or: players anywhere
 ```
+
+`--lan` binds every interface and turns auto-reload off, because the
+cross-player submit lock is a per-process `threading.Lock` and a memory
+season lives in that process — a file save mid-party would reset
+everyone. Plain `run_web.py` binds loopback, which no other device can
+reach; `GET /api/meta/lan` reports whether the address in your invite QR
+is actually being served, and whether the host firewall is set to block.
 
 Seat links live at `/play?session=<id>&player=p2` — the `/play` matters,
 `/` is the title screen.

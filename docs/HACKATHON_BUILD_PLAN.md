@@ -91,7 +91,7 @@ weapons decision for the attendee to make.
 | 2 | Trim the agent roster to exactly `RED_HARVEST` / `RED_HARVEST_LITE` / `V12` | ✅ done (2026-08-25) — legacy Cortex Agents-API path removed, all retired harnesses deleted, V12 flattened off `tabula_v7` and now self-contained |
 | 3 | Easy install & first-run verification pass — **the north-star phase**; untangle the two Snowflake dependencies, preserve the multiplayer/tunnel suite. Treat it as a product goal, not a checkbox | 🟢 substantially done (2026-08-25, v1.12) — backend auto-detects, boot probe + actionable errors, `quickstart_check.py`, one-click Quick game, docs reconciled; verified from a fresh venv on base requirements. Remaining: a walk-through against a genuinely fresh **trial account** (all Snowflake checks so far were offline or against an existing account) |
 | 4 | Simplify the Orbital phase down to purchasing + weapons buying (drop refine/catapult/jettison); re-teach all three agents the new orbit | ✅ done (2026-08-25, **v1.13**) — engine, view, both agents, UI, RULEBOOK §4 and the attendee docs all reconciled; 916 tests green. Catapult graphics **kept** and resized to the settlement manifest. Follow-up below: the orbit eval scenarios still name retired verbs |
-| 4.5 | **Multiplayer audit** — the suite is a hackathon requirement and is partly broken; needs its own pass | pending — see below |
+| 4.5 | **Multiplayer audit** — the suite is a hackathon requirement and is partly broken; needs its own pass | ✅ done (2026-08-26, **v1.15**) — root cause found: `run_web.py` binds loopback, so every LAN invite QR was unreachable. `--lan` added, the server now self-tests the address it advertises and tells the two failure causes apart. 951 tests green. See "as built" below |
 | 4.6 | **Per-game backend choice** — pick Memory or Snowflake in the New Game modal instead of once per process; Memory means fast, no persistence, no LLM agent | ✅ done (2026-08-26, **v1.14**) — routing, merged listing, modal dropdown, Quick game pinned to memory; frozen-constant trap fixed and pinned by a test. **The rationale changed during implementation — see "as built" below.** 937 tests green |
 | 5 | Finish/polish the interactive manual (`manual/`) | pending |
 | 6 | Hackathon Guide (onboarding, sibling to `manual/`) | 🟡 first cut landed (2026-08-25) — `guide/index.html`; revisit after Phases 3/4 change the install story and the orbit |
@@ -1191,6 +1191,65 @@ they were breaking the documented happy path; the rest is open.
   and the docs routes but nothing asserts that a seat link resolves to a
   playable seat. A cheap `TestClient` test over `/` → `/play` redirect
   and seat binding would have caught the QR bug.
+
+### Phase 4.5 — as built (2026-08-26, v1.15)
+
+**Root cause of "multiplayer doesn't work": `run_web.py` binds
+`127.0.0.1`.** Every doc teaches `python run_web.py`, so the server the
+host is running accepts nothing from the network — while the invite
+modal independently asks for the host's LAN IP, gets a correct answer,
+and renders a QR for an address nothing is listening on. The phone gets
+a bare timeout. Each half looked right in isolation, which is why this
+survived: `_lan_ip()` was accurate, the QR encoded exactly what it was
+given, and no layer knew the other's assumption was false.
+
+The tunnel path always worked, because `cloudflared` connects to
+`localhost` from the same machine — which is why the documented runbook
+appeared fine and the LAN path silently didn't.
+
+**What landed**
+
+- `run_web.py` grew a real CLI: `--host`, `--port` (previously ignored
+  outright), `--reload/--no-reload`, and `--lan`, which binds `0.0.0.0`,
+  forces reload **off** and prints the join address. Reload off is not
+  cosmetic — the submit lock is a per-process `threading.Lock` and a
+  memory season lives in that process, so a file save mid-party resets
+  everyone. Binding stays opt-in because it is an exposure decision:
+  there is no auth.
+- `GET /api/meta/lan` now reports `lan_reachable` (a TCP self-connect to
+  the address it is about to advertise) and `lan_firewalled`, not just
+  `lan_ip`.
+- `fetchLanOrigin()` refuses to build an origin it knows is dead, and
+  the loopback branch no longer assumes a tunnel is required — a host on
+  `--lan` is browsing localhost *and* reachable, and used to be sent off
+  to install `cloudflared` for nothing.
+- The tunnel-helper modal stopped asserting "your firewall blocks
+  incoming connections", which was a guess and usually wrong, and now
+  offers `--lan` first with the tunnel as the remote/firewalled answer.
+- `tests/test_lan_hosting.py` (13 tests) pins the flag semantics and
+  every branch of the diagnosis.
+
+**Known limit, deliberately stated rather than hidden.** The self-test
+proves the bind, not the path: a same-host connection to your own LAN IP
+is short-circuited by the kernel and never crosses the macOS application
+firewall, so a machine in block-all mode can answer itself while
+refusing the phone. Hence `lan_firewalled` as a separate signal — and
+the reason the two are reported independently is that they need opposite
+fixes, and telling someone who already ran `--lan` to run `--lan` is
+worse than saying nothing.
+
+**Already closed earlier, confirmed during this pass:** `/mobile` was
+retired in v1.13 (redirects to `/play`, second QR dropped) and seat
+links were fixed in v1.12 with `tests/test_seat_links.py`. Both were
+still described as broken in `docs/MULTIPLAYER.md`; that doc also still
+told hosts to pin `SOC_BACKEND`, stale since v1.14. All reconciled.
+
+**Not reproduced:** the two-device game itself. Core sync was verified
+server-side (two human seats, correct pending state, night resolving on
+the second submit, replay frames written), but the author's machine has
+the macOS firewall in block-all + stealth, so a real phone join could
+not be tested here. Worth one live check on a machine with the firewall
+open before the day.
 
 ## Phase 4.6 — Per-game backend choice (NEXT — agreed, not started)
 
