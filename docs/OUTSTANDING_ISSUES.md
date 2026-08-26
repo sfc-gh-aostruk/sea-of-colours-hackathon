@@ -636,6 +636,57 @@ files fail there, and the guards (unopposed salvo still flies, two flares
 still both fly) pass — so the suite is not just asserting "weapons are
 broken".
 
+## 17. ✅ (DONE, v1.19) Probe-launch markers could outlive their probe forever
+
+Raised as "markers should be removed after three nights no matter what", and
+the useful part of the answer is that **the rule already existed** — v1.2
+specifies exactly that, so no rulebook change was needed. What was missing
+was the sweep actually running:
+
+> **Aurora sweep added to `decay_probes`.** At **every Aurora**, after
+> expiring live probes by lifetime, the engine also sweeps `probe_intel` for
+> any `via="probe_launch"` marker whose probe is no longer alive but has
+> reached its natural expiry date. (RULEBOOK v1.2)
+
+Design intent recap: a probe killed by crush / collision / supersede stays
+in the non-witnesses' intel deliberately (they saw it land, not die), and the
+probe's scheduled expiry — `SOC_PROBE_LIFETIME_NIGHTS`, default **3** — is
+the *only* bound on that. So if the sweep misfires there is no other backstop
+and the marker is simply permanent.
+
+**Hole A — the sweep was behind an early return.** `decay_probes` bailed with
+`if not expired: return []` *before* the sweep, so markers only cleared on an
+Aurora where some **unrelated** live probe also hit its lifetime. Measured
+with a single secretly-killed probe and nothing else on the board: marker
+still present on day 6 and every day after. Add one decoy probe that expires
+on day 3 and the same marker cleared correctly on day 3 — the cleanup worked,
+it just fired on someone else's schedule.
+
+**Hole B — merged markers were skipped.** The sweep matched
+`via == "probe_launch"`. A launch onto a cell the viewer had *already*
+scouted is merged onto that richer terrain echo (v1.11) and leaves only a
+`probe_launch_glyph` overlay with `via` untouched, so the sweep walked past
+it. That is precisely the case the v1.11 comment predicted would "linger
+forever as a permanent ghost": it was fixed for the death path
+(`_clear_probe_launch_markers`) and never for the scheduled path. Measured:
+glyph still rendering on day 5 even though the sweep had run on day 3.
+
+**Fix.** The sweep is now `_expire_stale_launch_markers(k)`, called
+unconditionally at every Aurora, and it recognises both marker shapes: a bare
+`via="probe_launch"` entry is deleted, while a merged entry has only the
+overlay stripped (glyph, launch day, the dead probe's occupant row) so the
+viewer keeps the terrain snapshot they earned. Marker dating prefers the
+`asset_records` deploy day and falls back to the marker's own
+`probe_launch_day` / `day_seen` for hydrated state, instead of the old
+"no ledger row → treat as stale" shortcut.
+
+**Tests:** `tests/test_launch_marker_expiry.py` (8), including the v1.2
+guards that must NOT regress — the marker survives every night *before* its
+scheduled dawn, a live probe's marker is never retired, and with decay
+switched off markers stand forever because there is no schedule to clear
+against. Verified against the committed engine: 4 fail there, the 4 guards
+pass.
+
 ## Triage summary
 
 | # | Area | Severity | Blocking multiplayer? |
@@ -656,3 +707,4 @@ broken".
 | 14 | Crushed probe echoed its killer twice (stale disk, dead observer) | ✅ done (v1.19) | no |
 | 15 | Weapon launch + a second action in the same hour (collision pre-passes ignored pre-empted seats) | ✅ done (v1.19) | no |
 | 16 | Chaff couldn't stop a launch; chaff chained into a lock (RULEBOOK §4.9.3 ⇄ §4.9.5 contradiction) | ✅ done (v1.19 / RULEBOOK v1.14) | no |
+| 17 | Probe-launch markers never expired (sweep behind an early return; merged glyphs skipped) | ✅ done (v1.19) | no |

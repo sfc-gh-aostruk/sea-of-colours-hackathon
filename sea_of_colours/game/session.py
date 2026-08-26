@@ -6350,8 +6350,6 @@ class GameSession:
                 )
             if (int(self.day) - start + 1) >= int(k):
                 expired.append((eid, en))
-        if not expired:
-            return []
         stamps = getattr(self, "_probe_deploy_stamp", None)
         ids: List[str] = []
         for eid, en in expired:
@@ -6362,51 +6360,121 @@ class GameSession:
             if stamps:
                 stamps.pop(eid, None)
             ids.append(eid)
-        self._persist_asset_ledger()
-        self.log_event(
-            "probe_expired",
-            f"probe lifetime ({int(k)} nights) reached — expired "
-            + ", ".join(ids),
-            day=self.day,
-            ids=ids,
-        )
-        # Sweep probe_intel for echoes whose probe was secretly destroyed
-        # (crush / collision / supersede) but has now reached the dawn it
-        # would have naturally expired. Opponents retain "last known
-        # position" intel until the probe's scheduled expiry — they never
-        # learn about a destruction they didn't witness, but the echo
-        # clears on the same schedule the probe was always going to die.
-        for bucket in self.probe_intel.values():
-            stale: List[str] = []
-            for key, entry in bucket.items():
-                if entry.get("via") != "probe_launch":
-                    continue
-                pid = entry.get("probe_id") or next(
-                    (
-                        o.get("id")
-                        for o in (entry.get("occupants") or [])
-                        if isinstance(o, dict) and o.get("type") == "probe"
-                    ),
-                    None,
-                )
-                if pid is None or str(pid) in self.entities:
-                    continue  # live probe — already handled above
-                rec = self.asset_records.get(str(pid))
-                if rec is None:
-                    stale.append(key)
-                    continue
-                first = int(
-                    rec.first_deployed_day
-                    if rec.first_deployed_day is not None
-                    else rec.created_on_day
-                    if rec.created_on_day is not None
-                    else 0
-                )
-                if (int(self.day) - first + 1) >= int(k):
-                    stale.append(key)
-            for key in stale:
-                del bucket[key]
+        if expired:
+            self._persist_asset_ledger()
+            self.log_event(
+                "probe_expired",
+                f"probe lifetime ({int(k)} nights) reached — expired "
+                + ", ".join(ids),
+                day=self.day,
+                ids=ids,
+            )
+        # v1.19 — this runs at EVERY Aurora, which is what v1.2 always
+        # specified. It used to sit behind an early ``return`` taken when no
+        # live probe happened to expire tonight, so a marker for a secretly
+        # destroyed probe only cleared if some UNRELATED probe died on the
+        # same dawn. With no other probes in play it never cleared at all.
+        self._expire_stale_launch_markers(int(k))
         return ids
+
+    def _expire_stale_launch_markers(self, lifetime_nights: int) -> None:
+        """Retire §3.15 launch markers on the Aurora their probe was
+        always scheduled to expire.
+
+        A probe destroyed by crush / collision / supersede stays in the
+        non-witnesses' intel on purpose (v1.2): they never saw it die, so
+        they keep "last known position" until the night it was going to
+        expire anyway. That schedule is the only bound on the marker, so it
+        has to actually fire — otherwise a seat is looking at a probe that
+        has been gone for the whole season.
+
+        Both marker shapes are handled, which is the second half of the
+        v1.19 fix. A launch onto a cell the viewer had never scouted is its
+        own ``via="probe_launch"`` entry and the entry goes. A launch onto a
+        cell they HAD scouted was merged onto that richer terrain echo
+        (v1.11), leaving only a ``probe_launch_glyph`` overlay — the older
+        sweep matched on ``via`` and so walked straight past those, and they
+        were the exact case v1.11 called out as lingering "forever as a
+        permanent ghost". Only the overlay is stripped there; the seat's own
+        terrain snapshot is theirs and stays.
+        """
+        for bucket in self.probe_intel.values():
+            drop: List[str] = []
+            for key, entry in bucket.items():
+                pid = self._launch_marker_probe_id(entry)
+                if pid is None or pid in self.entities:
+                    continue  # live probe — the lifetime pass owns it
+                if not self._launch_marker_is_due(entry, pid, lifetime_nights):
+                    continue
+                if entry.get("via") == "probe_launch":
+                    drop.append(key)
+                else:
+                    self._strip_launch_overlay(entry, pid)
+            for key in drop:
+                del bucket[key]
+
+    def _launch_marker_probe_id(self, entry: dict[str, Any]) -> Optional[str]:
+        """Which probe a §3.15 marker is about, or ``None`` if not a marker."""
+        glyph = entry.get("probe_launch_glyph")
+        if isinstance(glyph, dict) and glyph.get("probe_id"):
+            return str(glyph["probe_id"])
+        is_marker = (
+            entry.get("via") == "probe_launch"
+            or entry.get("probe_launch_day") is not None
+        )
+        if not is_marker:
+            return None
+        if entry.get("probe_id"):
+            return str(entry["probe_id"])
+        for occ in entry.get("occupants") or []:
+            if isinstance(occ, dict) and occ.get("type") == "probe" and occ.get("id"):
+                return str(occ["id"])
+        return None
+
+    def _launch_marker_is_due(
+        self, entry: dict[str, Any], probe_id: str, lifetime_nights: int,
+    ) -> bool:
+        """Has this marker's probe reached the dawn it would have expired?"""
+        first: Optional[int] = None
+        rec = self.asset_records.get(probe_id)
+        if rec is not None:
+            stamp = (
+                rec.first_deployed_day
+                if rec.first_deployed_day is not None
+                else rec.created_on_day
+            )
+            if stamp is not None:
+                first = int(stamp)
+        if first is None:
+            # No ledger row to date it by (hydrated / legacy state). Fall
+            # back to the day the marker itself records rather than assuming
+            # the worst, so a launch stamped tonight isn't retired tonight.
+            for field_name in ("probe_launch_day", "day_seen"):
+                stamp = entry.get(field_name)
+                if isinstance(stamp, (int, float)):
+                    first = int(stamp)
+                    break
+        if first is None:
+            return True
+        return (int(self.day) - first + 1) >= int(lifetime_nights)
+
+    def _strip_launch_overlay(self, entry: dict[str, Any], probe_id: str) -> None:
+        """Remove the launch overlay, leaving the viewer's terrain echo.
+
+        Mirrors the merged-case branch of
+        :meth:`_clear_probe_launch_markers` so a marker retired by schedule
+        and one retired by a witnessed death leave the same echo behind.
+        """
+        occ = entry.get("occupants") or []
+        if any(isinstance(o, dict) and o.get("id") == probe_id for o in occ):
+            entry["occupants"] = [
+                o for o in occ
+                if not (isinstance(o, dict) and o.get("id") == probe_id)
+            ]
+        glyph = entry.get("probe_launch_glyph")
+        if isinstance(glyph, dict) and glyph.get("probe_id") == probe_id:
+            entry.pop("probe_launch_glyph", None)
+        entry.pop("probe_launch_day", None)
 
     def _freeze_final_probe_echo(self, probe: "Entity") -> None:
         """Take a probe's last look, the instant before it is destroyed.
