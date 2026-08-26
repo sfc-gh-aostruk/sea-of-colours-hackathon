@@ -5518,6 +5518,50 @@
       .join(" ");
   }
 
+  /**
+   * The decision as label/value rows, in the order a reader wants them.
+   *
+   * ``intent`` and ``reflection`` come off the think pass rather than
+   * the plan, but they are the two lines that actually say *why* — the
+   * rest is bookkeeping — so they lead. Shared by the inline pane and
+   * the full card so the two can never drift apart.
+   */
+  function advisorDecisionRows(plan, think) {
+    const p = plan || {};
+    const t = think || {};
+    const rows = [];
+    if (t.intent) rows.push(["intent", t.intent]);
+    if (t.reflection) rows.push(["reflection", t.reflection]);
+    if (p.posture) rows.push(["posture", p.posture]);
+    if (p.plan_ids && p.plan_ids.length) {
+      rows.push(["chose", p.plan_ids.join(", ")]);
+    }
+    if (p.targets && p.targets.length) {
+      rows.push(["targets", _advisorCells(p.targets)]);
+    }
+    if (p.avoid && p.avoid.length) {
+      rows.push(["avoid", _advisorCells(p.avoid)]);
+    }
+    if (p.note) rows.push(["note", p.note]);
+    if (p.sanitizer_changes && p.sanitizer_changes.length) {
+      rows.push(["corrected", p.sanitizer_changes.join(" · ")]);
+    }
+    return rows;
+  }
+
+  /** :func:`advisorDecisionRows` rendered as a definition list. */
+  function advisorDecisionList(plan, think) {
+    const dl = document.createElement("dl");
+    for (const [k, v] of advisorDecisionRows(plan, think)) {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = String(v);
+      dl.append(dt, dd);
+    }
+    return dl;
+  }
+
   /** One human-readable line per proposed order, in execution order. */
   function advisorMoveLines(moves) {
     return (Array.isArray(moves) ? moves : []).map((m, i) => {
@@ -5550,29 +5594,7 @@
     }
 
     // PLAN — the decision, then the orders it compiled to.
-    const rows = [];
-    if (plan.posture) rows.push(["posture", plan.posture]);
-    if (plan.plan_ids && plan.plan_ids.length) {
-      rows.push(["chose", plan.plan_ids.join(", ")]);
-    }
-    if (plan.targets && plan.targets.length) {
-      rows.push(["targets", _advisorCells(plan.targets)]);
-    }
-    if (plan.avoid && plan.avoid.length) {
-      rows.push(["avoid", _advisorCells(plan.avoid)]);
-    }
-    if (plan.note) rows.push(["note", plan.note]);
-    if (plan.sanitizer_changes && plan.sanitizer_changes.length) {
-      rows.push(["corrected", plan.sanitizer_changes.join(" · ")]);
-    }
-    const dl = document.createElement("dl");
-    for (const [k, v] of rows) {
-      const dt = document.createElement("dt");
-      dt.textContent = k;
-      const dd = document.createElement("dd");
-      dd.textContent = String(v);
-      dl.append(dt, dd);
-    }
+    const dl = advisorDecisionList(plan, think);
     const ol = document.createElement("ul");
     ol.className = "cc-advisor-moves";
     for (const line of advisorMoveLines(out.moves)) {
@@ -5753,6 +5775,7 @@
   function renderAdvisorCard() {
     if (!advisorModalBody || !advisorPlan) return;
     const p = advisorPlan;
+    const plan = p.plan || {};
     const think = p.thinking || {};
     const prompts = p.prompts || {};
 
@@ -5766,6 +5789,19 @@
     if (advisorCardTab === "orders") {
       node = document.createElement("div");
       node.className = "cc-card-orders";
+
+      /** Section rule, in the same `// label` idiom as the rest of the UI. */
+      const section = (label) => {
+        const head = document.createElement("div");
+        head.className = "cc-card-section dim";
+        head.textContent = `// ${label}`;
+        node.appendChild(head);
+      };
+
+      section("decision");
+      node.appendChild(advisorDecisionList(plan, think));
+
+      section("proposed orders");
       const ol = document.createElement("ul");
       ol.className = "cc-advisor-moves";
       const lines = advisorMoveLines(p.moves);
@@ -5785,12 +5821,17 @@
         ol.appendChild(li);
       }
       node.appendChild(ol);
-      // Reuse the inline pane's decision table verbatim rather than
-      // maintaining a second copy of the same formatting rules.
-      if (advisorPanePlan) {
-        const dl = advisorPanePlan.querySelector("dl");
-        if (dl) node.insertBefore(dl.cloneNode(true), ol);
-      }
+
+      // The point of the card is to hold the whole exchange in one
+      // place, so the reasoning rides under the orders it produced
+      // rather than living only behind its own tab.
+      section("reasoning");
+      const pre = document.createElement("pre");
+      pre.className = "cc-card-pre cc-card-pre--inline";
+      pre.textContent = String(think.reasoning || "").trim()
+        || "(no reasoning returned — the thinker was off, empty, or fell "
+           + "through to the deterministic mover)";
+      node.appendChild(pre);
     } else {
       node = document.createElement("pre");
       node.className = "cc-card-pre";

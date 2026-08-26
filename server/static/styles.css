@@ -8636,6 +8636,26 @@ button.cli-btn.cc-advisor-modal-tab[aria-selected="true"] {
 }
 .cc-advisor-modal-body dd { margin: 0; }
 
+/* Section rules inside the full card. The card is one continuous scroll,
+ * so these are what keep the decision, the orders and the reasoning from
+ * reading as a single undifferentiated block. */
+.cc-advisor-modal-body .cc-card-section {
+  margin: 16px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--advisor-dim);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.cc-advisor-modal-body .cc-card-section:first-child { margin-top: 0; }
+/* The reasoning is quoted on the orders tab as well as owning its own
+ * tab. Rule it off down the left so it reads as the model's voice
+ * rather than ours. */
+.cc-advisor-modal-body .cc-card-pre--inline {
+  padding-left: 10px;
+  border-left: 1px solid var(--advisor-dim);
+}
+
 .cc-advisor-modal-foot {
   display: flex;
   align-items: center;
