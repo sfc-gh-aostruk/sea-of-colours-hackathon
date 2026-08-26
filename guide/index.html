@@ -1237,29 +1237,42 @@ PY</pre>
           </div>
           <div class="gd-term">
             <button class="gd-copy" type="button">[ COPY ]</button>
-<pre><span class="c"># everyone on the same Wi-Fi — binds every interface, reload off</span>
-<span class="s">$</span> python run_web.py --lan
-<span class="o">[soc] LAN hosting: other devices join at http://192.168.1.42:8000/</span>
+<pre><span class="c"># recommended before you host — keeps one address all session</span>
+<span class="s">$</span> brew install cloudflared
 
-<span class="c"># players elsewhere — a public URL anyone can open</span>
-<span class="s">$</span> cloudflared tunnel --url http://localhost:8000</pre>
+<span class="c"># then click MULTIPLAYER on the title screen</span>
+<span class="s">$</span> python run_web.py</pre>
           </div>
           <p>
-            On Wi-Fi, spawn the session with the right number of seats set to
-            <code>HUMAN</code> and hand out the QR codes. On a tunnel, share the
-            tunnel URL and <strong>open the laptop on it too</strong> before
-            spawning &mdash; invite links are built from whatever address the
-            host is browsing.
+            <strong>MULTIPLAYER</strong> opens a public tunnel, moves your
+            browser onto it and spawns the session; you then hand out one QR
+            per seat and they work from anywhere. You can host with nothing
+            installed &mdash; the fallback provider is plain <code>ssh</code>
+            &mdash; but its free address changes after a few minutes, which
+            kills the links mid-game, so <code>cloudflared</code> is worth
+            the thirty seconds.
           </p>
-          <div class="gd-note gd-note--stop">
-            <b class="tag">Plain <code>run_web.py</code> won't do</b>
+          <div class="gd-note">
+            <b class="tag">Why there are two providers</b>
             <p>
-              Without <code>--lan</code> the server listens on
-              <code>localhost</code> only, so no other device can reach it &mdash;
-              the QR just times out on the phone. Until v1.15 nothing said so.
-              If you're unsure, open <code>/api/meta/lan</code>: it reports
-              whether the address in your QR is actually being served, and
-              whether your firewall is set to block incoming connections.
+              <code>cloudflare</code> goes first because its address lasts the
+              whole session. <code>localhost.run</code> sits behind it because
+              it needs no install at all, and because locked-down networks
+              filter outbound traffic unevenly &mdash; some drop the SSH the
+              fallback needs, others don't &mdash; so between the two almost
+              every network is covered. The server doesn't guess which:
+              it starts the first provider, waits for the address it printed
+              to become resolvable here, and falls through if it never does.
+              <code>/api/tunnel/status</code> says which one won.
+            </p>
+            <p class="dim">
+              That wait is deliberate, and it's the one thing to know if you
+              ever debug this: a tunnel hostname doesn't exist for a second or
+              two after the client prints it, and a DNS lookup in that gap gets
+              cached as "no such name" for <em>thirty minutes</em>. Checking
+              impatiently is how you break the link you're checking &mdash; so
+              if your own browser can't open the URL, get a fresh one rather
+              than poking at the old one.
             </p>
           </div>
           <p class="dim">
@@ -1272,17 +1285,19 @@ PY</pre>
           <div class="gd-note gd-note--warn">
             <b class="tag">Two rules that keep sync intact</b>
             <p>
-              <strong>No auto-reload.</strong> The cross-player submit lock is
-              per-process, so a stray file save doesn't hiccup &mdash; it resets
-              everyone's season. <code>--lan</code> turns reload off for you.
+              <strong>No auto-reload during a party.</strong> The cross-player
+              submit lock is per-process, so a stray file save doesn't hiccup
+              &mdash; it resets everyone's season. Start with
+              <code>python run_web.py --no-reload</code> if you'll be editing
+              code while others are playing.
             </p>
             <p>
               <strong>Pick your storage when you spawn.</strong> A
               <code>MEMORY</code> game dies with the process; choose
               <code>SNOWFLAKE</code> in the launcher's STORAGE row if the match
-              should survive a restart (see <a href="#snowflake">05</a>). A free
-              quick-tunnel also gets a new random address every time
-              <code>cloudflared</code> restarts.
+              should survive a restart (see <a href="#snowflake">05</a>).
+              Anonymous tunnels also get a new random address every restart, so
+              re-share the links if you bounce the server.
             </p>
           </div>
           <p class="dim">

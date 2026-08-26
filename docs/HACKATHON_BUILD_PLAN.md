@@ -93,6 +93,9 @@ weapons decision for the attendee to make.
 | 4 | Simplify the Orbital phase down to purchasing + weapons buying (drop refine/catapult/jettison); re-teach all three agents the new orbit | ✅ done (2026-08-25, **v1.13**) — engine, view, both agents, UI, RULEBOOK §4 and the attendee docs all reconciled; 916 tests green. Catapult graphics **kept** and resized to the settlement manifest. Follow-up below: the orbit eval scenarios still name retired verbs |
 | 4.5 | **Multiplayer audit** — the suite is a hackathon requirement and is partly broken; needs its own pass | ✅ done (2026-08-26, **v1.15**) — root cause found: `run_web.py` binds loopback, so every LAN invite QR was unreachable. `--lan` added, the server now self-tests the address it advertises and tells the two failure causes apart. 951 tests green. See "as built" below |
 | 4.6 | **Per-game backend choice** — pick Memory or Snowflake in the New Game modal instead of once per process; Memory means fast, no persistence, no LLM agent | ✅ done (2026-08-26, **v1.14**) — routing, merged listing, modal dropdown, Quick game pinned to memory; frozen-constant trap fixed and pinned by a test. **The rationale changed during implementation — see "as built" below.** 937 tests green |
+| 4.9 | **Transport, root cause** — why "Cloudflare is blocked here" was never true | ✅ done (2026-08-26, **v1.18**) — the DNS gate added in 4.8 was **causing** the failure it detected. A tunnel hostname doesn't exist until ~2.4s after the client prints it (measured: printed 5.6s, resolvable 8.0s); the gate queried immediately and retried every 0.8s, so its first lookups cached an `NXDOMAIN` under `trycloudflare.com`'s **1800s negative TTL** — killing the name on the host's own resolver for half an hour. Proven by A/B: two tunnels seconds apart, the hammered name still NXDOMAIN locally while `1.1.1.1` resolved it, the untouched one fine. Gate now waits 12s before its first lookup and the liveness watchdog is held behind the same gate (it resolves the same name). Cloudflare now wins in 17s, end to end, on the VPN. 36 tunnel tests. See "as built" below |
+| 4.8 | **Transport, corrected** — a soak and a retest overturned both of 4.7's conclusions | ✅ done (2026-08-26, **v1.17**), **DNS half wrong — see 4.9** — anonymous `localhost.run` names rotate in **13 min** (old one 503s, killing every invite link), and the Cloudflare DNS block turned out **intermittent**, not structural: same laptop, VPN up, served 200 the next day. So the order flipped to `cloudflare` first and reachability became a **runtime DNS gate** instead of an assumption. Invite modal warns when a rotating provider is carrying the tunnel. 28 tunnel tests; 997 green. See "as built" below |
+| 4.7 | **Multiplayer transport** — make "click MULTIPLAYER, share a link" work on a locked-down corporate laptop | ✅ done (2026-08-26, **v1.16**), **superseded by 4.8** — LAN is unavailable room-wide (firewall is Jamf-enforced) and corporate DNS sinkholes `*.trycloudflare.com`, so the tunnel became an ordered **provider list**: `localhost.run` (no install, no account) then `cloudflare`. Adds a liveness watchdog after finding a live process serving a dead URL. 20 new tests; 971 green. See "as built" below |
 | 5 | Finish/polish the interactive manual (`manual/`) | pending |
 | 6 | Hackathon Guide (onboarding, sibling to `manual/`) | 🟡 first cut landed (2026-08-25) — `guide/index.html`; revisit after Phases 3/4 change the install story and the orbit |
 | 7 | In-game read-only agent advisor — invoke V12/RED_HARVEST mid-turn from the UI: reasoning card (readable + txt dump), magenta board overlay, adopt-into-your-policy | pending — V12 dispatch path now verified (Phase 2 notes), so the advisor can reuse it |
@@ -1250,6 +1253,195 @@ the second submit, replay frames written), but the author's machine has
 the macOS firewall in block-all + stealth, so a real phone join could
 not be tested here. Worth one live check on a machine with the firewall
 open before the day.
+
+### Phase 4.9 — as built (2026-08-26, v1.18): we were the DNS block
+
+**The gate from 4.8 was manufacturing the outage it was written to
+detect.** Three explanations were offered across two days — a corporate
+DNS sinkhole, then an intermittent block, then a reputation filter on
+newly-observed subdomains — and all three were wrong. The real mechanism
+is mundane and entirely ours.
+
+Two events that look simultaneous are not. `cloudflared` prints its URL at
+5.4–5.8s; the DNS record first resolves *anywhere* at 8.0–9.3s (three
+runs, so a 2.4–3.5s window). The gate ran the instant the URL appeared and
+retried every 0.8s, so its first
+two or three lookups asked for a name that genuinely did not exist yet. A
+resolver caches that answer, and `trycloudflare.com` publishes a negative
+TTL of **1800 seconds**. One premature lookup therefore made the hostname
+unresolvable *on the host's machine* — the one whose resolver decides
+whether any invite link works — for the next half hour.
+
+The A/B that settled it, two quick tunnels started seconds apart on one
+laptop with the VPN up:
+
+| | queried 8× at birth | left untouched 75s |
+| --- | --- | --- |
+| OS resolver at t+75s | **NXDOMAIN** | `104.16.231.132` |
+| `1.1.1.1` (control) | `104.16.230.132` | `104.16.230.132` |
+
+Same network, same moment, opposite outcomes; the hammered name plainly
+existed, since the public resolver returned it. The only variable was our
+own impatience. It also explains the "intermittent" reading in 4.8: the
+Cloudflare name that *worked* was one whose first local lookup happened
+minutes after creation, and the ones that "failed" were the ones the gate
+had touched at birth.
+
+**What changed**
+
+- `_hostname_resolves` waits `_DNS_GRACE_S` (12s, ~3× the worst measured lag)
+  before its **first** lookup, and backs off `_DNS_RETRY_S` (8s) between
+  retries rather than 0.8s — every miss re-caches the negative answer, so
+  a tight loop extends the damage instead of catching a slow record.
+- The liveness watchdog is held behind the same gate via a
+  `threading.Event`. It probes over `urllib`, i.e. through the same OS
+  resolver, so an eager watchdog poisoned the name just as effectively —
+  a second source of the same bug that would have survived fixing only
+  the gate.
+- Tests pin the *timing*, not just the outcome: that the gate is silent
+  during the grace period, that the constants stay generous, and that no
+  probe happens before the gate opens.
+
+**Verified end to end** on the VPN: `tunnel.start()` returns `cloudflare`
+in 17.0s, the URL fetches 200 through the OS resolver, and `status()`
+reports `serving: true, rotates: false`.
+
+**The lesson worth keeping:** a health check that mutates the thing it
+measures is worse than no check. This one had a 30-minute blast radius and
+a plausible scapegoat (corporate IT), which is exactly why it survived
+three rounds of diagnosis.
+
+### Phase 4.8 — as built (2026-08-26, v1.17): the transport, corrected
+
+**4.7 shipped two conclusions that a day of measurement overturned.** Both
+were honestly derived from what we could see at the time; both were wrong
+in a way that mattered, and the corrections point in opposite directions.
+
+**Correction 1 — the default provider expires.** 4.7 led with
+`localhost.run` because it needs no install and no account, and left the
+hostname question open. A soak answered it: the tunnel published
+`cf80a4d4c4839b.lhr.life`, served 200 for **thirteen minutes**, then
+moved to a new name — and the old one returned 503. `ssh` stayed alive
+and healthy throughout, so nothing failed loudly. Every invite link and
+QR already handed out was dead, and the *host* came off worst, because
+the button parks their browser on the tunnel origin. Their docs say free
+tunnels rotate "after a few hours"; thirteen minutes is what we saw, and
+the second name outlived the first, so it isn't a fixed period either.
+
+The documented fix — a **registered** SSH key instead of `nokey` — was
+tested and rejected: an unregistered key is refused outright
+(`Permission denied (publickey)`), so a stable name needs an account with
+the key uploaded, per person. That is the setup cost this transport
+exists to eliminate.
+
+**Correction 2 — the DNS block is intermittent, not structural.** 4.7
+recorded that Snowflake's resolver `NXDOMAIN`s `*.trycloudflare.com`, and
+demoted Cloudflare on that basis. The next day, on the same laptop with
+the VPN confirmed up and the corporate resolver in use, a fresh
+Cloudflare quick tunnel resolved and served **200 to an ordinary request
+with no bypass**. Both observations were real, which means the block is a
+filter on *newly observed* subdomains that clears as a name ages — so it
+cannot be encoded in a provider ordering at all.
+
+**What landed**
+
+- **Order flipped:** `cloudflare` leads, `localhost.run` is the fallback.
+  The deciding property is hostname *stability*, not install cost, since
+  a link that dies mid-game is worse than one extra `brew install`.
+- **A DNS acceptance gate.** A provider is accepted only once the
+  hostname it published resolves through the OS resolver — the same one
+  the host's browser uses. It retries for a few seconds, because a new
+  name legitimately takes a moment; only `socket.gaierror` counts, so an
+  unrelated blip can't condemn a good provider. This replaces a guess
+  about the network with a test of the actual condition, which is what
+  makes a fixed order safe.
+- **`rotates` on the provider and in `/api/tunnel/status`** — known up
+  front, unlike `rotations`, which can only report a rotation that has
+  already broken someone's link. The invite modal uses it to warn while
+  the links are still good, and only when a rotating provider is actually
+  carrying the tunnel.
+- Budget raised to 60s in `api_tunnel_start`: each provider now has a
+  gate to clear, and under-budgeting would starve the fallback the gate
+  exists to reach.
+- `tests/test_tunnel_providers.py` grew to 28 — the new order, the
+  rotation flag, and the gate (rejection, fall-through, no orphan left
+  running, retry, give-up, non-DNS errors, empty host).
+- Docs corrected rather than merely updated: the DNS table in
+  `docs/MULTIPLAYER.md` is now explicitly a **dated snapshot** with the
+  intermittency explained, plus a section on rotation with the real
+  numbers; `brew install cloudflared` is promoted back to recommended in
+  `README.md`, `guide/index.html` and `scripts/quickstart_check.py`.
+
+**Known limitation, stated plainly:** the gate checks the *host's*
+resolver, which is not necessarily a guest's. It catches the common case
+and guarantees the host can open their own game, but a guest on a
+differently-filtered network can still be unlucky, and no amount of
+local testing can detect that.
+
+### Phase 4.7 — as built (2026-08-26, v1.16): multiplayer transport
+
+**This supersedes 4.5's advice.** The firewall in that "known limit" is
+not a local quirk — it is **Jamf MDM policy**, so *every* Snowflake
+laptop blocks inbound. LAN play is therefore unavailable to the whole
+room and no flag fixes it. An outbound tunnel is the only viable
+transport, which promoted the tunnel from "remote fallback" to the
+primary path.
+
+**The tunnel was then found to be broken too, for a different reason.**
+Corporate DNS returns `NXDOMAIN` for `*.trycloudflare.com` while the same
+name resolves on `1.1.1.1`. Cloudflare's transport is *fine* — a request
+with DNS bypassed returned 200 from the live game — so the tunnel was
+perfectly healthy and simply unnameable. The failure is unfixable from
+our side: the guest's browser has to resolve the host.
+
+**Measured on this network (VPN up), which is why the fix is a list:**
+
+| Provider | Hostname | Transport | Verdict |
+| --- | --- | --- | --- |
+| `localhost.run` | resolves | 200 | works |
+| `cloudflare` | NXDOMAIN | works | unreachable by name |
+| `localtunnel` | resolves | 502 | high ports dropped |
+| `serveo` | resolves | blocked | SSH egress dropped |
+| `pinggy` | resolves | no route | edge IP filtered |
+| `ngrok`, `devtunnels` | resolve | 443 open | need an account |
+
+Two independent policies — DNS blocklisting and egress filtering — catch
+different providers, and no single provider clears both everywhere. So
+`server/tunnel.py` became an **ordered provider list**, using the first
+that publishes a URL.
+
+**What landed**
+
+- `Provider` dataclass + `PROVIDERS` list. `localhost.run` leads because
+  it needs no install and no account (plain `ssh`, present everywhere)
+  and isn't blocklisted; `cloudflare` follows for networks that permit it
+  but drop SSH. The failure modes are complementary, which is the point.
+- Sequential fallback with per-provider patience and a total budget;
+  a provider that exits, or connects but never publishes, is torn down
+  and the next is tried rather than taking the feature down.
+- **A liveness watchdog, from a real observation:** localhost.run served
+  503 for twelve minutes while `ssh` sat there happy, because the free
+  tier "changes domain names regularly" (their docs). `running` was
+  therefore a lie. `status()` now carries a tri-state `serving`
+  (True / False / **None** = cannot tell) plus a `rotations` count, and
+  the scraper updates the URL when a new one is announced.
+- The tri-state matters: the probe uses the OS resolver, which is exactly
+  what corporate DNS blocks, so a failure only counts **after** a
+  success. Otherwise we'd accuse a working tunnel of being dead on
+  precisely the networks the second provider exists to serve.
+- `tests/test_tunnel_providers.py` (20 tests) pins ordering, fallback,
+  the watchdog states and both URL regexes against real banner output.
+- Docs reconciled: `brew install cloudflared` demoted from prerequisite
+  to optional second provider in `README.md`, `guide/index.html` and
+  `scripts/quickstart_check.py`; `docs/MULTIPLAYER.md` rewritten around
+  the button rather than a manual command.
+
+**Open question at time of writing:** how long an anonymous
+localhost.run hostname actually survives. A soak is running. If names
+rotate on the order of minutes rather than hours, the default should be
+reconsidered — an invite link that dies mid-game is worse than one that
+never worked, and the honest options are then to lead with cloudflared
+where DNS permits it, or to accept an account for a stable name.
 
 ## Phase 4.6 — Per-game backend choice (NEXT — agreed, not started)
 

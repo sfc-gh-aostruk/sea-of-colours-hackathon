@@ -6,37 +6,145 @@ see the [README](../README.md) and [RULEBOOK.md](../RULEBOOK.md).
 
 ## TL;DR
 
-There are two ways to let other devices in. Pick by where the players are.
+```bash
+python run_web.py
+```
 
-### Everyone on the same Wi-Fi (simplest)
+Click **MULTIPLAYER** on the title screen. The server opens a public
+tunnel, moves your browser onto it, and creates the game; the **INVITE
+PLAYERS** modal then gives a scannable QR and link per seat that work
+from anywhere — other room, other city, phone on cellular.
+
+No install, no account, no flags, no firewall change. Both clients sync
+every 2.5s.
+
+## What the button actually does
+
+It asks the server for a public URL, which `server/tunnel.py` gets by
+running a tunnel client as a subprocess and scraping the URL it prints.
+There is an **ordered list of providers**, and the first one that
+publishes a URL **whose hostname this machine can resolve** wins:
+
+| Order | Provider | Needs | Why it's there |
+| --- | --- | --- | --- |
+| 1 | `cloudflare` | `brew install cloudflared` | Its address lasts as long as the server runs, so invite links don't expire mid-game |
+| 2 | `localhost.run` | nothing — plain `ssh` | No install and no account, so a bare laptop can still host; its free address rotates (see below) |
+
+If none of them work you get a message saying why — naming every provider
+tried and what went wrong with each — and the button falls back to
+starting a local game rather than hanging.
+
+### Why the resolve check matters — and why it waits first
+
+Publishing a URL is not the same as being usable. A network can block a
+tunnel provider purely at the DNS layer, so the client connects happily,
+prints a URL, and stays up — while the hostname resolves for nobody. That
+failure is invisible from the tunnel's side, and it looks exactly like a
+bug in this repo.
+
+So after a provider publishes, we resolve its hostname through the **OS
+resolver** — the same one the host's browser will use — and only then
+accept it. A name the host can't look up is a name they can't hand to a
+guest.
+
+**The check waits about twelve seconds before its first lookup, and that
+delay is the entire point of it.** Printing the URL and the DNS record
+existing are separate events 2.4–3.5s apart (measured over three runs:
+cloudflared printed at 5.4–5.8s, the name first resolved anywhere at
+8.0–9.3s). Ask inside that window and you don't get a harmless "not yet"
+— the resolver
+**caches** the miss, and `trycloudflare.com` publishes a negative TTL of
+**1800 seconds**. One impatient lookup therefore kills the hostname on the
+host's own machine for half an hour, which is the one machine whose
+resolver decides whether any invite link works.
+
+This bit us hard enough to be worth recording: an earlier version of the
+check queried immediately and retried every 0.8s, and the resulting
+self-inflicted `NXDOMAIN` was diagnosed for a full day as "the corporate
+network blocks Cloudflare". It didn't. See the changelog note in
+`server/tunnel.py` (v1.18) and `tests/test_tunnel_providers.py`, which now
+pins that neither the gate nor the liveness watchdog touches DNS early.
+
+One honest limitation: the host's resolver isn't necessarily the guest's.
+This catches the common case (both on the same corporate network) and it
+guarantees the host can at least open their own game, but a guest on a
+differently-filtered network can still be unlucky.
+
+## Corporate networks (why there is more than one provider)
+
+Locked-down networks do block tunnels on purpose, and the mechanisms catch
+different providers:
+
+- **Egress filtering.** A network can allow outbound 443 while dropping
+  SSH to some hosts and the high ports `localtunnel` and `bore` use. This
+  is the one we actually measured.
+- **DNS blocklists.** A resolver *can* sinkhole a tunnel domain, which
+  looks identical to the self-inflicted caching above and is why the gate
+  exists. Worth knowing it's possible; we have not confirmed a real
+  instance of it here.
+
+Measured on a Snowflake-managed laptop, corporate resolver, VPN up,
+2026-08-26:
+
+| Provider | Hostname resolves | Transport | Verdict |
+| --- | --- | --- | --- |
+| `cloudflare` | yes, ~8s after start | yes (200) | **works**; hostname stable for the life of the process (soaked 48 min) |
+| `localhost.run` | yes, immediately | yes (200) | works, but the free hostname rotates — see below |
+| `localtunnel` | yes | no (502) | unusable |
+| `serveo`, `pinggy` | yes | no (blocked) | unusable |
+
+Cloudflare leads because its address is stable. `localhost.run` stays
+behind it because needing no install at all is genuinely valuable on a
+laptop without `cloudflared`, and because the two fail in unrelated
+conditions — a network that drops SSH generally permits Cloudflare and
+vice versa.
+
+### Hostname rotation on free localhost.run tunnels
+
+We connect as `nokey@localhost.run`, the anonymous free mode, and **its
+hostname rotates**. Measured: a tunnel published
+`cf80a4d4c4839b.lhr.life`, served 200 for thirteen minutes, then silently
+moved to `f0498bc340546a.lhr.life` — after which the original returned
+`503`. The `ssh` process stayed alive and healthy throughout, which is why
+`server/tunnel.py` carries a liveness watchdog rather than trusting the
+subprocess.
+
+Every invite link and QR handed out before a rotation is dead afterwards,
+and the host is hit hardest, because MULTIPLAYER navigates their browser
+onto the tunnel origin. Their docs say free tunnels "change domain names
+after a few hours"; thirteen minutes is what we actually saw.
+
+The documented fix is to present a **registered** SSH key instead of
+`nokey`. That is not a drop-in: an unregistered key is refused outright
+(`Permission denied (publickey)`), so a stable name needs an account with
+the key uploaded to `admin.localhost.run` — per person. That is exactly
+the per-attendee setup this transport exists to avoid, so it is not the
+default.
+
+**What we do instead:** `cloudflare` leads the provider list, because a
+quick tunnel keeps its hostname for the life of the process. localhost.run
+stays as the fallback, since needing no install is genuinely valuable when
+`cloudflared` isn't installed — but when it's carrying the tunnel, the
+invite modal says so and warns that the links can expire.
+`GET /api/tunnel/status` exposes this as `rotates` (known up front, from
+the provider) alongside `rotations` (how many have actually happened).
+
+## Same-Wi-Fi LAN play (usually not an option on managed laptops)
 
 ```bash
 python run_web.py --lan
 # [soc] LAN hosting: other devices join at http://192.168.1.42:8000/
 ```
 
-`--lan` binds every interface and turns auto-reload off. Then hit
-**NEW GAME** with 2+ seats set to **HUMAN**; the **INVITE PLAYERS** modal
-gives a scannable QR and link per seat, already addressed to your LAN IP.
+`--lan` binds every interface and turns auto-reload off, and the invite
+modal then addresses links to your LAN IP.
 
-> **`python run_web.py` on its own will not work for this.** It binds
-> `127.0.0.1`, so other devices can't reach it at all — and until v1.15
-> the invite modal still printed a LAN QR, which simply timed out on the
-> phone. The modal now checks and tells you.
-
-### Players elsewhere, or a firewall in the way
-
-```bash
-python run_web.py                                  # loopback is fine here
-cloudflared tunnel --url http://localhost:8000     # -> https://<words>.trycloudflare.com
-```
-
-**Open the laptop on the tunnel URL** (not `localhost`), then create the
-game. Invite links are built from whatever URL the laptop is browsing, so
-this is what makes them work for everyone. The tunnel reaches `localhost`
-itself, which is why `--lan` isn't needed on this path.
-
-Both clients sync every 2.5s.
+> **This requires the host to accept inbound connections**, which a
+> corporate MDM usually forbids. Snowflake laptops are enrolled in Jamf
+> with the firewall set to *block all incoming*, so LAN play is simply
+> unavailable there and no flag will change that — use the tunnel, which
+> only ever dials outward. Check with `GET /api/meta/lan`: it reports
+> `lan_reachable` and `lan_firewalled` and names the fix in `lan_hint`.
 
 ### Storage
 
@@ -56,43 +164,27 @@ returns a bare origin whose path is `/`, so every QR a phone scanned on
 the same Wi-Fi landed on the title screen. Generation now pins `/play`,
 and `/` redirects when it sees a `?session=`, so older links still work.
 
-## Why open the laptop on the tunnel URL (the key gotcha)
+## Why the button moves your browser onto the tunnel
 
 Invite links and QR codes are built from **whatever URL the laptop is browsing**
-(`window.location`). So:
+(`window.location`), so:
 
-| Laptop is on…            | QR/links point at…        | Phone result                    |
+| Laptop is on…            | QR/links point at…        | Guest result                    |
 | ------------------------ | ------------------------- | ------------------------------- |
 | **tunnel URL**           | the public tunnel URL     | ✅ works anywhere               |
 | LAN IP (`192.168.x.x`)   | the LAN IP                | ✅ only on same Wi-Fi + firewall allows |
 | `localhost` / `127.0.0.1`| the LAN IP (auto-rewrite) | ❌ unless same Wi-Fi **and** firewall allows incoming |
 
-The invite modal only rewrites links to the LAN IP when you're on
-`localhost`/loopback (so a single-machine dev session still produces a
-phone-reachable link on the same Wi-Fi). On a tunnel or LAN-IP origin it leaves
-the origin as-is. **Bottom line: browse the laptop on the tunnel URL and every
-new game's QR just works.**
+That's why **MULTIPLAYER** redirects you to the tunnel origin before
+creating the game: it puts the host on the public URL so every seat link
+generated afterwards is automatically reachable. You don't have to do
+anything, but it explains why the address bar changes.
 
 The tunnel URL is **per-server, not per-game** — it keeps working for every new
-game; only the `?session=<id>` part changes (the modal handles that). It only
-changes if you restart `cloudflared` (a free quick-tunnel gets a new random
-`trycloudflare.com` name each run). For a permanent URL, use a
-[named Cloudflare tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/).
-
-## LAN-only alternative (no internet)
-
-For phone-next-to-laptop with no tunnel:
-
-1. Start with `python run_web.py --lan`. It prints the address other
-   devices should use, and binds the interfaces they'll arrive on.
-2. On the laptop, browse `localhost` as usual and start the game — the
-   invite modal rewrites links to the LAN IP for you. (Browsing the LAN
-   IP directly works too.)
-3. The phone must be on the **same Wi-Fi**, and the macOS firewall must
-   allow incoming connections (see troubleshooting). `GET /api/meta/lan`
-   reports both facts — whether the server is actually listening on the
-   LAN, and whether the firewall is set to block — so check it there
-   before debugging the phone.
+game; only the `?session=<id>` part changes. It changes only when the tunnel
+process restarts, since anonymous quick tunnels get a new random hostname
+each run. If you need a stable address, both providers offer accounts that
+issue a persistent name.
 
 ## Mobile interface notes
 
@@ -128,25 +220,38 @@ For phone-next-to-laptop with no tunnel:
 
 ## Troubleshooting
 
-- **Start here:** open `http://localhost:8000/api/meta/lan`. It answers
-  the two questions that cause almost every LAN failure —
-  `lan_reachable` (is this server actually listening where the QR
-  points?) and `lan_firewalled` (is macOS set to block incoming?) — and
-  `lan_hint` names the fix. The invite modal shows the same thing.
-- **Phone opens the QR and nothing happens / it times out:** you almost
-  certainly started with plain `python run_web.py`, which is loopback
-  only. Restart with `--lan`.
-- **`ERR_CONNECTION_RESET` on the phone (LAN):** the macOS firewall is blocking
-  incoming connections. Check with
-  `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate` and
-  `--getstealthmode`. "Block all incoming" + stealth mode actively resets
-  unsolicited connections. Fix via **System Settings → Network → Firewall**
-  (turn off "Block all incoming connections" / stealth, or allow the Python
-  binary), or just use a tunnel to bypass it entirely.
-- **Phone can't reach the LAN IP but `localhost` works on the laptop:** firewall
-  or different Wi-Fi network (guest/VLAN isolation). Use a tunnel.
-- **QR points at `192.168.x.x` when you wanted the public URL:** you're browsing
-  the laptop on `localhost`. Reopen it on the tunnel URL.
-- **Tunnel URL stopped working:** `cloudflared` was stopped/restarted; rerun
-  `cloudflared tunnel --url http://localhost:8000` and reshare the new URL (or
-  set up a named tunnel for a stable address).
+- **Start here:** `GET /api/tunnel/status` says whether a tunnel is up,
+  which provider is carrying it, and which providers are installed. For
+  LAN problems, `GET /api/meta/lan` answers `lan_reachable` and
+  `lan_firewalled` and names the fix in `lan_hint`.
+- **MULTIPLAYER says it couldn't establish a tunnel:** the error lists
+  every provider it tried and why each failed. If `cloudflare` isn't among
+  them, install it with `brew install cloudflared` — it's the one whose
+  address survives the whole game.
+- **The tunnel starts but *your own browser* can't open the URL:** either
+  your DNS is sinkholing that provider's domain, or something looked the
+  name up before it existed and cached the miss. Compare `dig <host>` with
+  `dig @1.1.1.1 <host>`: if the public resolver answers and yours doesn't,
+  wait for the negative TTL to lapse (30 minutes on `trycloudflare.com`)
+  or just click MULTIPLAYER again for a fresh name — a restart is far
+  quicker than the cache expiring.
+  ⚠️ **Don't `dig` a tunnel hostname in the first few seconds** to check on
+  it. The record isn't published yet, and the cached miss is precisely
+  what makes the link dead for the next half hour. Give it ~15s.
+- **Error 1033 from Cloudflare:** the name resolved fine and you reached
+  Cloudflare's edge — it's the *origin* that's missing, i.e. `cloudflared`
+  exited. Check the server is still running and click MULTIPLAYER again.
+- **It worked earlier and the URL is now dead:** anonymous quick tunnels
+  get a new hostname on every restart. Click MULTIPLAYER again and
+  reshare; old links do not survive a restart.
+- **Guest gets the title screen instead of the game:** an old link
+  pointing at `/` rather than `/play`. `/` redirects when it sees
+  `?session=`, so re-copy the link from the invite modal.
+- **`ERR_CONNECTION_RESET` on the phone (LAN only):** the macOS firewall
+  is blocking incoming connections. Check with
+  `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`.
+  On an MDM-managed laptop you probably can't change this — use the
+  tunnel, which needs no inbound access at all.
+- **Phone can't reach the LAN IP but `localhost` works on the laptop:**
+  firewall, or the Wi-Fi has client isolation (common on guest and
+  conference networks). Use the tunnel.

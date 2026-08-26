@@ -1855,15 +1855,28 @@ def api_meta_status() -> dict[str, Any]:
 
 @app.post("/api/tunnel/start")
 def api_tunnel_start(request: Request) -> dict[str, Any]:
-    """Start (or reuse) a cloudflared quick tunnel to this server.
+    """Start (or reuse) a public quick tunnel to this server.
 
     Targets the port the caller connected on (so a dev server on :8000
-    just works), falling back to 8000. Returns the public
-    ``trycloudflare.com`` URL once cloudflared publishes it."""
+    just works), falling back to 8000. Returns the public URL once a
+    provider publishes one, along with which provider won — see
+    ``server/tunnel.py`` for why there is more than one.
+
+    v1.16 — the budget has to cover the whole provider list, not just the
+    first. Capping it lower would mean a network that blocks provider one
+    never gets to try provider two, which is the entire point of having
+    a list. The client polls ``/api/tunnel/status`` regardless, so a slow
+    answer here degrades to a spinner rather than a failure.
+
+    v1.17 — raised to 60s because each provider now also has to clear the
+    DNS acceptance gate before it counts, and the whole reason the gate
+    exists is to hand over to the next provider. Budgeting only for the
+    happy path would starve the fallback of the time it needs.
+    """
     from server import tunnel as soc_tunnel
 
     port = request.url.port or 8000
-    return soc_tunnel.start(int(port))
+    return soc_tunnel.start(int(port), wait_s=60.0)
 
 
 @app.get("/api/tunnel/status")

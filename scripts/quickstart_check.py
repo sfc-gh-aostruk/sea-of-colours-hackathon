@@ -234,12 +234,29 @@ def check_snowpark(r: Report, network: bool) -> None:
 
 
 def check_cloudflared(r: Report) -> None:
-    path = shutil.which("cloudflared")
-    if path:
-        r.line(PASS, "cloudflared (multiplayer)", path)
+    """Report tunnel providers, not just cloudflared.
+
+    v1.16 — multiplayer walks an ordered provider list, so the useful
+    answer is "can you host at all" plus "do you have a spare".
+
+    v1.17 — ssh alone will still host, but it is now the *fallback*, and
+    its free hostname rotates after minutes, which silently kills invite
+    links mid-game. cloudflared keeps one address for the whole session,
+    so its absence is worth flagging rather than mentioning in passing.
+    """
+    ssh = shutil.which("ssh")
+    cf = shutil.which("cloudflared")
+    have = [n for n, p in (("cloudflare", cf), ("localhost.run (ssh)", ssh)) if p]
+    if cf:
+        r.line(PASS, "tunnel providers (multiplayer)", ", ".join(have))
+    elif ssh:
+        r.line(WARN, "tunnel providers (multiplayer)", "localhost.run (ssh) only",
+               "brew install cloudflared — the ssh fallback's free address "
+               "changes after ~13 min, which breaks invite links mid-game")
     else:
-        r.line(SKIP, "cloudflared (multiplayer)", "not on PATH",
-               "brew install cloudflared — only needed to host over the internet")
+        r.line(SKIP, "tunnel providers (multiplayer)", "none on PATH",
+               "brew install cloudflared, or install OpenSSH — only needed "
+               "to host over the internet")
 
 
 def check_tests(r: Report) -> None:

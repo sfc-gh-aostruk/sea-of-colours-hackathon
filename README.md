@@ -58,20 +58,24 @@ contact Snowflake, `--tests` to run the suite).
 
 ### 2 · Play the person next to you
 
-Give 2+ seats the **HUMAN** agent in the NEW GAME modal and you get an
-invite link and QR per seat. Everyone on the same Wi-Fi:
+Click **MULTIPLAYER** on the title screen. The server opens a public
+tunnel for you and hands out an invite link and QR per seat, playable
+from anywhere — the next desk, another city, a phone on cellular.
 
 ```bash
-python run_web.py --lan     # plain run_web.py is loopback-only
+brew install cloudflared   # recommended before you host
 ```
 
-For players elsewhere, run a tunnel and browse the laptop on its URL:
+You can host with no install at all — the fallback provider is plain
+`ssh`, which you already have — but its free address **changes after a
+few minutes**, which kills invite links in the middle of a game.
+`cloudflared` keeps one address for as long as the server runs, so it's
+worth the thirty seconds. The two also get blocked by different corporate
+network policies, so having both is what makes this work on a locked-down
+laptop.
 
-```bash
-cloudflared tunnel --url http://localhost:8000
-```
-
-Details and the phone-specific gotchas: [`docs/MULTIPLAYER.md`](docs/MULTIPLAYER.md).
+Details, the phone gotchas, and what to do when a network blocks a
+provider: [`docs/MULTIPLAYER.md`](docs/MULTIPLAYER.md).
 
 ### 3 · Connect your Snowflake account
 
@@ -337,19 +341,32 @@ Two consequences worth knowing:
 `GET /api/meta/backend` reports the default, the reason, and every
 per-game option; the landing-page badge shows the default.
 
-**Hosting a shared game:**
+**Hosting a shared game:** click **MULTIPLAYER**. `server/tunnel.py`
+walks an ordered list of tunnel providers and uses the first that
+publishes a public URL *that this machine can actually resolve* —
+`cloudflare` (`brew install cloudflared`) then `localhost.run` (plain
+`ssh`, no install, no account). Cloudflare leads because its address is
+stable for the life of the process; the fallback is there because egress
+filtering on locked-down networks drops SSH or non-443 ports for some
+providers and not others, so between them almost every network is covered. `GET /api/tunnel/status` reports which one is carrying
+the tunnel, and whether its address is one that rotates.
 
-```bash
-python run_web.py --lan                          # same Wi-Fi
-cloudflared tunnel --url http://localhost:8000   # or: players anywhere
-```
+The resolve check is the important part, and the counter-intuitive bit is
+that it **waits before looking**. A hostname exists a couple of seconds
+after the provider prints it, and a lookup in that gap gets cached as
+"no such name" for the zone's negative TTL — half an hour on
+`trycloudflare.com` — on the host's own resolver. Checking too eagerly
+therefore *creates* the outage it's testing for, which cost us a day of
+blaming the corporate network. Details and measurements:
+[`docs/MULTIPLAYER.md`](docs/MULTIPLAYER.md).
 
-`--lan` binds every interface and turns auto-reload off, because the
+Same-Wi-Fi LAN play via `python run_web.py --lan` still exists, but needs
+the host to accept **inbound** connections, which MDM-managed laptops
+typically forbid — the tunnel only ever dials outward, so it sidesteps
+the firewall entirely. `--lan` also turns auto-reload off, because the
 cross-player submit lock is a per-process `threading.Lock` and a memory
-season lives in that process — a file save mid-party would reset
-everyone. Plain `run_web.py` binds loopback, which no other device can
-reach; `GET /api/meta/lan` reports whether the address in your invite QR
-is actually being served, and whether the host firewall is set to block.
+season lives in that process, so a file save mid-party would reset
+everyone.
 
 Seat links live at `/play?session=<id>&player=p2` — the `/play` matters,
 `/` is the title screen.

@@ -345,14 +345,18 @@
     btnMulti.addEventListener("click", function () { startMultiplayer(); });
   }
 
-  // Internet multiplayer over a cloudflared quick tunnel. We start the
-  // tunnel and, as soon as cloudflared has published a public URL, send the
-  // browser to that origin's /play?new=multi so every invite link/QR is
-  // reachable from anywhere. We deliberately do NOT wait on the server-side
-  // readiness probe: that probe resolves the trycloudflare hostname through
-  // the OS resolver, which a corporate VPN/security agent can block even
-  // though the browser (using its own DoH / encrypted DNS) reaches the
-  // tunnel fine. Gating on it produced false "url not reachable" failures.
+  // Internet multiplayer over a public quick tunnel. We start the tunnel
+  // and, as soon as a provider has published a public URL, send the browser
+  // to that origin's /play?new=multi so every invite link/QR is reachable
+  // from anywhere. We deliberately do NOT wait on the server-side readiness
+  // probe: that probe resolves the tunnel hostname through the OS resolver,
+  // which a corporate VPN/security agent can block even though the browser
+  // (using its own DoH / encrypted DNS) reaches the tunnel fine. Gating on
+  // it produced false "url not reachable" failures.
+  //
+  // v1.16 — the server may try several providers in turn (see
+  // server/tunnel.py), so this can take longer than a single spawn. The
+  // poll below is what makes that invisible.
   async function startMultiplayer() {
     if (!btnMulti) return;
     btnMulti.disabled = true;
