@@ -474,6 +474,17 @@
   let replayDayIndex = [];
   /** @type {{ frames: any[], firstFrameIdx: number, lastFrameIdx: number }[]} */
   let replayTicks = [];
+  /** v1.17 — the last night we actually played the cinematic for.
+   *
+   *  The trigger used to be "did this fetch bring frames newer than the
+   *  ones we hold", which made the animation a side effect of *fetch
+   *  ordering*: any plain ``pullAllMaps()`` — closing the orbit report was
+   *  the common one — loaded the new frames first, so the real cinematic
+   *  pull then saw nothing new and hard-cut to the end state. Two seats
+   *  doing that in a different order saw visibly different turns, which is
+   *  why this is keyed to the day instead: day N animates exactly once per
+   *  seat, whatever else refreshed in between. */
+  let _lastCinematicDay = 0;
   /** Per-day catapult settlement payloads keyed by day number. Sourced
    *  from ``/api/game/{id}/replay`` and rendered by the ORBIT flash
    *  overlay when the user scrubs across a day boundary. */
@@ -5943,7 +5954,7 @@
       soloAgentAutoplayBtn.textContent = baseLabel;
       // One batched refresh so the maps reflect the final state.
       try {
-        await pullAllMaps();
+        await pullAllMaps({ claimCinematic: true });
       } catch (_) {
         /* swallow — the per-turn errors already surfaced */
       }
@@ -6551,20 +6562,9 @@
       // NIGHT opens. Fade the resolving overlay, flash the "NIGHT n -
       // season" card, sweep the cool sunset front across the board (same
       // direction as sunrise) so the map settles into NIGHT, THEN reveal
-      // the planning controls.
-      if (replayLastTurnFx && !reduceMotionMq.matches) {
-        stageCinematicTakeover();
-        const seasonLabel = _currentSeasonLabel();
-        await showMapTitleCard(
-          `NOX ${body?.day ?? "—"} BEGINS`,
-          seasonLabel ? `— ${seasonLabel} —` : "",
-          { holdMs: 1750 },
-        );
-        const sweepMs = runHorizonSweep(mapPlayer, "sunset");
-        if (sweepMs) await new Promise((r) => setTimeout(r, sweepMs));
-      } else {
-        setMapDaylight("night");
-      }
+      // the planning controls. v1.17 — shared with the waiting seat's
+      // poller so both seats see the same thing.
+      await playOrbitNightOpening(body?.day);
       await pullAllMaps({ playFx: true });
       // v1.3 — the orbit resolved but emitted NO night frames (the night isn't
       // played yet), so the replay clock can't advance to a DUSK tick. Drive
@@ -9766,11 +9766,43 @@
     return runHorizonSweep(host, "sunrise", prevFrame, dawnFrame);
   }
 
+  /** v1.17 — the beat that closes the orbital day and opens the night:
+   *  the "NOX n BEGINS" card, then the sunset front sweeping the board
+   *  into night.
+   *
+   *  This lived inline in the orbit-submit handler, so only the seat whose
+   *  submit happened to *resolve* the phase ever saw it. Everyone else —
+   *  every player who locked in first, which in a two-human game is half
+   *  the turns — got a silent snap to the resolved board: no card, no
+   *  sweep, heat still shimmering on a map that had supposedly moved to
+   *  night. Shared here so both the resolving seat and the live-sync
+   *  poller run the identical beat.
+   *
+   *  @param {number|string|undefined} day day the night belongs to
+   */
+  async function playOrbitNightOpening(day) {
+    if (replayLastTurnFx && !reduceMotionMq.matches) {
+      stageCinematicTakeover();
+      const seasonLabel = _currentSeasonLabel();
+      await showMapTitleCard(
+        `NOX ${day ?? "—"} BEGINS`,
+        seasonLabel ? `— ${seasonLabel} —` : "",
+        { holdMs: 1750 },
+      );
+      const sweepMs = runHorizonSweep(mapPlayer, "sunset");
+      if (sweepMs) await new Promise((r) => setTimeout(r, sweepMs));
+    } else {
+      setMapDaylight("night");
+    }
+  }
+
   /** v0.9.13 — night-turn cinematic. Plays the just-resolved night as a
    *  forward replay on the main map, THEN reveals the live end-state, THEN
    *  lets ``refreshStatus`` pop the pre-orbital recap (+ briefing) — the
    *  reveal order the player asked for. ``startTickIdx`` is the first tick
-   *  of the freshly-landed night (``prevTickCount`` from the replay pull).
+   *  of the night being played — v1.17 derives it from the day itself
+   *  (``findFirstCinematicTickOfDay``) rather than from a held tick count,
+   *  which was only correct if nothing else had refreshed first.
    *
    *  The DUSK slot tick is SKIPPED during the animation pass (the night
    *  already opened via the orbit-commit sunset); the DAWN slot plays its
@@ -11807,7 +11839,7 @@
       nightReplayFrames = [];
       replayTicks = [];
       syncReplayRowOnly();
-      return { newDayLanded: false, prevTickCount, tickCount: 0 };
+      return { newDayLanded: false, prevTickCount, tickCount: 0, lastDay: 0 };
     }
     try {
       const res = await fetch(`/api/game/${sessionId}/replay`);
@@ -11976,13 +12008,21 @@
       if (playFx && replayLastTurnFx && !_liveFxPlaying && replayTicks.length > prevTickCount) {
         void _playLiveTurnAnimations(prevTickCount);
       }
-      return { newDayLanded, prevTickCount, tickCount: replayTicks.length };
+      // v1.17 — ``lastDay`` is the durable fact; ``newDayLanded`` is only
+      // "did *this* fetch move the frames", which any background refresh
+      // can consume first. Callers deciding whether to animate must use
+      // the day (see ``_lastCinematicDay``), not the diff.
+      return {
+        newDayLanded, prevTickCount,
+        tickCount: replayTicks.length,
+        lastDay: incomingLastDay,
+      };
     } catch {
       nightReplayFrames = [];
       replayTicks = [];
       replayDayIndex = [];
       syncReplayRowOnly();
-      return { newDayLanded: false, prevTickCount, tickCount: 0 };
+      return { newDayLanded: false, prevTickCount, tickCount: 0, lastDay: 0 };
     }
   }
 
@@ -12384,6 +12424,11 @@
     // state that landed while it was up (next orbit resolving in the
     // background, opponent submissions, etc.) is reflected in the
     // panels the user is about to interact with.
+    //
+    // v1.17 — deliberately does NOT claim the cinematic. This refresh used
+    // to silently load the opponent's just-resolved night, after which the
+    // poller's own pull saw "no new frames" and hard-cut to the end state:
+    // the report you closed decided whether you got an animation.
     if (wasOpen && mainMapSource === "live" && sessionId) {
       void pullAllMaps();
     }
@@ -14311,6 +14356,28 @@
     return 0;
   }
 
+  /** v1.17 — where the cinematic for ``day`` must START.
+   *
+   *  Not the same as ``findFirstTickOfDay``: that one matches on frame day
+   *  and so skips the synthetic DUSK tick, which carries its day on the
+   *  tick itself. DUSK is the orbital-resolve beat the night opens on, and
+   *  ``_playNightCinematic`` explicitly looks for it at ``startTickIdx`` —
+   *  hand it the tick after and the orbit beat is silently dropped, which
+   *  is one of the ways two seats ended up seeing different turns. */
+  function findFirstCinematicTickOfDay(day) {
+    const want = Number(day);
+    for (let i = 0; i < replayTicks.length; i += 1) {
+      const t = replayTicks[i];
+      if (!t) continue;
+      if ((t.slot === "dusk" || t.slot === "dawn") && Number(t.day) === want) {
+        return i;
+      }
+      const f = nightReplayFrames[t.lastFrameIdx];
+      if (f && Number(f.day) === want) return i;
+    }
+    return 0;
+  }
+
   function currentReplayDay() {
     if (!replayTicks.length) return 0;
     const tick = replayTicks[replayTickIdx];
@@ -14976,7 +15043,9 @@
     } catch (_e) { /* non-fatal cosmetic drive */ }
   }
 
-  async function pullAllMaps({ playFx = false, stageOrbitBeat = false } = {}) {
+  async function pullAllMaps({
+    playFx = false, stageOrbitBeat = false, claimCinematic = false,
+  } = {}) {
     mainMapSource = "live";
     // v0.9.13 — night-turn reveal ordering. When ``playFx`` is set (a turn
     // was just transmitted) we hold back the live end-state paint AND the
@@ -14997,6 +15066,19 @@
     } finally {
       _suppressLiveReveal = false;
     }
+    // v1.17 — a load that isn't meant to animate (new game, joining a seat,
+    // opening a saved season) claims whatever night it finds as already
+    // seen, so it can't be replayed at the player later. Note which calls
+    // do NOT claim: an incidental refresh during live play — closing the
+    // orbit report was the culprit — must leave a pending night pending,
+    // because the poller is about to animate it.
+    const _infoDay = Number(info?.lastDay || 0);
+    if (claimCinematic && _infoDay > _lastCinematicDay) {
+      _lastCinematicDay = _infoDay;
+    }
+    // The gate is "has this seat animated day N yet", not "did this fetch
+    // move the frames". The old diff-based test handed the animation to
+    // whichever fetch happened to arrive first.
     const wantCinematic =
       playFx
       && replayLastTurnFx
@@ -15004,10 +15086,13 @@
       && !_liveFxPlaying
       && !replayTicker
       && info
-      && info.newDayLanded
-      && info.tickCount > info.prevTickCount;
+      && _infoDay > _lastCinematicDay
+      && replayTicks.length > 0;
     if (wantCinematic) {
-      await _playNightCinematic(info.prevTickCount);
+      // Claim before playing: the cinematic awaits, and a poll landing
+      // mid-play must not queue a second run of the same night.
+      _lastCinematicDay = _infoDay;
+      await _playNightCinematic(findFirstCinematicTickOfDay(_infoDay));
     } else if (playFx) {
       // No cinematic to play, but we suppressed the reveal above — surface
       // the live end-state + any orbit report now (e.g. an orbit settle
@@ -15636,7 +15721,8 @@
       stationObsByDay = {};
       orbitalActivityByDay = {};
       orbitalEventsByDay = {};
-      await pullAllMaps();
+      _lastCinematicDay = 0;
+      await pullAllMaps({ claimCinematic: true });
       syncMobileOrdersBar();
       // v0.9.12 — a multi-human spawn surfaces shareable seat links + turns
       // on cross-browser sync. A solo game (one human) is a no-op here, so
@@ -15861,8 +15947,9 @@
     if (!id) return;
     if (phaseLine) phaseLine.textContent = `# loading season…`;
     sessionId = id;
+    _lastCinematicDay = 0;
     try {
-      await pullAllMaps();
+      await pullAllMaps({ claimCinematic: true });
       // Default tab in watcher mode is REPLAY — that's the whole point.
       activateCcTab("replay");
     } catch (e) {
@@ -16198,6 +16285,35 @@
     card.appendChild(title);
     card.appendChild(sub);
 
+    // v1.17 — warn while the links on this card are still good. The
+    // fallback tunnel provider rotates its hostname (measured: 13
+    // minutes) and the old one then 503s, so every link here dies with no
+    // visible failure anywhere. Only shown when we are actually on a
+    // rotating tunnel — a Cloudflare tunnel keeps its name for the whole
+    // session, and a LAN or loopback game has nothing to warn about.
+    const expiry = document.createElement("div");
+    expiry.className = "cc-share-expiry";
+    expiry.hidden = true;
+    card.appendChild(expiry);
+    (async () => {
+      try {
+        const r = await fetch("/api/tunnel/status", { cache: "no-store" });
+        if (!r.ok) return;
+        const t = await r.json();
+        if (!t.running || !t.rotates || !t.url) return;
+        if (window.location.origin !== new URL(t.url).origin) return;
+        expiry.textContent =
+          `! heads up — these links come from ${t.provider}, which changes `
+          + `its address after a while (we've measured ~13 min). If a guest `
+          + `suddenly can't connect, click MULTIPLAYER again and re-share. `
+          + `Installing cloudflared avoids it: that address lasts as long as `
+          + `the server runs.`;
+        expiry.hidden = false;
+      } catch (_e) {
+        /* the warning is a nicety — never block the invite on it */
+      }
+    })();
+
     // Build the rows first against the page origin; once the LAN origin
     // resolves we rewrite the links + QR so they're phone-reachable.
     const rows = humans.map((seat, ix) => {
@@ -16398,7 +16514,9 @@
       applySeatIdentity();
     }
     try {
-      await pullAllMaps();
+      // Joining an in-progress game: whatever night already happened is
+      // history for this seat, not something to animate at them on arrival.
+      await pullAllMaps({ claimCinematic: true });
       activateCcTab(String(st.phase) === "orbit" ? "orbit" : "orders");
       syncMobileOrdersBar();
     } catch (e) {
@@ -16440,6 +16558,42 @@
     liveSyncPhase = "";
     liveSyncWindows = 0;
     liveSyncTimer = window.setInterval(pollLiveSync, 2500);
+    void seedLiveSyncBaseline();
+  }
+
+  /** v1.17 — record the pre-resolve state as the live-sync baseline.
+   *
+   *  ``pollLiveSync`` treats its first sample as a baseline and never acts
+   *  on it, and it skips entirely while the tab is hidden. Together those
+   *  left a player who submitted and switched away with no baseline at all:
+   *  the first poll after they came back sampled the *already resolved*
+   *  state, recorded it as the baseline and returned, so the night they
+   *  were waiting on never animated — the board just sat there shimmering
+   *  while the composer let them plan the next turn.
+   *
+   *  Seeding at the moment we start waiting fixes both that and the
+   *  narrower race where the opponent resolves inside the first 2.5s tick.
+   *  Deliberately ignores ``document.hidden``: this only records state, it
+   *  never paints, so it is safe (and necessary) in a background tab.
+   */
+  async function seedLiveSyncBaseline() {
+    if (!sessionId || WATCH_MODE) return;
+    try {
+      const res = await fetch(`/api/game/${sessionId}/status`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const st = await res.json();
+      // A real poll may have won the race and seeded from its own sample;
+      // overwriting that could re-swallow a transition it already saw.
+      if (liveSyncSig !== "") return;
+      liveSyncSig = statusSignature(st) || "";
+      liveSyncDay = Number(st.day || 0);
+      liveSyncPhase = String(st.phase || "");
+      liveSyncWindows = Number(st.replay_windows || 0);
+    } catch (_e) {
+      /* non-fatal — the poller seeds on its next visible tick */
+    }
   }
 
   function stopLiveSync() {
@@ -16450,6 +16604,14 @@
     const strip = document.getElementById("cc-waiting-strip");
     if (strip) strip.hidden = true;
   }
+
+  // v1.17 — come back to the tab and see the night immediately, rather than
+  // waiting out the rest of a 2.5s tick. Cheap: the poll no-ops unless the
+  // signature actually moved.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || !liveSyncTimer) return;
+    void pollLiveSync();
+  });
 
   // ── Agent-thinking poller (solo human-vs-bot) ───────────────────────
   // Multi-human games already poll /status via ``pollLiveSync`` (which now
@@ -16530,6 +16692,14 @@
         liveSyncPhase !== prevPhase;
       if (nightLanded) {
         if (_awaitingHumanResolution) clearHumanWaitFrame();
+        // v1.17 — an ORBIT resolve emits no night frames, so there is no
+        // cinematic to carry it and this seat used to just snap to the
+        // resolved board. Run the same day-closing beat the resolving seat
+        // runs, in the same order (card + sunset, then the pull), so both
+        // seats watch the same turn.
+        if (prevPhase === "orbit" && liveSyncPhase !== "orbit") {
+          await playOrbitNightOpening(liveSyncDay);
+        }
         await pullAllMaps({ playFx: true, stageOrbitBeat: true });
         // Safety net: the cinematic's reveal drops the resolving overlay on
         // the happy path (idempotent here); this covers an interrupted /

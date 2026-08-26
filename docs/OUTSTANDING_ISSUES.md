@@ -421,6 +421,76 @@ P1 + P3 (the highest value / lowest risk batching wins) are shipped. P2/P4/P5
 remain — they're structural (schema, blob layout, HTTP contract) rather than
 batching, so they're tracked separately.
 
+## 13. ✅ (DONE, v1.17) Multiplayer: the night cinematic depended on which seat you were, and on your tab
+
+The v1.7 work (#3, #4) made the *waiting* seat resolve at all. These are the
+three ways it still ended up watching a different turn from the seat that
+happened to resolve the phase.
+
+**Symptom (reported):** "when players submit orbital orders … the moves
+cycle, and they are allowed to submit moves, but the night begins message
+and the heat dissipating animation never trigger, so the image is still
+shimmering and the view of the map hasn't advanced to the night stage."
+Separately: "in some multiplayer games the end state of the turn is shown
+before the simulation animation."
+
+**Root cause A — the orbit night-opening was inline in the submit
+handler.** `NOX n BEGINS` + the sunset sweep lived inside the orbit-submit
+success path, *after* the `!body.orbit_resolved` early return that parks a
+non-resolving seat in the committed-wait frame. So only the seat whose
+submit resolved the phase ever ran them. The waiting seat's poller went
+straight to `pullAllMaps({playFx, stageOrbitBeat})`, and an orbit resolve
+emits no night frames, so there was no cinematic either — it just snapped
+to the resolved board. Worse, the no-cinematic branch re-applies heat with
+`_heatApplyInstant(host, 0.52)` whenever `_heatPhase === "hold"`, and only
+the sunset sweep clears that phase — hence "still shimmering" on a board
+that had supposedly moved to night. This was **always**, not just when
+backgrounded; the player's "or maybe always" was right.
+
+**Root cause B — the cinematic trigger was a frame diff, so any refresh
+could eat it.** `refreshNightReplay` computed `newDayLanded` by comparing
+incoming frames against the ones the client already held, which makes the
+animation a side effect of *fetch order*. `closeReport()` fires a plain
+`pullAllMaps()` on close specifically to pick up "state that landed while
+it was up" — including the opponent's just-resolved night. Once it had,
+the real cinematic pull saw nothing new and fell into the hard-cut branch.
+Two seats closing the orbit report in a different order therefore saw
+different turns, which is the "end state before the animation" report.
+
+**Root cause C — a backgrounded tab lost the night outright.**
+`pollLiveSync` returns early while `document.hidden` (correctly — rAF is
+throttled, so a cinematic started there would stall half-played), and it
+treats its first sample as a baseline it never acts on. A player who
+submitted and switched away had *no* baseline, because every poll since
+had returned before seeding. The first poll after they came back sampled
+the already-resolved state, recorded that as the baseline, and returned.
+The transition was consumed without ever being played.
+
+**Fix (`server/static/app.js`):**
+
+- `playOrbitNightOpening(day)` — extracted, and called by **both** the
+  resolving seat and the live-sync poller, in the same order (card, sweep,
+  then the pull). The poller runs it only on an orbit resolve
+  (`prevPhase === "orbit"`), since a night resolve is carried by the
+  cinematic proper.
+- The cinematic gate is now `_lastCinematicDay`: day N animates exactly
+  once per seat, whoever refreshed in between. Loads that must *not*
+  animate (new game, joining a seat, opening a saved season) pass
+  `claimCinematic: true`; the incidental `closeReport()` refresh
+  deliberately does not, so it can no longer steal a pending night.
+- The start tick comes from `findFirstCinematicTickOfDay(day)` rather than
+  a held tick count, which was only correct if nothing else had fetched
+  first. It also matches the synthetic DUSK tick (day lives on the tick,
+  not a frame) so the orbital-resolve beat isn't silently skipped.
+- `seedLiveSyncBaseline()` records the pre-resolve state when the wait
+  starts, ignoring `document.hidden` because it only records and never
+  paints. A hidden tab now *defers* the night instead of losing it, and a
+  `visibilitychange` listener polls on refocus so it plays immediately.
+
+**Tests:** `tests/test_live_cinematic.py` (18) pins each mechanism — there
+is no JS runner, so these scan `app.js` the way `tests/test_seat_links.py`
+does.
+
 ## Triage summary
 
 | # | Area | Severity | Blocking multiplayer? |
@@ -437,3 +507,4 @@ batching, so they're tracked separately.
 | 10 | Vault ↔ Orbital Vault ↔ actual disagreement (DUSK shed reconcile) | ✅ done (v1.9) | no |
 | 11 | 4-player Snowflake praxis slowness (persistence payload) | 🟠 high (P1+P3 batched; P2/P4/P5 open) | no |
 | 12 | Probe trails missing in live PRAXIS cinematic | ✅ done | no |
+| 13 | Night cinematic differed per seat / lost by a background tab | ✅ done (v1.17) | no |

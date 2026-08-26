@@ -7539,6 +7539,18 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
   color: var(--dim);
   line-height: 1.4;
 }
+/* v1.17 — link-expiry warning on the invite card. Only rendered when the
+   active tunnel provider rotates its hostname, so it must read as a
+   caveat, not an error. */
+.cc-share-expiry {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--warn, #e8b339);
+  border-left: 2px solid var(--warn, #e8b339);
+  padding: 6px 0 6px 8px;
+  margin-top: 2px;
+  opacity: 0.9;
+}
 .cc-seat-picker-btn {
   padding: 12px 14px;
   font-size: 14px;
