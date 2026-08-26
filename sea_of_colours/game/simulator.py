@@ -26,7 +26,15 @@ Rules (v0.6.0):
 
 from __future__ import annotations
 
-from typing import Dict, List, Mapping, Optional, Tuple, TYPE_CHECKING
+from typing import (
+    AbstractSet,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    TYPE_CHECKING,
+)
 
 from sea_of_colours.game.policy import (
     ChaffFlareMove,
@@ -195,13 +203,31 @@ class NightSimulator:
             #   3. Peek-ahead chaff: if every seat's next actionable
             #      move is a ChaffFlareMove, apply them NOW so the
             #      rest of the hour knows about the cancellation.
+            #
+            # v1.19 — ``chaff_active_until`` is passed in DELIBERATELY before
+            # this hour's own refresh below, so it describes only windows
+            # opened on EARLIER hours. That distinction is the whole rule:
+            # two seats flaring on the same hour are not yet inside anyone's
+            # window, so both fire (and one is wasted, §4.9.5); a flare
+            # queued into a window already running is a cancelled action.
             disabled_units_this_hour = self._pre_hour_phase(
                 sess, queue_for, pointers, applied, replay,
                 hour=current_hour,
                 chaff_triggerers_by_hour=chaff_triggerers_by_hour,
                 chaff_fired_hours=chaff_fired_hours,
                 seats=seats,
+                chaff_active_until=chaff_active_until,
             )
+            # v1.19 — seats whose slot for THIS hour was already spent in
+            # the pre-hour phase (EMP launch / chaff flare). They must be
+            # invisible to the collision pre-passes below: those peek each
+            # seat's *next* queued move, which for a pre-empted seat is
+            # next hour's action, and resolving it now would give that
+            # seat two actions in one hour. That was live — an EMP launch
+            # plus a swap collision in the same hour, damaging BOTH
+            # harvesters — and it needed no chaff to reach.
+            preempted_now = getattr(sess, "_preempted_seats_this_hour", set())
+
             # Refresh chaff_active_until ONLY when a chaff freshly fired
             # this hour (not on a carry-over immunity entry).
             if current_hour in chaff_fired_hours:
@@ -224,6 +250,7 @@ class NightSimulator:
                     sess, queue_for, pointers, applied, replay,
                     hour=current_hour,
                     seats=seats,
+                    skip_seats=preempted_now,
                 )
                 if handled_swap:
                     continue
@@ -235,6 +262,7 @@ class NightSimulator:
                     sess, queue_for, pointers, applied, replay,
                     hour=current_hour,
                     seats=seats,
+                    skip_seats=preempted_now,
                 )
                 if handled_simul_drop:
                     continue
@@ -761,6 +789,7 @@ class NightSimulator:
         chaff_triggerers_by_hour: Dict[int, set[str]],
         chaff_fired_hours: Optional[set[int]] = None,
         seats: Optional[Tuple[str, ...]] = None,
+        chaff_active_until: int = 0,
     ) -> set[str]:
         """v0.9 — Run the EMP / chaff pre-emption phase for ``hour``.
 
@@ -786,6 +815,27 @@ class NightSimulator:
         is enforced structurally: clouds tick + launches resolve
         before the disable check runs, so a launch at hour N is in
         effect for the same hour's disable computation.
+
+        v1.19 — chaff outranks the salvo, and outranks itself. Two rules,
+        one cause (RULEBOOK §4.9.5 — "EVERY seat's action in each covered
+        hour is cancelled"):
+
+        * A flare fired at ``hour`` cancels a **same-hour** EMP launch,
+          so this method resolves flares first and only then salvos.
+        * ``chaff_active_until`` is the last hour covered by a window
+          opened on an EARLIER hour. Inside such an hour nothing
+          pre-empts at all.
+
+        Either way the cancelled launch burns its slot (``tag="chaffed"``,
+        applied by the main dispatch) but **keeps its munition in stock**
+        for a later hour or night — a jammed house never got to fire, so
+        it never spent the round.
+
+        Resolving both launch types in one seat-ordered pass is what let
+        chaff be chained into a lock (each flare re-armed the window and
+        re-granted its launcher immunity) and let a salvo fly out of a
+        fully jammed house — whichever seat the loop happened to reach
+        first simply won.
         """
         from sea_of_colours.game.session import cast_player
 
@@ -809,81 +859,105 @@ class NightSimulator:
         established_cloud_cells = sess.cells_in_any_emp_cloud()
 
         # 2. Peek + pre-empt chaff / EMP for each seat.
+        #
+        #    v1.19 — chaff now goes FIRST and can veto this hour's EMP
+        #    launches. Weapons used to be the one action class chaff could
+        #    not touch, because both launch types were pre-empted in a
+        #    single seat-ordered pass: whoever the loop reached first
+        #    simply flew. That contradicted §4.9.5 ("EVERY seat's action
+        #    in each covered hour is cancelled") and made a salvo the
+        #    reliable counter to a flare.
         preempted: set[str] = set()
-        for p in seat_list:
+        already_jammed = int(hour) <= int(chaff_active_until)
+
+        # 2a. Flares. Skipped wholesale inside a window opened on an
+        #     earlier hour — nothing acts during chaff, so the flare is
+        #     never spent and stays in stock for later.
+        for p in (() if already_jammed else seat_list):
             if applied[p] >= MAX_MOVES:
                 continue
             move, idx = _next_actionable(queue_for[p], pointers[p])
-            if move is None:
+            if not isinstance(move, ChaffFlareMove):
                 continue
             owner_pid = cast_player(p, allowed=seat_list)
+            ok, msg = sess.apply_chaff_flare(owner_pid, hour=hour)
+            if not ok:
+                continue
+            self._consume_preempt_slot(
+                sess, p, queue_for[p], pointers, idx, hour, replay,
+            )
+            applied[p] += 1
+            preempted.add(p)
+            # The launcher is "immune" only for the LAUNCH hour — it
+            # spent that slot firing the flare, so it isn't also
+            # cancelled this same hour. It is NOT propagated forward:
+            # the flare jams its OWN house too for the carry-over
+            # hours (CHAFF_DURATION_HOURS - 1), so firing chaff costs
+            # the launcher the full CHAFF_DURATION_HOURS-turn window
+            # (launch + self-jam), not just the launch slot. (Was: the
+            # triggerer used to be propagated forward and stay immune.)
+            chaff_triggerers_by_hour.setdefault(hour, set()).add(p)
+            if chaff_fired_hours is not None:
+                chaff_fired_hours.add(hour)
+            # v1.8 — canonical combat feed: record the public flare so
+            # agents see WHO jammed and for WHICH hours (chaff is a
+            # temporal, location-less effect — no map scar).
+            from sea_of_colours.game.weapons import CHAFF_DURATION_HOURS
+            sess.record_chaff_flare(str(p), int(hour), int(CHAFF_DURATION_HOURS))
+            chaff_events = sess.pending_chaff_events
+            sess.pending_chaff_events = []
+            sess.log_info(self._stamp_hour(hour, msg))
+            sess.replay_push_scene(
+                replay,
+                msg,
+                owner=p,
+                tag="chaff_flare",
+                attempted=_describe_move(move),
+                outcome="ok",
+                hour=hour,
+                chaff=chaff_events or None,
+            )
 
-            if isinstance(move, EmpLaunchMove):
-                ok, msg = sess.apply_emp_launch(
-                    owner_pid, move.at[0], move.at[1], hour=hour,
-                    extra_targets=list(move.extra_ats),
-                )
-                if not ok:
-                    # Cost check failed → leave it for main dispatch
-                    # to surface as a runtime waste.
-                    continue
-                self._consume_preempt_slot(
-                    sess, p, queue_for[p], pointers, idx, hour, replay,
-                )
-                applied[p] += 1
-                preempted.add(p)
-                emp_events = sess.pending_emp_events
-                sess.pending_emp_events = []
-                sess.log_info(self._stamp_hour(hour, msg))
-                sess.replay_push_scene(
-                    replay,
-                    msg,
-                    owner=p,
-                    tag="emp_launch",
-                    attempted=_describe_move(move),
-                    outcome="ok",
-                    hour=hour,
-                    emp=emp_events or None,
-                )
-
-            elif isinstance(move, ChaffFlareMove):
-                ok, msg = sess.apply_chaff_flare(owner_pid, hour=hour)
-                if not ok:
-                    continue
-                self._consume_preempt_slot(
-                    sess, p, queue_for[p], pointers, idx, hour, replay,
-                )
-                applied[p] += 1
-                preempted.add(p)
-                # The launcher is "immune" only for the LAUNCH hour — it
-                # spent that slot firing the flare, so it isn't also
-                # cancelled this same hour. It is NOT propagated forward:
-                # the flare jams its OWN house too for the carry-over
-                # hours (CHAFF_DURATION_HOURS - 1), so firing chaff costs
-                # the launcher the full CHAFF_DURATION_HOURS-turn window
-                # (launch + self-jam), not just the launch slot. (Was: the
-                # triggerer used to be propagated forward and stay immune.)
-                chaff_triggerers_by_hour.setdefault(hour, set()).add(p)
-                if chaff_fired_hours is not None:
-                    chaff_fired_hours.add(hour)
-                # v1.8 — canonical combat feed: record the public flare so
-                # agents see WHO jammed and for WHICH hours (chaff is a
-                # temporal, location-less effect — no map scar).
-                from sea_of_colours.game.weapons import CHAFF_DURATION_HOURS
-                sess.record_chaff_flare(str(p), int(hour), int(CHAFF_DURATION_HOURS))
-                chaff_events = sess.pending_chaff_events
-                sess.pending_chaff_events = []
-                sess.log_info(self._stamp_hour(hour, msg))
-                sess.replay_push_scene(
-                    replay,
-                    msg,
-                    owner=p,
-                    tag="chaff_flare",
-                    attempted=_describe_move(move),
-                    outcome="ok",
-                    hour=hour,
-                    chaff=chaff_events or None,
-                )
+        # 2b. Salvos — only on an hour no flare covers. A flare fired in
+        #     2a jams this same hour, so a queued salvo is cancelled by the
+        #     main dispatch with its charge intact. Note the asymmetry is
+        #     deliberate and is the point of the weapon: two flares on one
+        #     hour both fly (neither is inside a window yet, so one is
+        #     wasted), but a flare beats a salvo declared for the same hour.
+        jammed_now = already_jammed or bool(chaff_triggerers_by_hour.get(hour))
+        for p in (() if jammed_now else seat_list):
+            if applied[p] >= MAX_MOVES or p in preempted:
+                continue
+            move, idx = _next_actionable(queue_for[p], pointers[p])
+            if not isinstance(move, EmpLaunchMove):
+                continue
+            owner_pid = cast_player(p, allowed=seat_list)
+            ok, msg = sess.apply_emp_launch(
+                owner_pid, move.at[0], move.at[1], hour=hour,
+                extra_targets=list(move.extra_ats),
+            )
+            if not ok:
+                # Cost check failed → leave it for main dispatch
+                # to surface as a runtime waste.
+                continue
+            self._consume_preempt_slot(
+                sess, p, queue_for[p], pointers, idx, hour, replay,
+            )
+            applied[p] += 1
+            preempted.add(p)
+            emp_events = sess.pending_emp_events
+            sess.pending_emp_events = []
+            sess.log_info(self._stamp_hour(hour, msg))
+            sess.replay_push_scene(
+                replay,
+                msg,
+                owner=p,
+                tag="emp_launch",
+                attempted=_describe_move(move),
+                outcome="ok",
+                hour=hour,
+                emp=emp_events or None,
+            )
 
         # 3. Build the disabled-units set AFTER launches resolved.
         cloud_cells = sess.cells_in_any_emp_cloud()
@@ -1081,6 +1155,7 @@ class NightSimulator:
         *,
         hour: int = 0,
         seats: Optional[Tuple[str, ...]] = None,
+        skip_seats: Optional[AbstractSet[str]] = None,
     ) -> bool:
         """Detect & resolve a pass-through swap before the round.
 
@@ -1091,13 +1166,22 @@ class NightSimulator:
         independent pairs can swap on the same hour. The outer round
         loop calls this again next iteration so the second pair
         resolves before the regular dispatch fires.
+
+        v1.19 — ``skip_seats`` excludes seats that already spent this
+        hour's slot in the pre-hour phase. Their next queued move
+        belongs to a LATER hour, so pairing it with a rival's move for
+        *this* hour both grants a second action and stages a collision
+        between two moves that were never simultaneous.
         """
         from sea_of_colours.game.session import cast_player
 
         seat_list: Tuple[str, ...] = seats if seats is not None else tuple(sess.players)
+        spent = set(skip_seats or ())
         for ai in range(len(seat_list)):
             for bi in range(ai + 1, len(seat_list)):
                 pa, pb = seat_list[ai], seat_list[bi]
+                if pa in spent or pb in spent:
+                    continue
                 a_move, _ = _next_actionable(queue_for[pa], pointers[pa])
                 b_move, _ = _next_actionable(queue_for[pb], pointers[pb])
                 if not (isinstance(a_move, StepMove) and isinstance(b_move, StepMove)):
@@ -1160,6 +1244,7 @@ class NightSimulator:
         *,
         hour: int = 0,
         seats: Optional[Tuple[str, ...]] = None,
+        skip_seats: Optional[AbstractSet[str]] = None,
     ) -> bool:
         """Detect & resolve simultaneous drop collisions before the round.
 
@@ -1167,16 +1252,25 @@ class NightSimulator:
         same square during the same hour, none land, all become damaged
         and stay in orbit. This is checked pre-hour (like swap collision)
         so we can handle all involved seats in one go.
+
+        v1.19 — ``skip_seats`` excludes seats that already spent this
+        hour's slot in the pre-hour phase; see
+        :meth:`_maybe_resolve_swap_collision` for why counting them here
+        both double-acts the seat and invents a collision between moves
+        from two different hours.
         """
         from sea_of_colours.game.session import cast_player
 
         seat_list: Tuple[str, ...] = seats if seats is not None else tuple(sess.players)
-        
+        spent = set(skip_seats or ())
+
         # Build a map of target squares -> list of (seat, move, harvester) tuples
         drops_by_target: Dict[Tuple[int, int], List[Tuple[str, DropMove, object]]] = {}
-        
+
         for p in seat_list:
             if applied[p] >= MAX_MOVES:
+                continue
+            if p in spent:
                 continue
             move, _ = _next_actionable(queue_for[p], pointers[p])
             if not isinstance(move, DropMove):

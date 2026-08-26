@@ -6408,6 +6408,37 @@ class GameSession:
                 del bucket[key]
         return ids
 
+    def _freeze_final_probe_echo(self, probe: "Entity") -> None:
+        """Take a probe's last look, the instant before it is destroyed.
+
+        v1.8 — the probe witnesses its own killer (bug #1). The crusher
+        has already recorded its trail on the cell by the time we get
+        here (drop/step runs first), so the owner's intel keeps a final
+        snapshot carrying the fresh trail and the harvester glyph. The
+        next scheduled camera pulse cannot do this, because by then the
+        probe is gone.
+
+        v1.19 — that last look has to cover the probe's WHOLE vision
+        disk, not just the cell it died on (bug #14). Refreshing one cell
+        leaves the echo stitched from two different moments: the death
+        cell shows the harvester where it now stands, while the cell it
+        stepped *out of* still holds the harvester glyph an earlier pulse
+        recorded there — and no later pulse can clear it, because the
+        observer is dead. The owner was left looking at two copies of one
+        harvester and no way to tell which was real. A disk-wide refresh
+        is exactly the work the hourly pulse would have done had the
+        probe survived the hour, so the echo stays one coherent instant.
+        """
+        bucket = self.probe_intel.get(probe.owner)
+        if bucket is None or probe.x is None or probe.y is None:
+            return
+        for tx, ty in _probe_vision_disk(
+            probe.x, probe.y, self.width, self.height,
+        ):
+            bucket[_xy_key(tx, ty)] = self._probe_tile_snapshot(
+                tx, ty, exclude_entity_id=probe.id,
+            )
+
     def consume_probes_at(
         self, x: int, y: int, crusher_owner: Optional[str] = None,
     ) -> List[str]:
@@ -6446,21 +6477,14 @@ class GameSession:
             })
             # v1.6 kill-feed: attribute the crush to the harvester's house.
             self._attrib("probes_crushed", crusher_owner, en.owner)
-            # v1.8 — the probe witnesses its own killer (bug #1). The
-            # crusher has already recorded its trail on this cell by now
-            # (drop/step runs before this call), so freeze a FINAL echo
-            # snapshot into the owner's intel — carrying the fresh trail +
-            # last-known harvester glyph — before the probe dies. The
-            # next scheduled camera pulse can't do this (the probe is
-            # gone), so without this the owner's last snapshot predates
-            # the crossing that killed it and the trail-freeze (bug #1)
-            # would drop the very trail the probe died observing.
-            owner_bucket = self.probe_intel.get(en.owner)
-            if owner_bucket is not None:
-                owner_bucket[_xy_key(x, y)] = self._probe_tile_snapshot(
-                    x, y, exclude_entity_id=eid,
-                )
             del self.entities[eid]
+        # v1.19 — freeze the final echoes only once every probe crushed in
+        # this instant is off the board. Doing it inside the loop let the
+        # first probe's last look record the second one, which was about
+        # to die in the same step, leaving its owner an echo of a probe
+        # that no longer exists.
+        for _eid, en in doomed:
+            self._freeze_final_probe_echo(en)
         if doomed:
             self._persist_asset_ledger()
         return msgs

@@ -491,6 +491,151 @@ The transition was consumed without ever being played.
 is no JS runner, so these scan `app.js` the way `tests/test_seat_links.py`
 does.
 
+## 14. ✅ (DONE, v1.19) A crushed probe left TWO ghosts of the harvester that killed it
+
+**Symptom (reported):** "if a harvester runs over your probe you are left
+with two ghost images of the harvester, not one, as the probe loses life."
+
+Reproduced exactly: the victim's echo showed `harvester_p1` at both `10:8`
+(where it stood) and `9:8` (where it had stepped from). Both render as
+echo cells, both carry a harvester glyph, and nothing distinguishes the
+real one — so the probe's owner is handed a board that lies about where
+the enemy is, in the one moment they paid a probe to find out.
+
+**Root cause (`sea_of_colours/game/session.py`).** A live probe refreshes
+its **whole vision disk** on every hourly pulse (`_pulse_vision_intel`),
+which is what normally retires a sighting: the harvester moves on, the
+next pulse re-snapshots the vacated cell as empty, and the old glyph is
+gone. The death path (v1.8, "the probe witnesses its own killer") only
+refreshed the **single cell the probe died on**. So the echo was stitched
+from two different instants — the death cell as of the crush, every other
+cell as of the last pulse before it — and because the observer is now
+dead, no later pulse could ever reconcile them. The stale glyph became
+permanent for the rest of the night.
+
+Worth noting the bug needed *both* halves to appear: the sighting on the
+approach (correct at the time) and the fresh sighting at the grave. That
+is why it only shows up when a harvester walks in from inside the probe's
+own disk — i.e. exactly the crossing the probe existed to watch.
+
+**Fix.** `_freeze_final_probe_echo(probe)` takes the probe's last look
+across its entire vision disk, which is precisely the work the hourly
+pulse would have done had it survived the hour. One coherent instant, one
+harvester. The final echoes are also frozen *after* every probe crushed in
+that step is off the board, so two probes dying together can no longer
+record each other as still standing.
+
+**Tests:** `tests/test_probe_death_echo.py` (5). They pin the invariant
+("the killer appears exactly once"), not the mechanism, plus a guard that
+the setup really does sight the harvester on approach — otherwise the main
+test would pass vacuously. Verified against the old behaviour in place:
+two ghosts before, one after.
+
+## 15. ✅ (DONE, v1.19) A weapon launch did not cost the launcher its hour
+
+**Found by audit,** not by report: the question was "what happens when two
+chaffs execute in the same hour?" (§4.9.5). The rule and the engine agree on
+the chaff *window* — but the audit found a hole underneath it that needs no
+chaff at all.
+
+**Symptom.** A seat could fire a weapon **and** act again in the same hour,
+and the extra action damaged harvesters. Minimal case: p1 queues
+`emp_launch` then `step`, p2 queues the crossing `step`. Hour 1 emitted
+*both* an `emp_launch` frame and a `collision_swap` — and **both**
+harvesters came out `damaged`. So it wasn't cosmetic: fire an EMP and still
+cripple the harvester walking past you, for one slot.
+
+**Root cause (`sea_of_colours/game/simulator.py`).** EMP and chaff resolve
+in the pre-hour phase, which consumes the launcher's slot and records the
+seat in `_preempted_seats_this_hour` so the main dispatch skips it. The two
+collision pre-passes — pass-through swap (§3.6) and simultaneous drop
+(v0.9.10) — run between those two points and peek every seat's *next*
+queued move, guarded only by `applied[p] >= MAX_MOVES`. For a pre-empted
+seat that next move belongs to the **following** hour, so the pre-pass both
+granted a second action and staged a collision between two moves that were
+never simultaneous.
+
+**The chaff case is the worse one.** When *every* seat flares in the same
+hour they are all launch-hour immune, which is the sole condition that opens
+the pre-pass gate (`all_chaff_immune`) while chaff is active. The swap that
+leaked through then consumed the very moves the carry-over hours existed to
+jam, so hours N+1/N+2 emitted **no `chaffed` frames at all** and the
+launchers dodged the self-jam §4.9.5 makes them pay:
+
+> If two seats chaff in the same hour, both fire (each pays cost) and both
+> are immune for that launch hour, then both are jammed for the carry-over
+> hours.
+
+In other words a mutual flare was strictly *cheaper* than a solo one — the
+opposite of the intended trade, and exactly the kind of thing an agent
+harness will find and exploit.
+
+**Fix.** Both pre-passes take `skip_seats` and ignore seats already
+pre-empted this hour. The invariant is the one §3.10 already states — one
+applied action per seat per hour — it just wasn't enforced on this path. The
+gate itself is left alone: with the skip in place `all_chaff_immune` can no
+longer resolve anything (triggerers are always a subset of the pre-empted),
+so no collision semantics change for seats that acted normally.
+
+**Tests:** `tests/test_preempt_slot_integrity.py` (5), including a guard
+that a plain weaponless swap still collides — without it the others would
+pass by simply disabling the mechanic. Verified against the old behaviour by
+stubbing the skip back out: 4 fail, the guard passes.
+
+## 16. ✅ (DONE, v1.19 / RULEBOOK v1.14) Chaff could not stop a weapon, and could be chained into a lock
+
+Same audit as #15, and the same underlying shape: the pre-hour phase
+resolved launches before the chaff gate was ever consulted. Here it was not
+just a slot-accounting slip — it changed who wins a weapon exchange.
+
+**The RULEBOOK contradicted itself,** which is why this survived so long.
+§4.9.5: on a covered hour "**every** seat's action ... is cancelled". A
+launch is an action. But §4.9.3's within-hour ordering list put *EMP-launch
+pre-emption before chaff pre-emption*, which grants a salvo priority over a
+same-hour flare. The engine implemented the ordering list. Ruled in favour
+of §4.9.5 (see RULEBOOK v1.14).
+
+**Symptom A — a salvo flew out of a fully jammed house.** Both launch types
+were pre-empted in one seat-ordered pass, so whichever seat the loop reached
+first simply fired. Measured: p1 flares at H1 (window 1..3), p2's EMP
+queued at H2 launches anyway and spends its charge. "Answer their chaff with
+an EMP" was a reliable counter that no rule granted.
+
+**Symptom B — chaff chained into a lock.** A flare fired *inside its own
+window* fired anyway: it re-armed the window (1..3, then 2..4, then 3..5)
+**and** re-entered `chaff_triggerers_by_hour`, which re-granted the launcher
+launch-hour immunity. So `N` flares jammed the opponent for
+`N + CHAFF_DURATION_HOURS - 1` consecutive hours while the chaffer was never
+jammed once. With enough blue that is a whole night of denial, and it is the
+kind of edge an agent harness finds by search long before a human does.
+
+**Fix.** `_pre_hour_phase` resolves flares first, then salvos, and skips
+both on an hour already covered by a window opened earlier. A cancelled
+launch falls through to the main dispatch: slot burned, `tag="chaffed"`, and
+crucially **the munition is not spent** — a house that never fired has not
+spent the round, so the flare or charge stays in `weapon_stock`.
+
+**What deliberately did NOT change.** Two flares on the *same* hour still
+both fire and both pay, so one is wasted: neither seat is inside a window
+when the hour opens, and the effect is global and identical. That symmetry
+is what keeps mutual chaff strictly worse than solo chaff, so the weapon
+can't be spammed as a safe mutual stall. Now stated explicitly in §4.9.5
+rather than left as an emergent accident.
+
+**Fan-out:** RULEBOOK §4.9.3 (ordering) + §4.9.5 (prose) + v1.14 changelog
+and header bump; `manual/manual.js` and `manual/index.html` chaff panes. V12
+was left alone on purpose — its doctrine only reads chaff *defensively* ("a
+jam cancelled your slots, re-time it"), which is still true, and
+`tabula_v12` is the baseline forks are measured against. The offensive
+reading is the hackathon's own exercise, and this rule is now the thing
+attendees' weapon logic has to respect.
+
+**Tests:** `tests/test_chaff_precedence.py` (8). Verified against the
+original simulator with a restore trap: 9 of the 13 new tests across both
+files fail there, and the guards (unopposed salvo still flies, two flares
+still both fly) pass — so the suite is not just asserting "weapons are
+broken".
+
 ## Triage summary
 
 | # | Area | Severity | Blocking multiplayer? |
@@ -508,3 +653,6 @@ does.
 | 11 | 4-player Snowflake praxis slowness (persistence payload) | 🟠 high (P1+P3 batched; P2/P4/P5 open) | no |
 | 12 | Probe trails missing in live PRAXIS cinematic | ✅ done | no |
 | 13 | Night cinematic differed per seat / lost by a background tab | ✅ done (v1.17) | no |
+| 14 | Crushed probe echoed its killer twice (stale disk, dead observer) | ✅ done (v1.19) | no |
+| 15 | Weapon launch + a second action in the same hour (collision pre-passes ignored pre-empted seats) | ✅ done (v1.19) | no |
+| 16 | Chaff couldn't stop a launch; chaff chained into a lock (RULEBOOK §4.9.3 ⇄ §4.9.5 contradiction) | ✅ done (v1.19 / RULEBOOK v1.14) | no |

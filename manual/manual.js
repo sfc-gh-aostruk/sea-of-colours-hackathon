@@ -16076,7 +16076,7 @@
     const STAGES = [
       {
         label:  "0 · CHAFF · BASICS",
-        body:   "**CHAFF** costs **255 BLUE purity** per flare (paid in Orbit, drained in Nox). At hour N the flare cancels **every seat's** action for hours **N, N+1, N+2** — chaff duration = 3 hours. Launcher is immune only at hour N and self-jams for the two carry-over hours. Two things chaff can do that nothing else can: **deny an H1 drop** (EMP can't — same-hour destruction still validates the drop per §3.9.8) and **strand an opponent harvester** (pickup is exempt from every other disable — only chaff can cancel it, and a stranded harvester burns at Aurora).",
+        body:   "**CHAFF** costs **255 BLUE purity** per flare (paid in Orbit, drained in Nox). At hour N the flare cancels **every seat's** action for hours **N, N+1, N+2** — chaff duration = 3 hours. Launcher is immune only at hour N and self-jams for the two carry-over hours. Two things chaff can do that nothing else can: **deny an H1 drop** (EMP can't — same-hour destruction still validates the drop per §3.9.8) and **strand an opponent harvester** (pickup is exempt from every other disable — only chaff can cancel it, and a stranded harvester burns at Aurora). **A launch is an action too (v1.14):** a flare or EMP queued into a jammed hour is cancelled, and the munition is **not** spent — it stays in stock. So chaff **cannot be chained** (a second flare inside your own window buys nothing but a burnt slot), and a flare **beats an EMP declared for the same hour**.",
         cite:   "§4.9.5 · chaff · basics",
         status: "# stage 0 · chaff basics · deny H1 drop · strand harvester",
         run:    stage0_chaffBasics,

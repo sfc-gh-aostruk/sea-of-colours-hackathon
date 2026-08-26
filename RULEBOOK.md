@@ -1,7 +1,7 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.13
-Last updated: 2026-08-25
+Version: 1.14
+Last updated: 2026-08-26
 
 This is the single source of truth for the world, the fiction, and how
 play resolves. Every change is recorded in the [Changelog](#changelog) at
@@ -1844,9 +1844,21 @@ seconds.
 - **Visibility:** open. Every seat sees the launch frame and the
   cloud cells.
 - **Order within an hour (RULEBOOK § "emp_first"):** EMP cloud
-  decay (+ field sweep), then EMP-launch pre-emption, then disable-set
-  computation, then chaff pre-emption (§4.9.5), then regular dispatch.
-  A launch at hour N is in effect for the same hour's disable check.
+  decay (+ field sweep), then **chaff pre-emption (§4.9.5)**, then
+  EMP-launch pre-emption, then disable-set computation, then the
+  collision pre-passes (pass-through swap §3.6, simultaneous drop),
+  then regular dispatch. A launch at hour N is in effect for the same
+  hour's disable check.
+- **A jammed hour launches nothing (v1.14).** If hour N is covered by a
+  chaff window — including one opened by a flare fired *at* hour N — the
+  salvo does not fly: it is cancelled as `chaffed`, and the **charge
+  stays in `weapon_stock`** (§4.9.5). Chaff outranks EMP within the
+  hour. Before v1.14 this ordering ran the other way and a salvo could
+  fly out of a fully jammed house.
+- **A seat that launched has spent its hour.** A launch is pre-empted
+  ahead of regular dispatch, so the seat is skipped for the rest of that
+  hour and takes no part in the collision pre-passes (§3.6). One applied
+  action per seat per hour (§3.10), with no exception for weapons.
 
 #### 4.9.4 Caltrop mine cluster — `{"a": "mine_lay", "at": [x, y]}`
 
@@ -1894,6 +1906,26 @@ seconds.
   chaff in the same hour, both fire (each pays cost) and both are immune
   for that launch hour, then both are jammed for the carry-over hours.
   (Pre-v0.9.16 the launcher used to be immune for the whole window.)
+- **A launch is an action, so chaff cancels launches too (v1.14).** On
+  any covered hour a queued `chaff_flare` or `emp_launch` is cancelled as
+  `chaffed` like anything else — but because the house never fired, the
+  **munition is not spent**: it stays in `weapon_stock` for a later hour
+  or a later Nox. The slot is still burned (the row is consumed, not
+  deferred), so the cancelled launch does not re-attempt when the window
+  lifts. Two consequences worth planning around:
+  - **Chaff cannot be chained.** A second flare queued inside your own
+    window is cancelled, not fired, so it neither extends the window nor
+    renews your immunity. `CHAFF_DURATION_HOURS` is a hard ceiling on
+    one flare's reach. (Before v1.14 chaining worked, and `N` flares
+    bought `N + CHAFF_DURATION_HOURS - 1` consecutive jammed hours with
+    the chaffer immune throughout.)
+  - **A flare beats a same-hour salvo,** and the salvo keeps its charge.
+- **Two flares on one hour: one is wasted.** Neither launcher is inside a
+  window when the hour opens, so both fire and both pay — and since the
+  effect is global and identical, the second flare buys nothing. The
+  window is *not* extended or stacked. This symmetry is deliberate: it
+  keeps mutual chaff strictly worse than solo chaff, so the weapon can't
+  be spammed as a safe mutual stall.
 - **Visibility:** open. The flare is a brief whole-map effect.
 
 #### 4.9.6 Replay payload additions
@@ -2337,6 +2369,49 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.14 — 2026-08-26
+
+**Chaff outranks the salvo, and outranks itself.** §4.9.5 already said
+that on a covered hour *every* seat's action is cancelled. A launch is an
+action — but §4.9.3's within-hour ordering list put EMP-launch
+pre-emption *before* chaff pre-emption, so the two sections contradicted
+each other and the engine followed the ordering list. Weapons were the
+one action class chaff could not stop. Resolved in favour of §4.9.5:
+
+- **Chaff pre-emption now runs before EMP-launch pre-emption** (§4.9.3
+  ordering updated). A flare fired at hour N cancels a salvo declared for
+  hour N. Previously whichever seat the resolver reached first simply
+  flew, which made "answer their chaff with an EMP" a reliable counter
+  that no rule granted.
+- **A cancelled launch keeps its munition** (§4.9.5). The row is
+  consumed — the slot burns, the move does not defer — but a house that
+  never fired has not spent the round, so the flare or charge stays in
+  `weapon_stock` for a later hour or Nox.
+- **Chaff can no longer be chained into a lock** (§4.9.5). A flare queued
+  inside its own window used to fire, re-arm the window, *and* renew its
+  launcher's launch-hour immunity, so `N` flares jammed the opponent for
+  `N + CHAFF_DURATION_HOURS - 1` consecutive hours while the chaffer
+  acted freely. `CHAFF_DURATION_HOURS` is now a hard ceiling on what one
+  flare reaches.
+- **Two flares on the same hour still both fire, and one is wasted**
+  (§4.9.5) — unchanged behaviour, now stated explicitly. Neither seat is
+  inside a window when the hour opens, and the effect is global and
+  identical, so the second buys nothing and the window does not stack.
+  Deliberate: it keeps mutual chaff strictly worse than solo chaff.
+- **One applied action per seat per hour, weapons included** (§4.9.3,
+  §3.10). A pre-empted seat is now excluded from the collision pre-passes
+  (pass-through swap §3.6, simultaneous drop). Those passes peeked every
+  seat's *next* queued row without asking who had already acted, so a
+  seat could fire a weapon **and** collide in the same hour: `emp_launch`
+  plus a swap at hour 1 left **both** harvesters damaged for one slot.
+
+No constants changed; `CHAFF_DURATION_HOURS` is still 3. Engine:
+`_pre_hour_phase` / `_maybe_resolve_swap_collision` /
+`_maybe_resolve_simultaneous_drops` in
+[`sea_of_colours/game/simulator.py`](sea_of_colours/game/simulator.py).
+Tests: `tests/test_chaff_precedence.py`,
+`tests/test_preempt_slot_integrity.py`.
 
 ### v1.13 — 2026-08-25
 
