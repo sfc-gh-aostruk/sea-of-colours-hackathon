@@ -16281,36 +16281,130 @@
    * season. Getting this wrong would tell someone their throwaway game
    * was being persisted, or worse, the reverse.
    */
+  /** Lazily-built tooltip for the storage badge; one for the whole page. */
+  const backendTip = (() => {
+    let el = null;
+    return () => {
+      if (el) return el;
+      el = document.createElement("div");
+      el.className = "cc-backend-tip";
+      el.id = "cc-backend-tip";
+      el.setAttribute("role", "tooltip");
+      el.hidden = true;
+      document.body.appendChild(el);
+      return el;
+    };
+  })();
+
+  /** What each backend buys and costs — the badge's whole reason to exist. */
+  const BACKEND_TIP_COPY = {
+    snowflake: {
+      head: "SNOWFLAKE",
+      rows: [
+        "This game is written to your own Snowflake account.",
+        "That buys the LLM agent seats (ASK V12), agent memory that "
+          + "carries across nights, and a replay you can still scrub "
+          + "tomorrow.",
+        "The cost is latency — every move is a round-trip.",
+      ],
+    },
+    file: {
+      head: "FILE",
+      rows: [
+        "This game is written to local JSON on disk.",
+        "It survives a restart and keeps its replay, but there is no "
+          + "Snowflake account behind it, so LLM agent seats are "
+          + "unavailable.",
+      ],
+    },
+    memory: {
+      head: "LOCAL MEMORY",
+      rows: [
+        "This game lives in the server process. Nothing is written down.",
+        "Moves are instant and it works fully offline, but there are no "
+          + "LLM agent seats, no cross-night agent memory, and the season "
+          + "and its replay die when the server stops.",
+      ],
+    },
+  };
+
+  function showBackendTip(anchor, kind) {
+    const copy = BACKEND_TIP_COPY[kind];
+    if (!copy) return;
+    const tip = backendTip();
+    tip.classList.remove(
+      "cc-backend-tip--memory",
+      "cc-backend-tip--snowflake",
+      "cc-backend-tip--file",
+    );
+    tip.classList.add(`cc-backend-tip--${kind}`);
+    tip.innerHTML =
+      `<div class="cc-backend-tip__head">${esc(copy.head)}</div>`
+      + copy.rows
+        .map((r) => `<div class="cc-backend-tip__row">${esc(r)}</div>`)
+        .join("");
+    tip.hidden = false;
+    // Measure before placing: the badge is hard right, so the tip is
+    // right-aligned to it and clamped to the viewport rather than
+    // centred, which would push it off-screen.
+    const a = anchor.getBoundingClientRect();
+    const t = tip.getBoundingClientRect();
+    const pad = 8;
+    const left = Math.max(
+      pad, Math.min(a.right - t.width, window.innerWidth - t.width - pad),
+    );
+    let top = a.bottom + 6;
+    if (top + t.height > window.innerHeight - pad) {
+      top = Math.max(pad, a.top - t.height - 6);
+    }
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+    requestAnimationFrame(() => tip.classList.add("cc-backend-tip--in"));
+  }
+
+  function hideBackendTip() {
+    const tip = document.getElementById("cc-backend-tip");
+    if (!tip) return;
+    tip.classList.remove("cc-backend-tip--in");
+    tip.hidden = true;
+  }
+
   function updateBackendBadge(st) {
     const el = document.getElementById("cc-backend-badge");
     if (!el) return;
     const backend = String(st?.backend || "").toLowerCase();
     if (!backend || !sessionId) {
       el.hidden = true;
+      hideBackendTip();
       return;
     }
     const snow = backend === "snowflake";
     const durable = backend !== "memory";
+    const kind = snow ? "snowflake" : (durable ? "file" : "memory");
     el.classList.toggle("cc-backend-badge--snowflake", snow);
     el.classList.toggle("cc-backend-badge--memory", !snow);
-    el.textContent = snow ? "SNOWFLAKE" : (durable ? "FILE" : "LOCAL MEMORY");
-    el.title = snow
-      ? "SNOWFLAKE — this game is written to your own Snowflake account.\n"
-        + "That is what buys you the LLM agent seats (ASK V12), agent "
-        + "memory that carries across nights, and a replay you can still "
-        + "scrub tomorrow.\n"
-        + "The cost is latency: every move is a round-trip."
-      : durable
-        ? "FILE — this game is written to local JSON on disk.\n"
-          + "It survives a restart and keeps its replay, but there is no "
-          + "Snowflake account behind it, so LLM agent seats are "
-          + "unavailable."
-        : "LOCAL MEMORY — this game lives in the server process and "
-          + "nothing is written down.\n"
-          + "Moves are instant and it works fully offline, but there are "
-          + "no LLM agent seats, no cross-night agent memory, and the "
-          + "season and its replay die when the server stops.";
-    el.setAttribute("aria-label", el.title);
+    const copy = BACKEND_TIP_COPY[kind];
+    el.textContent = copy.head;
+    el.dataset.backendKind = kind;
+    // No `title`: the native tooltip is ~1s late, unstyled, and drawn in
+    // OS chrome outside the CRT filter. aria-label carries the same words
+    // for a screen reader, which the styled tip cannot.
+    el.removeAttribute("title");
+    el.setAttribute("aria-label", `${copy.head}. ${copy.rows.join(" ")}`);
+    el.setAttribute("aria-describedby", "cc-backend-tip");
+    if (!el.dataset.tipWired) {
+      el.dataset.tipWired = "1";
+      const show = () => showBackendTip(el, el.dataset.backendKind || "memory");
+      el.addEventListener("mouseenter", show);
+      el.addEventListener("focus", show);
+      el.addEventListener("mouseleave", hideBackendTip);
+      el.addEventListener("blur", hideBackendTip);
+      window.addEventListener("scroll", hideBackendTip, true);
+      window.addEventListener("resize", hideBackendTip);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") hideBackendTip();
+      });
+    }
     el.hidden = false;
   }
 

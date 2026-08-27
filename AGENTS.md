@@ -64,14 +64,27 @@ pytest                   # tests/ (pythonpath=. via pytest.ini)
   `backend.snowpark_session_for(store)`. `tests/test_per_game_backend.py`
   pins both, including a scan that fails if a V12 module reads the
   frozen `SOC_BACKEND` constant again.
-- **The human owns the server process. Do not start, restart or kill it.**
-  The canonical command is theirs to run, in their own terminal:
-  `SOC_BACKEND=snowflake python run_web.py --no-reload`. A server an agent
-  launches is a child of the agent's shell and dies with it — mid-night,
-  looking exactly like a crash. Restarting one to test a fix while someone
-  is playing drops their turn and blanks the page with "Failed to fetch".
-  A dev server is usually already running (see the terminals folder):
-  check there, use it read-only, and if it needs bouncing, **ask**.
+- **Running the server — either seat is fine, but say which one you took.**
+  The canonical command, whoever types it:
+  `SOC_BACKEND=snowflake python run_web.py --no-reload`.
+  - **Human-run (preferred for a real session or a long game).** Their own
+    terminal, so it outlives the chat and survives an agent going away
+    mid-night. This is the one to use when someone is actually playing.
+  - **Agent-run (fine for verifying a fix).** An agent may start one, and
+    may restart or kill **a server that agent started**. Background it and
+    keep the port off 8000 if a human server might be there.
+
+  The one hard rule: **whoever started it, owns it.** Never restart or kill
+  a server you did not start — restarting someone's server mid-game drops
+  their turn and blanks the page with "Failed to fetch". Check the
+  terminals folder first: if a server is already up and you did not launch
+  it, use it read-only and **ask** before bouncing it.
+
+  Two traps, both learned the hard way. An agent-launched server is a child
+  of that shell, so it dies when the shell does — to a player that looks
+  exactly like a crash, which is why a human seat is better for real play.
+  And `( cmd & )` subshell backgrounding dies silently here; use the shell
+  tool's own backgrounding instead.
 
 ## Architecture
 

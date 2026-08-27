@@ -29,15 +29,6 @@
           <!-- v1.20 — the season has always had a name and the playing UI
                never showed it; it lived only in the watcher's picker. -->
           <span id="cc-season-name" class="cc-season-name" hidden></span>
-          <!-- v1.20 — where THIS game is stored. Backend is a per-game
-               choice since v1.14, so this reads the session, not the
-               process default: a memory game and a Snowflake season can
-               be open on the same server. It is the difference between
-               "LLM seats, agent memory and replays" and "fast, offline,
-               gone when the process stops", which was previously
-               invisible once you were past the launcher. -->
-          <span id="cc-backend-badge" class="cc-backend-badge" hidden
-                tabindex="0" role="note"></span>
         </div>
         <div class="cc-header-mid">
           <button id="new-game-btn" type="button" class="cli-btn cli-btn-primary">
@@ -91,6 +82,18 @@
           <span id="phase-line" class="dim cc-status"># idle — start a session</span>
         </div>
         <div class="cc-header-right">
+          <!-- v1.20 — where THIS game is stored. Backend is a per-game
+               choice since v1.14, so this reads the session, not the
+               process default: a memory game and a Snowflake season can
+               be open on the same server. It is the difference between
+               "LLM seats, agent memory and replays" and "fast, offline,
+               gone when the process stops", which was previously
+               invisible once you were past the launcher.
+               Top-RIGHT so it reads as a status light rather than part of
+               the season's identity, and so it never shifts the prompt
+               line as the label changes width. -->
+          <span id="cc-backend-badge" class="cc-backend-badge" hidden
+                tabindex="0" role="note"></span>
           <!-- v1.20 — replay readout. The seed names the map (a replay
                could never tell you which one you were looking at), and
                the extraction figure is the season's headline: what share
