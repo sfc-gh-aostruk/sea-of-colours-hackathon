@@ -16950,7 +16950,19 @@
   async function pullAllMaps({
     playFx = false, stageOrbitBeat = false, claimCinematic = false,
   } = {}) {
-    mainMapSource = "live";
+    // v1.21 — never take the board off a running cinematic. This line used
+    // to be unconditional, which made ANY concurrent refresh a kill switch
+    // for the animation: the cinematic's next "am I still the owner" check
+    // sees "live", bails, and leaves the replay cursor parked on the night's
+    // first beat. The pollers are guarded, but a guard tested before an
+    // await is not a guard, so this is the backstop that does not depend on
+    // every caller getting its timing right.
+    //
+    // Safe for the legitimate path: _liveFxPlaying is set INSIDE
+    // _playNightCinematic, which this function calls further down, so it is
+    // always false on a normal entry.
+    const _cinematicOwnsBoard = _liveFxPlaying;
+    if (!_cinematicOwnsBoard) mainMapSource = "live";
     // v0.9.13 — night-turn reveal ordering. When ``playFx`` is set (a turn
     // was just transmitted) we hold back the live end-state paint AND the
     // orbit-report pop via ``_suppressLiveReveal`` while we pull status +
@@ -17040,6 +17052,11 @@
       // mid-play must not queue a second run of the same night.
       _lastCinematicDay = _infoDay;
       await _playNightCinematic(findFirstCinematicTickOfDay(_infoDay));
+    } else if (playFx && _cinematicOwnsBoard) {
+      // A cinematic was already mid-play when this refresh arrived, so the
+      // night IS being shown — just not by us. Repainting the resolved board
+      // here is the visible "it jumped to the end state" half of the bug.
+      // Leave the board alone and let the running cinematic finish.
     } else if (playFx) {
       // No cinematic to play, but we suppressed the reveal above — surface
       // the live end-state + any orbit report now (e.g. an orbit settle
@@ -18649,6 +18666,18 @@
       if (_awaitingHumanResolution) renderHumanWaitFrame(st);
       const sig = statusSignature(st);
       if (!sig || sig === liveSyncSig) return;
+      // v1.21 — RE-CHECK the entry guards. They were tested once, before the
+      // status fetch above, and that fetch takes the best part of a second on
+      // Snowflake. If the player's own submit resolved during it, the
+      // cinematic is now running and this poll is holding a stale pass: it
+      // would fall through to pullAllMaps, whose first act is to take the
+      // board back to live, killing the animation mid-play and stranding the
+      // replay cursor on the night's first beat. That is the "submit, then
+      // sit in the waiting modal, and praxis never plays" report — and the
+      // race window is widest exactly when you submit early and wait.
+      // Deliberately before the baseline is committed, so the night stays
+      // pending and the next poll animates it.
+      if (_liveFxPlaying || inFlightSubmit) return;
       const first = liveSyncSig === "";
       const prevDay = liveSyncDay;
       const prevPhase = liveSyncPhase;
