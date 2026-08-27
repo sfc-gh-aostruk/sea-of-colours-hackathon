@@ -819,59 +819,52 @@
           <code>Quick game</code> to get the launcher.
         </p>
         <p>
-          The launcher asks five things, and the defaults are the right
-          answer for a first game.
+          The launcher asks four blocks of questions, and the defaults are the
+          right answer for a first game.
         </p>
 
         <div class="gd-frame">
           <div class="gd-frame-head">
-            <span class="gd-frame-title">// new game launcher</span>
+            <span class="gd-frame-title">// new game</span>
           </div>
           <table class="gd-tbl">
             <tr>
-              <th style="width: 22ch">Field</th>
+              <th style="width: 22ch">Block</th>
               <th style="width: 16ch">Leave at</th>
               <th>Note</th>
             </tr>
             <tr>
-              <td>MAP WIDTH / HEIGHT</td>
-              <td><code>40 &times; 28</code></td>
-              <td>The canonical competitive board.</td>
-            </tr>
-            <tr>
-              <td>NIGHTS</td>
-              <td><code>7</code></td>
+              <td># BOARD</td>
+              <td><code>40 &times; 28</code><br /><code>7 nights</code></td>
               <td>
-                A full season. Drop it to <code>3</code> if you want a quick
-                first pass.
+                The canonical competitive board and a full season. Drop
+                <code>LENGTH</code> to <code>3</code> nights for a quick first
+                pass.
               </td>
             </tr>
             <tr>
-              <td>SEATS</td>
-              <td><code>2</code></td>
-              <td>You and one opponent.</td>
-            </tr>
-            <tr>
-              <td>PLAYERS</td>
+              <td># SEATS</td>
               <td class="fg-green">
-                P1 HUMAN<br />P2 RED_HARVEST_LITE
+                <code>2</code><br />P1 HUMAN<br />P2 RED_HARVEST_LITE
               </td>
               <td>
-                Already the default. <code>RED_HARVEST_LITE</code> is the
-                weapons-off bot &mdash; you should not get mined before you know
-                what a parcel is.
+                You and one opponent, already the default.
+                <code>RED_HARVEST_LITE</code> is the weapons-off bot &mdash; you
+                should not get mined before you know what a parcel is. Each seat
+                can be renamed and recoloured here.
               </td>
             </tr>
             <tr>
-              <td>VISIBILITY</td>
+              <td># VISIBILITY</td>
               <td><code>HIDDEN</code></td>
               <td>
-                Fog of war. <code>OPEN</code> makes every seat omniscient &mdash;
-                useful for watching two bots, wrong for playing.
+                Fog of war. <code>OPEN</code> makes every seat omniscient
+                &mdash; useful for watching two bots, wrong for playing, and
+                never valid for comparing agents.
               </td>
             </tr>
             <tr>
-              <td>STORAGE</td>
+              <td># STORAGE</td>
               <td><code>whatever is offered</code></td>
               <td>
                 <code>MEMORY</code> is instant and forgets the season when the
@@ -882,7 +875,11 @@
               </td>
             </tr>
           </table>
-          <p>Then <code>[ &gt; SPAWN SESSION ]</code>.</p>
+          <p>
+            The line beside <code>[ &gt; SPAWN SESSION ]</code> restates what
+            you are about to create &mdash; check the storage word in it before
+            you commit, because that is the one choice you cannot revise later.
+          </p>
         </div>
 
         <div class="gd-note gd-note--ok">

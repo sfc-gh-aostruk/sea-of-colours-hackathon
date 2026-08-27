@@ -34,24 +34,11 @@
           <button id="new-game-btn" type="button" class="cli-btn cli-btn-primary">
             [ &gt; NEW GAME ]
           </button>
-          <!-- v1.20 — NIGHTS sets the length of the NEXT game, so it is
-               noise once one is running (and the New Game modal carries
-               its own copy). ``cc-newgame-cap`` is the hook app.js hides
-               on a live session. -->
-          <label class="dim cc-newgame-cap-label cc-newgame-cap" for="new-game-cap"
-                 title="Season length in nights (1-60). v0.9.18 default: 7.">
-            NIGHTS
-          </label>
-          <input
-            id="new-game-cap"
-            type="number"
-            min="1"
-            max="60"
-            step="1"
-            value="7"
-            class="cc-newgame-cap-input cc-newgame-cap"
-            aria-label="Season length in nights"
-          />
+          <!-- v1.22 — the NIGHTS spinner used to live here. It only ever
+               seeded the launcher's own copy, so on the idle screen it
+               read as a setting you had to fill in and on a live board it
+               had to be hidden again. Season length belongs to the game
+               you are about to start, so it now lives only in the modal. -->
           <!-- v0.9.6 — N-seat launcher modal lives at body level
                (just before </body>) so its `position: fixed` overlay
                resolves against the document viewport, not against
@@ -72,12 +59,10 @@
             <button id="watch-delete-btn" type="button"
                     class="cc-watch-delete" title="Delete this replay"
                     aria-label="Delete the selected replay" hidden>&#x1F5D1;</button>
-            <label class="cli-check dim cc-watch-fixtures" for="watch-show-fixtures"
-                   title="Frozen test nights and their replay clones. Hidden by default — they outnumber real seasons.">
-              <input type="checkbox" id="watch-show-fixtures" class="cli-check-input" />
-              <span>fixtures</span>
-            </label>
-            <span id="watch-picker-meta" class="dim cc-watch-picker-meta"></span>
+            <!-- v1.22 — the "fixtures" tickbox and a meta line used to sit
+                 here. The meta line restated the selected option word for
+                 word, and the tickbox is a developer list-filter; both are
+                 gone from the header (the filter moved to SETTINGS). -->
           </div>
           <span id="phase-line" class="dim cc-status"># idle — start a session</span>
         </div>
@@ -1360,6 +1345,34 @@
                 <span class="cli-check-box" aria-hidden="true">[x]</span>
                 <span class="cli-check-caption dim">grid lines on the map</span>
               </label>
+              <!-- v1.22 — RULEBOOK §3.11. Outlines the limit of each
+                   House's live line-of-sight. Off-switch because four
+                   seats on a busy replay board is a lot of line. -->
+              <label class="cli-check" for="cc-vision-borders">
+                <input
+                  type="checkbox"
+                  id="cc-vision-borders"
+                  class="cli-check-input"
+                  checked
+                />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">vision borders</span>
+              </label>
+              <!-- v1.22 — moved out of the season picker, where it sat
+                   unlabelled next to a live game's identity. It filters the
+                   replay list, so it belongs with the other preferences. -->
+              <label class="cli-check" for="watch-show-fixtures">
+                <input
+                  type="checkbox"
+                  id="watch-show-fixtures"
+                  class="cli-check-input"
+                />
+                <span class="cli-check-box" aria-hidden="true">[ ]</span>
+                <span class="cli-check-caption dim"
+                      title="Frozen test nights captured by the eval harness, plus their replay clones. They never advance and they outnumber real seasons, so the picker hides them.">
+                  list frozen test nights in the season picker
+                </span>
+              </label>
             </div>
             <div class="cc-gfx-block">
               <p class="cc-block-head dim"># CRT</p>
@@ -1609,78 +1622,115 @@
          overlaying the whole document. Keep this block here. -->
     <div id="new-game-modal" class="cc-newgame-modal" hidden role="dialog"
          aria-modal="true" aria-labelledby="new-game-modal-title">
+      <!-- v1.22 — laid out as labelled blocks rather than a flat stack of
+           label+control rows. The old version left every section heading a
+           different width, so nothing lined up, and used raw OS radios and
+           rounded swatches in a UI that is otherwise all monospace and
+           brackets. Markup contract is unchanged: app.js still binds
+           ngm-width / ngm-height / ngm-cap, #ngm-seat-count buttons,
+           #ngm-seats, input[name=ngm-visibility], #ngm-backend, and the
+           three modal buttons. -->
       <div class="cc-newgame-modal-panel">
         <header class="cc-newgame-modal-head">
-          <h2 id="new-game-modal-title">// new game launcher</h2>
+          <div class="cc-newgame-modal-titlewrap">
+            <h2 id="new-game-modal-title">new game</h2>
+            <p class="cc-newgame-modal-sub dim">
+              configure the season, then spawn it
+            </p>
+          </div>
           <button id="new-game-modal-close" type="button"
-                  class="cli-btn" aria-label="Close launcher">
+                  class="cc-newgame-x" aria-label="Close launcher">
             [ X ]
           </button>
         </header>
         <div class="cc-newgame-modal-body">
-          <div class="cc-newgame-row">
-            <label class="cc-newgame-label" for="ngm-width">MAP WIDTH</label>
-            <input id="ngm-width" type="number" min="20" max="60" step="2"
-                   value="40" class="cc-newgame-input"
-                   aria-label="Map width in cells (20-60)" />
-            <label class="cc-newgame-label" for="ngm-height">HEIGHT</label>
-            <input id="ngm-height" type="number" min="14" max="48" step="2"
-                   value="28" class="cc-newgame-input"
-                   aria-label="Map height in cells (14-48)" />
-            <label class="cc-newgame-label" for="ngm-cap">NIGHTS</label>
-            <input id="ngm-cap" type="number" min="1" max="60" step="1"
-                   value="7" class="cc-newgame-input"
-                   aria-label="Season length in nights (1-60)" />
-          </div>
-          <div class="cc-newgame-row">
-            <label class="cc-newgame-label">SEATS</label>
-            <div id="ngm-seat-count" class="cc-newgame-seatcount" role="radiogroup"
-                 aria-label="Number of seats">
-              <button type="button" data-count="1"
-                      class="cli-btn cc-newgame-seatbtn">1</button>
-              <button type="button" data-count="2"
-                      class="cli-btn cc-newgame-seatbtn cc-newgame-seatbtn--on">2</button>
-              <button type="button" data-count="3"
-                      class="cli-btn cc-newgame-seatbtn">3</button>
-              <button type="button" data-count="4"
-                      class="cli-btn cc-newgame-seatbtn">4</button>
+
+          <section class="cc-newgame-block">
+            <h3 class="cc-newgame-block-head"># board</h3>
+            <div class="cc-newgame-fields">
+              <div class="cc-newgame-field">
+                <label class="cc-newgame-field-label" for="ngm-width">width</label>
+                <div class="cc-newgame-field-input">
+                  <input id="ngm-width" type="number" min="20" max="60" step="2"
+                         value="40" class="cc-newgame-input"
+                         aria-label="Map width in cells (20-60)" />
+                  <span class="cc-newgame-unit dim">cells</span>
+                </div>
+              </div>
+              <div class="cc-newgame-field">
+                <label class="cc-newgame-field-label" for="ngm-height">height</label>
+                <div class="cc-newgame-field-input">
+                  <input id="ngm-height" type="number" min="14" max="48" step="2"
+                         value="28" class="cc-newgame-input"
+                         aria-label="Map height in cells (14-48)" />
+                  <span class="cc-newgame-unit dim">cells</span>
+                </div>
+              </div>
+              <div class="cc-newgame-field">
+                <label class="cc-newgame-field-label" for="ngm-cap">length</label>
+                <div class="cc-newgame-field-input">
+                  <input id="ngm-cap" type="number" min="1" max="60" step="1"
+                         value="7" class="cc-newgame-input"
+                         aria-label="Season length in nights (1-60)" />
+                  <span class="cc-newgame-unit dim">nights</span>
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="cc-newgame-row cc-newgame-row--vert">
-            <label class="cc-newgame-label">PLAYERS</label>
+          </section>
+
+          <section class="cc-newgame-block">
+            <h3 class="cc-newgame-block-head">
+              # seats
+              <span id="ngm-seat-count" class="cc-newgame-seatcount"
+                    role="radiogroup" aria-label="Number of seats">
+                <button type="button" data-count="1"
+                        class="cc-newgame-seatbtn">1</button>
+                <button type="button" data-count="2"
+                        class="cc-newgame-seatbtn cc-newgame-seatbtn--on">2</button>
+                <button type="button" data-count="3"
+                        class="cc-newgame-seatbtn">3</button>
+                <button type="button" data-count="4"
+                        class="cc-newgame-seatbtn">4</button>
+              </span>
+            </h3>
             <ul id="ngm-seats" class="cc-newgame-seats">
               <!-- Populated by app.js based on the active seat count. -->
             </ul>
-          </div>
-          <div class="cc-newgame-row">
-            <label class="cc-newgame-label">VISIBILITY</label>
+          </section>
+
+          <section class="cc-newgame-block">
+            <h3 class="cc-newgame-block-head"># visibility</h3>
             <div class="cc-newgame-visgroup" role="radiogroup"
                  aria-label="Visibility mode">
               <label class="cc-newgame-visopt">
                 <input type="radio" name="ngm-visibility" value="hidden" checked />
-                <span>HIDDEN — fog-of-war (you only see what your units see)</span>
+                <span><b>HIDDEN</b> — fog-of-war. You only see what your units see.</span>
               </label>
               <label class="cc-newgame-visopt">
                 <input type="radio" name="ngm-visibility" value="open" />
-                <span>OPEN — omniscient (every seat sees the whole board)</span>
+                <span><b>OPEN</b> — omniscient. Every seat sees the whole board,
+                  agents included, so never use it to compare agents.</span>
               </label>
             </div>
-          </div>
+          </section>
+
           <!-- v1.14 — the backend is a per-game choice. Options are
                rendered by app.js from /api/meta/backend so an unavailable
                Snowflake store can be shown greyed-out with its reason,
                rather than silently missing. -->
-          <div class="cc-newgame-row">
-            <label class="cc-newgame-label">STORAGE</label>
+          <section class="cc-newgame-block">
+            <h3 class="cc-newgame-block-head"># storage</h3>
             <div id="ngm-backend" class="cc-newgame-visgroup" role="radiogroup"
                  aria-label="Storage backend">
               <!-- Populated by app.js. -->
             </div>
-          </div>
+          </section>
+
         </div>
         <footer class="cc-newgame-modal-foot">
           <button id="new-game-modal-spawn" type="button"
                   class="cli-btn cli-btn-primary">[ &gt; SPAWN SESSION ]</button>
+          <span id="ngm-summary" class="cc-newgame-summary dim"></span>
           <span id="new-game-modal-status" class="dim"></span>
         </footer>
       </div>

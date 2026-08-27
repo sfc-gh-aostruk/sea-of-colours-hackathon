@@ -174,7 +174,6 @@
   const watchPickerWrap = document.getElementById("watch-picker-wrap");
   const watchPickerEl =
     /** @type {HTMLSelectElement | null} */ (document.getElementById("watch-season-picker"));
-  const watchPickerMetaEl = document.getElementById("watch-picker-meta");
   const watchDeleteBtn = document.getElementById("watch-delete-btn");
   const watchFixturesEl =
     /** @type {HTMLInputElement | null} */ (document.getElementById("watch-show-fixtures"));
@@ -601,6 +600,26 @@
    *  cinematic (animate → reveal live → pop recap) controls the reveal
    *  order instead of flashing the end-state + recap before the replay. */
   let _suppressLiveReveal = false;
+  /** v1.22 — the replay frame whose cells are ON THE BOARD right now.
+   *  Replay frames ship EVERY seat's dense array, so a watcher can be given
+   *  exact rival borders instead of inferred ones.
+   *
+   *  Written only by `_afterBoardPaint`, out of `_visionFramePending`, so it
+   *  cannot describe a board that is no longer painted — see the note there.
+   *  A live paint leaves it null, which is what sends `_visionBands` down
+   *  the own-percept branch. Declared up here with the other paint state
+   *  because `_afterBoardPaint` reads it and an early placeholder paint
+   *  would otherwise hit the temporal dead zone. */
+  let _visionFrame = null;
+  /** Frame `_paintReplayBoard` is about to paint; consumed by the next
+   *  `_afterBoardPaint`. Never read directly. */
+  let _visionFramePending = null;
+  /** v1.23 — cell under the pointer, for the order-footprint preview. Only
+   *  the main board writes it. Declared beside the other paint state for the
+   *  same reason `_visionFrame` is: `_afterBoardPaint` reads it, and an early
+   *  placeholder paint would otherwise hit the temporal dead zone.
+   *  @type {{x:number,y:number} | null} */
+  let _aoeHover = null;
   const replayDims = { width: 40, height: 28 };
 
   /** @type {any} */
@@ -1448,56 +1467,170 @@
    *   :func:`paintMinesOverlay` and :func:`paintEmpCloudOverlay`
    *   already consume.
    */
-  function formatCellTip(c, xi, yi, meta) {
-    if (!c) return `(${xi},${yi})\n(no data)`;
-    const lines = [`(${xi},${yi})`];
-    if (c.kind === "fog") {
-      // v0.9.7 — probe-launch markers carry the enemy probe occupant
-      // even though the terrain underneath stays fog. Surface the
-      // occupant label(s) so the watcher tooltip explains the glyph
-      // they're seeing hover over a fogged tile.
-      const occ = Array.isArray(c.occupants) ? c.occupants : [];
-      if (occ.length) {
-        lines.push("fog (terrain unseen)");
-        for (const o of occ) {
-          const lbl = (o && (o.label || o.id)) || "";
-          if (lbl) lines.push(lbl);
-        }
-        return lines.join("\n");
-      }
-      lines.push("fog");
-      return lines.join("\n");
+  /** Glyph + label for each thing that can sit on a square. Single source
+   *  for the hover readout so the icon always matches the board (engine
+   *  ENTITY_GLYPHS: harvester X, probe ·, orblift ▲). */
+  const _TIP_ASSET = {
+    harvester: { glyph: "X", label: "harvester" },
+    probe: { glyph: "\u00B7", label: "probe" },
+    orblift: { glyph: "\u25B2", label: "orbital lifter" },
+    mine: { glyph: "\u25C6", label: "caltrop mine" },
+    emp: { glyph: "\u25CC", label: "EMP cloud" },
+    grave: { glyph: "\u2020", label: "destroyed harvester" },
+  };
+
+  /** One asset row, tinted by the owning seat. */
+  function _tipAsset(kind, name, metaText, owner) {
+    const a = _TIP_ASSET[kind] || { glyph: "?", label: kind };
+    const tint = owner ? ` style="color:${esc(playerColor(owner))}"` : "";
+    const tag = owner ? `<span class="cc-celltip-seat">${esc(playerTag(owner))}</span>` : "";
+    return (
+      `<div class="cc-celltip-asset"${tint}>` +
+      `<span class="cc-celltip-glyph" aria-hidden="true">${esc(a.glyph)}</span>` +
+      `<span class="cc-celltip-asset-main">${esc(name || a.label)}</span>` +
+      tag +
+      (metaText ? `<span class="cc-celltip-asset-meta">${esc(metaText)}</span>` : "") +
+      `</div>`
+    );
+  }
+
+  /** RED tier multipliers, mirrored from the engine via the agent view
+   *  (RULEBOOK §3.1) — never a second hard-coded copy of the table. The
+   *  literal fallback only covers a hover before the first /view lands. */
+  function _qualityMult() {
+    const m = window.__SOC_QUALITY_MULT__;
+    return (m && typeof m === "object" && m)
+      || { trace: 0.75, vein: 1.0, mass: 1.5, pure: 3.0 };
+  }
+
+  /**
+   * Terrain identity for a cell, preferring the engine's own numbers.
+   *
+   * v1.22 — the payload now carries ``tile`` / ``purity`` / ``tier``. Before
+   * that the only terrain signal was the render colour, so the tier had to
+   * be reverse-engineered from the dither glyph — which recovers the band
+   * ("51–150") but never the number. That inference is kept as a fallback
+   * so a season already in flight (whose echo snapshots predate the change)
+   * still reads sensibly.
+   */
+  function _tipTerrain(c) {
+    if (c.tile) {
+      return {
+        tile: String(c.tile),
+        tier: c.tier ? String(c.tier) : "",
+        purity: Number.isFinite(Number(c.purity)) ? Number(c.purity) : null,
+        exact: true,
+      };
     }
-
-    // Visibility tier
-    lines.push(c.stale || c.echo_probe ? "echo (historical)" : "live");
-
-    // Tile type + purity tier — inferred from the deterministic render colors.
-    // RED lower tiers:  fg="rgb(255,0,0)", bg=void dark, ch = ░░/▒▒/▓▓
-    // RED pure (255):   bg="rgb(255,0,0)", ch = "  "
-    // GREEN:            bg="rgb(63,185,80)", ch = "  "
-    // BLUE lower tiers: fg="rgb(59,143,224)", bg=void dark, ch = ░░/▒▒/▓▓
-    // BLUE deep (255):  bg="rgb(59,143,224)", ch = "  "
-    // EMPTY:            bg=void dark, fg=void dark, ch = ██
     const fg = c.fg || "";
     const bg = c.bg || "";
     const ch = c.ch || "";
+    const band = ch === "\u2591\u2591" ? 0 : ch === "\u2592\u2592" ? 1 : 2;
+    // v1.23 — the band's numeric bounds as well as its prose, so an
+    // inferred cell can still price itself as a RANGE. Without these the
+    // score line simply vanished on every dithered tile (see the note at
+    // the score block), which is where most of the board is.
+    const lo = [0, 51, 151][band];
+    const hi = [50, 150, 254][band];
     if (fg === "rgb(255,0,0)") {
-      const tierName = ch === "░░" ? "trace" : ch === "▒▒" ? "vein" : "mass";
-      const range    = ch === "░░" ? "0–50" : ch === "▒▒" ? "51–150" : "151–254";
-      lines.push(`RED · ${tierName}  (purity ${range})`);
-    } else if (bg === "rgb(255,0,0)") {
-      lines.push("RED · pure  (purity 255)");
-    } else if (bg === "rgb(63,185,80)") {
-      lines.push("GREEN");
-    } else if (fg === "rgb(59,143,224)") {
-      const tierName = ch === "░░" ? "shallow" : ch === "▒▒" ? "mid" : "sink";
-      const range    = ch === "░░" ? "0–50" : ch === "▒▒" ? "51–150" : "151–254";
-      lines.push(`BLUE · ${tierName}  (purity ${range})`);
-    } else if (bg === "rgb(59,143,224)") {
-      lines.push("BLUE · deep  (purity 255)");
-    } else {
-      lines.push("EMPTY");
+      return { tile: "RED", tier: ["trace", "vein", "mass"][band], range: ["0–50", "51–150", "151–254"][band], lo, hi, purity: null, exact: false };
+    }
+    if (bg === "rgb(255,0,0)") return { tile: "RED", tier: "pure", purity: 255, exact: true };
+    if (bg === "rgb(63,185,80)") return { tile: "GREEN", tier: "", purity: null, exact: false };
+    if (fg === "rgb(59,143,224)") {
+      return { tile: "BLUE", tier: ["shallow", "mid", "sink"][band], range: ["0–50", "51–150", "151–254"][band], lo, hi, purity: null, exact: false };
+    }
+    if (bg === "rgb(59,143,224)") return { tile: "BLUE", tier: "deep", purity: 255, exact: true };
+    return { tile: "EMPTY", tier: "", purity: null, exact: false };
+  }
+
+  function formatCellTip(c, xi, yi, meta) {
+    if (!c) {
+      return `<div class="cc-celltip-head"><span class="cc-celltip-xy">(${xi},${yi})</span></div>` +
+        `<div class="cc-celltip-dim">no data</div>`;
+    }
+    const head = (right) =>
+      `<div class="cc-celltip-head"><span class="cc-celltip-xy">(${xi},${yi})</span>${right || ""}</div>`;
+
+    if (c.kind === "fog") {
+      const occ = Array.isArray(c.occupants) ? c.occupants : [];
+      let out = head(`<span class="cc-celltip-vis cc-celltip-vis--fog">FOG</span>`) +
+        `<div class="cc-celltip-dim">terrain unseen</div>`;
+      for (const o of occ) {
+        if (!o) continue;
+        out += _tipAsset(
+          o.type || "probe",
+          o.id || o.label || "",
+          o.nights_remaining != null ? `expires in ${o.nights_remaining} Nox` : "",
+          o.owner || "",
+        );
+      }
+      if (c.destroyed_harvester && typeof c.destroyed_harvester === "object") {
+        const d = c.destroyed_harvester;
+        out += _tipAsset("grave", d.harvester_id || "", d.day != null ? `lost day ${d.day}` : "", d.owner || "");
+      }
+      return out;
+    }
+
+    const echo = Boolean(c.stale || c.echo_probe);
+    const t = _tipTerrain(c);
+    let out = head(
+      echo
+        ? `<span class="cc-celltip-vis cc-celltip-vis--echo">ECHO</span>`
+        : `<span class="cc-celltip-vis cc-celltip-vis--live">LIVE</span>`,
+    );
+
+    // Terrain line: colour, tier, and the exact number when we have it.
+    const tileCls = `cc-celltip-terrain--${t.tile.toLowerCase()}`;
+    const purityTxt = t.purity != null
+      ? `purity ${t.purity}`
+      : (t.range ? `purity ${t.range}` : "");
+    out +=
+      `<div class="cc-celltip-terrain ${tileCls}">` +
+      `<span class="cc-celltip-tile">${esc(t.tile)}</span>` +
+      (t.tier ? `<span class="cc-celltip-tier">${esc(t.tier)}</span>` : "") +
+      (purityTxt ? `<span class="cc-celltip-purity">${esc(purityTxt)}</span>` : "") +
+      `</div>`;
+
+    // The number that actually decides the night: what this square banks.
+    //
+    // v1.23 — the exact figure needs `purity` off the payload, which only
+    // a server running v1.22+ stamps. Before, a cell without it printed NO
+    // score line at all, so on an older server the only squares that priced
+    // themselves were GREEN (a flat charge, needs no purity) and pure RED /
+    // deep BLUE (saturated, so the colour alone pins them at 255) — every
+    // dithered tile, i.e. most of the board, went silent. A band estimate
+    // is worth far more than a blank, so the inferred tier now prices as a
+    // range and says that is what it is.
+    if (t.tile === "RED" && t.purity != null) {
+      const mult = Number(_qualityMult()[t.tier]) || 1.0;
+      const score = Math.round(t.purity * mult);
+      out +=
+        `<div class="cc-celltip-score">` +
+        `<span class="cc-celltip-score-num">${esc(String(score))}</span>` +
+        `<span class="cc-celltip-score-calc">${esc(String(t.purity))} \u00D7 ${esc(String(mult))} \u00B7 ${esc(t.tier)}</span>` +
+        `</div>`;
+    } else if (t.tile === "RED" && t.lo != null) {
+      const mult = Number(_qualityMult()[t.tier]) || 1.0;
+      out +=
+        `<div class="cc-celltip-score cc-celltip-score--est">` +
+        `<span class="cc-celltip-score-num">${esc(String(Math.round(t.lo * mult)))}\u2013${esc(String(Math.round(t.hi * mult)))}</span>` +
+        `<span class="cc-celltip-score-calc">${esc(t.range)} \u00D7 ${esc(String(mult))} \u00B7 ${esc(t.tier)} \u00B7 band estimate</span>` +
+        `</div>`;
+    } else if (t.tile === "GREEN") {
+      const pen = Number(window.__SOC_GREEN_PENALTY__);
+      const n = Number.isFinite(pen) ? pen : 100;
+      out +=
+        `<div class="cc-celltip-score cc-celltip-score--neg">` +
+        `<span class="cc-celltip-score-num">\u2212${esc(String(n))}</span>` +
+        `<span class="cc-celltip-score-calc">charged per parcel at settlement</span>` +
+        `</div>`;
+    } else if (t.tile === "BLUE") {
+      out +=
+        `<div class="cc-celltip-score cc-celltip-score--blue">` +
+        `<span class="cc-celltip-score-num">\u2014</span>` +
+        `<span class="cc-celltip-score-calc">fissile stock, not score</span>` +
+        `</div>`;
     }
 
     // v0.9.5 — track which occupant id was already represented as
@@ -1513,30 +1646,35 @@
         (/** @type {any} */ o) => o.type === "harvester" || o.type === "orblift" || o.type === "probe"
       ) : null;
       if (occ && occ.id) consumedOccIds.add(occ.id);
-      const ownerId = occ && occ.owner ? ` [${playerTag(occ.owner)}]` : "";
-      const entId   = occ ? ` ${occ.id}` : "";
+      const owner = (occ && occ.owner) || "";
+      const entId = (occ && occ.id) || "";
       if (eCh === "X" || eCh === "x") {
-        const cargo = c.entity.carrying ? "carrying Red" : "empty hold";
-        lines.push(`X  harvester · ${cargo}${ownerId}${entId}`);
-      } else if (eCh === "·") {
-        // v0.9.18 — surface the probe's remaining coverage life on hover
-        // (the on-map ring count is the at-a-glance cue; this is the
-        // exact figure). Same datum the agent reads as nights_remaining.
+        out += _tipAsset(
+          "harvester",
+          entId || "harvester",
+          c.entity.carrying ? "carrying RED" : "empty hold",
+          owner,
+        );
+      } else if (eCh === "\u00B7") {
+        // v0.9.18 — the probe's remaining coverage life. The on-map ring
+        // count is the at-a-glance cue; this is the exact figure, and the
+        // same datum the agent reads as nights_remaining.
         const nr =
           (c.entity && c.entity.nights_remaining != null)
             ? c.entity.nights_remaining
             : (occ && occ.nights_remaining != null)
               ? occ.nights_remaining
               : null;
-        const life =
-          nr != null
-            ? ` · expires in ${nr} Nox`
-            : "";
-        lines.push(`·  probe${ownerId}${entId}${life}`);
-      } else if (eCh === "▲") {
-        lines.push(`▲  orbital lifter${ownerId}${entId}`);
+        out += _tipAsset(
+          "probe",
+          entId || "probe",
+          nr != null ? `expires in ${nr} Nox` : "",
+          owner,
+        );
+      } else if (eCh === "\u25B2") {
+        out += _tipAsset("orblift", entId || "orbital lifter", "", owner);
       } else {
-        lines.push(`entity: ${eCh}${ownerId}`);
+        out += _tipAsset("harvester", `entity ${eCh}`, "", owner);
       }
     }
     // v0.9.5 — caltrop mine surfaced as a first-class object on the
@@ -1560,12 +1698,14 @@
     }
     if (mineForCell) {
       const m = /** @type {any} */ (mineForCell);
-      const owner = m.owner ? `owner=${playerTag(m.owner)}` : "";
       const laidDay = m.laid_at_day != null ? `laid day ${m.laid_at_day}` : "";
       const laidHour = m.laid_at_hour != null ? `${m.laid_at_hour}:00` : "";
-      const metaStr = [owner, [laidDay, laidHour].filter(Boolean).join(" ")]
-        .filter(Boolean).join(" · ");
-      lines.push(`◆  caltrop mine${metaStr ? "  " + metaStr : ""}`);
+      out += _tipAsset(
+        "mine",
+        "caltrop mine",
+        [laidDay, laidHour].filter(Boolean).join(" "),
+        m.owner || "",
+      );
     }
     // v0.9.5 — EMP cloud overlay. Public (RULEBOOK §5.1 — clouds
     // aren't gated by fog), surfaced on the cell payload by both
@@ -1590,42 +1730,144 @@
     }
     if (empForCell) {
       const e = /** @type {any} */ (empForCell);
-      const owner = e.owner ? `owner=${playerTag(e.owner)}` : "";
-      const hours = e.hours_remaining != null
-        ? `${e.hours_remaining}h left`
-        : "";
-      const center = (e.cx != null && e.cy != null)
-        ? `center (${e.cx},${e.cy})`
-        : "";
-      const metaStr = [owner, hours, center].filter(Boolean).join(" · ");
-      lines.push(`◌  EMP cloud${metaStr ? "  " + metaStr : ""}`);
+      const hours = e.hours_remaining != null ? `${e.hours_remaining}h left` : "";
+      const center = (e.cx != null && e.cy != null) ? `centre (${e.cx},${e.cy})` : "";
+      out += _tipAsset(
+        "emp",
+        "EMP cloud",
+        [hours, center].filter(Boolean).join(" \u00B7 "),
+        e.owner || "",
+      );
     }
     // v0.9.10 — destroyed harvester gravestone marker (permanent).
     if (c.destroyed_harvester && typeof c.destroyed_harvester === "object") {
       const d = c.destroyed_harvester;
-      const owner = d.owner ? `[${playerTag(d.owner)}]` : "";
-      const harvId = d.harvester_id || "?";
-      const day = d.day != null ? `day ${d.day}` : "";
-      const metaStr = [owner, day].filter(Boolean).join(" · ");
-      lines.push(`†  destroyed harvester${metaStr ? "  " + metaStr : ""}  ${harvId}`);
+      out += _tipAsset(
+        "grave",
+        d.harvester_id || "destroyed harvester",
+        d.day != null ? `lost day ${d.day}` : "",
+        d.owner || "",
+      );
     }
     // v0.7.2: trails are universal — a single ``cell.trail`` summary
     // with aggregate ``n`` + optional ``fresh_visits`` (≤ 1 day old).
     // The legacy ``cell.trail_markup`` shape (glyph + fg) survives as a
     // server-side fallback for player_dense_view cells.
     const trailLines = trailTooltipParts(c);
+    const extras = [];
     if (trailLines.length) {
-      for (const line of trailLines) lines.push(line);
+      for (const line of trailLines) extras.push(line);
     } else if (c.trail_markup && c.trail_markup.ch != null) {
-      lines.push(`trail: ${c.trail_markup.ch}`);
+      extras.push(`trail: ${c.trail_markup.ch}`);
     }
     if (Array.isArray(c.occupants) && c.occupants.length) {
       for (const o of c.occupants) {
         if (o && o.id && consumedOccIds.has(o.id)) continue;
-        lines.push(`  · ${o.label || o.id || "?"}`);
+        extras.push(`\u00B7 ${o.label || o.id || "?"}`);
       }
     }
-    return lines.join("\n");
+    for (const line of extras) {
+      out += `<div class="cc-celltip-note">${esc(line)}</div>`;
+    }
+    return out;
+  }
+
+  /**
+   * The "what would this actually cover" block that leads the tooltip while
+   * an area order is being aimed.
+   *
+   * The counts are the point of the whole feature. Siting a probe is a
+   * question about how much DARK ground the disk buys you, and the answer
+   * is not guessable by eye at radius 4. Aiming an EMP is a question about
+   * what is standing inside the diamond — including your own hardware,
+   * since the blast does not discriminate (RULEBOOK §4.9), and that is a
+   * mistake worth catching before TRANSMIT rather than after.
+   *
+   * @param {HTMLElement} host
+   * @param {any} store  the host's `__cellStore`
+   */
+  function _aoeTipBlock(host, x, y, store) {
+    if (host !== mapPlayer) return "";
+    const aim = _aoeAiming();
+    if (!aim) return "";
+    const w = Number(store && store.width);
+    const h = Number(store && store.height);
+    if (!w || !h) return "";
+    const cells = _actionFootprint(aim, x, y, w, h);
+    if (!cells.length) return "";
+
+    const kind = aim === "emp_launch" ? "emp" : aim === "mine_lay" ? "mine" : "probe";
+    const title = kind === "emp" ? "EMP BLAST"
+      : kind === "mine" ? "MINE CLUSTER"
+      : "PROBE FIELD";
+    const shape = kind === "emp" ? `r${_empRadius()} diamond`
+      : kind === "mine" ? `${_mineShape()} cluster`
+      : `r${_probeRadius()} disk`;
+    // Same footprint centred far from any edge, so "clipped" is measured
+    // rather than guessed. Cheap: the biggest shape we draw is 49 cells.
+    const full = _actionFootprint(aim, 64, 64, 128, 128).length;
+
+    let dark = 0;
+    /** @type {Map<string, {type:string, owner:string, n:number}>} */
+    const tally = new Map();
+    for (const [cx, cy] of cells) {
+      const c = store.cells && store.cells[cy * w + cx];
+      if (!c || c.kind === "fog") {
+        dark++;
+        continue;
+      }
+      const occ = Array.isArray(c.occupants) ? c.occupants : [];
+      for (const o of occ) {
+        if (!o || !o.type) continue;
+        const owner = String(o.owner || "");
+        const key = `${o.type}|${owner}`;
+        const hit = tally.get(key);
+        if (hit) hit.n += 1;
+        else tally.set(key, { type: String(o.type), owner, n: 1 });
+      }
+    }
+
+    let out = `<div class="cc-celltip-aoe cc-celltip-aoe--${kind}">`;
+    out +=
+      `<div class="cc-celltip-aoe-head">${esc(title)}` +
+      `<span class="cc-celltip-aoe-shape">${esc(shape)}</span></div>`;
+    out +=
+      `<div class="cc-celltip-aoe-figs">` +
+      `<span class="cc-celltip-aoe-num">${esc(String(cells.length))}</span>` +
+      `<span class="cc-celltip-aoe-unit">cells covered</span></div>`;
+    if (kind === "probe") {
+      out +=
+        `<div class="cc-celltip-aoe-note">` +
+        `${esc(String(dark))} in fog \u00B7 ${esc(String(cells.length - dark))} already lit` +
+        `</div>`;
+    }
+    if (cells.length < full) {
+      out +=
+        `<div class="cc-celltip-aoe-note cc-celltip-aoe-note--warn">` +
+        `clipped by the board edge \u2014 ${esc(String(full - cells.length))} of ${esc(String(full))} wasted` +
+        `</div>`;
+    }
+    // Occupants matter for the weapons; on a probe disk anything you can
+    // see is already drawn on the board and listing it is just noise.
+    if (kind !== "probe") {
+      for (const hit of tally.values()) {
+        const a = _TIP_ASSET[hit.type] || { glyph: "?", label: hit.type };
+        const tint = hit.owner ? ` style="color:${esc(playerColor(hit.owner))}"` : "";
+        const tag = hit.owner
+          ? `<span class="cc-celltip-seat">${esc(playerTag(hit.owner))}</span>`
+          : "";
+        const mine = hit.owner && hit.owner === MY_SEAT;
+        out +=
+          `<div class="cc-celltip-aoe-hit${mine ? " cc-celltip-aoe-hit--own" : ""}"${tint}>` +
+          `<span class="cc-celltip-glyph" aria-hidden="true">${esc(a.glyph)}</span>` +
+          `<span class="cc-celltip-asset-main">${esc(hit.n > 1 ? `${hit.n} \u00D7 ${a.label}` : a.label)}</span>` +
+          tag +
+          (mine ? `<span class="cc-celltip-asset-meta">yours</span>` : "") +
+          `</div>`;
+      }
+    }
+    out += `</div>`;
+    return out;
   }
 
   /**
@@ -1644,12 +1886,14 @@
       const cell = target ? target.closest(".cell") : null;
       if (!cell || !host.contains(cell)) {
         cellTooltip.hidden = true;
+        _setAoeHover(host, null, null);
         return;
       }
       const xAttr = cell.getAttribute("data-x");
       const yAttr = cell.getAttribute("data-y");
       if (xAttr == null || yAttr == null) {
         cellTooltip.hidden = true;
+        _setAoeHover(host, null, null);
         return;
       }
 
@@ -1657,6 +1901,10 @@
       let tipText;
       if (store) {
         const xi = parseInt(xAttr, 10), yi = parseInt(yAttr, 10);
+        // v1.23 — drive the footprint preview off the same pointer event
+        // that drives the tooltip, so the outline and the readout can never
+        // describe different cells.
+        _setAoeHover(host, xi, yi);
         let c = store.cells && store.cells[yi * store.width + xi];
         if (c && c.kind === "fog" && store.obsCells) {
           c = store.obsCells[yi * store.width + xi] ?? c;
@@ -1669,16 +1917,31 @@
         const meta = (store.mines || store.empClouds)
           ? { mines: store.mines || [], empClouds: store.empClouds || [] }
           : undefined;
-        tipText = formatCellTip(c, xi, yi, meta);
+        // While aiming, what the shot COVERS is the headline — the terrain
+        // under the crosshair is secondary — so the area block leads.
+        tipText = _aoeTipBlock(host, xi, yi, store) + formatCellTip(c, xi, yi, meta);
       } else {
         const occ = cell.getAttribute("data-occ") || "";
         tipText = occ ? `(${xAttr},${yAttr}) · ${occ}` : `(${xAttr},${yAttr})`;
       }
-      cellTooltip.textContent = tipText;
+      // v1.22 — the readout is structured markup now (seat-tinted asset
+      // rows, the big banked-score figure), not a block of text. Every
+      // interpolated value in formatCellTip goes through esc().
+      cellTooltip.innerHTML = tipText;
       const pad = 14;
-      cellTooltip.style.left = `${Math.max(2, ev.clientX + pad)}px`;
-      cellTooltip.style.top  = `${Math.max(2, ev.clientY + pad)}px`;
       cellTooltip.hidden = false;
+      // Flip across the pointer near the viewport edge so the card never
+      // hangs off-screen — it is much taller and wider than the old one.
+      const tw = cellTooltip.offsetWidth;
+      const th = cellTooltip.offsetHeight;
+      const left = ev.clientX + pad + tw > window.innerWidth - 4
+        ? ev.clientX - pad - tw
+        : ev.clientX + pad;
+      const top = ev.clientY + pad + th > window.innerHeight - 4
+        ? ev.clientY - pad - th
+        : ev.clientY + pad;
+      cellTooltip.style.left = `${Math.max(2, left)}px`;
+      cellTooltip.style.top  = `${Math.max(2, top)}px`;
     });
 
     host.addEventListener("pointerleave", () => {
@@ -1695,6 +1958,9 @@
     span.className = "dim";
     span.textContent = text;
     el.appendChild(span);
+    // No grid left to outline — drop the border layer rather than leave it
+    // floating over the placeholder.
+    _afterBoardPaint(el);
   }
 
   function allMapGrids() {
@@ -1714,6 +1980,78 @@
     for (const g of allMapGrids()) {
       g.classList.toggle("map-grid--lines", on);
     }
+  }
+
+  /** v1.22 — vision-border toggle (SETTINGS > DISPLAY). Same shape as the
+   *  gridlines control: sync the ASCII checkbox, persist, repaint. */
+  const VISION_BORDERS_KEY = "soc.visionBorders";
+  const visionBordersEl = /** @type {HTMLInputElement|null} */ (
+    document.getElementById("cc-vision-borders")
+  );
+  const visionBordersBox = document.querySelector(
+    'label[for="cc-vision-borders"] .cli-check-box',
+  );
+
+  function syncVisionBordersToggle() {
+    const on = Boolean(visionBordersEl?.checked);
+    if (visionBordersBox) visionBordersBox.textContent = on ? "[x]" : "[ ]";
+    try {
+      localStorage.setItem(VISION_BORDERS_KEY, on ? "1" : "0");
+    } catch (_) {
+      /* ignore — private mode etc. */
+    }
+    try {
+      paintVisionBorders();
+    } catch (_e) {
+      /* non-fatal */
+    }
+  }
+
+  if (visionBordersEl) {
+    try {
+      const saved = localStorage.getItem(VISION_BORDERS_KEY);
+      if (saved != null) visionBordersEl.checked = saved === "1";
+    } catch (_) {
+      /* ignore */
+    }
+    visionBordersEl.addEventListener("change", syncVisionBordersToggle);
+    if (visionBordersBox) {
+      visionBordersBox.textContent = visionBordersEl.checked ? "[x]" : "[ ]";
+    }
+  }
+
+  /** v1.22 — the frozen-fixtures list filter, now a SETTINGS preference
+   *  rather than an unlabelled tickbox beside the season picker. Persisted
+   *  because it is a per-developer habit, not a per-visit choice. The
+   *  picker re-render is wired by the watcher bootstrap, which owns the
+   *  session list. */
+  const SHOW_FIXTURES_KEY = "soc.showFixtures";
+  const showFixturesBox = document.querySelector(
+    'label[for="watch-show-fixtures"] .cli-check-box',
+  );
+  if (watchFixturesEl) {
+    try {
+      watchFixturesEl.checked =
+        localStorage.getItem(SHOW_FIXTURES_KEY) === "1";
+    } catch (_) {
+      /* ignore */
+    }
+    const paintBox = () => {
+      if (showFixturesBox) {
+        showFixturesBox.textContent = watchFixturesEl.checked ? "[x]" : "[ ]";
+      }
+    };
+    watchFixturesEl.addEventListener("change", () => {
+      paintBox();
+      try {
+        localStorage.setItem(
+          SHOW_FIXTURES_KEY, watchFixturesEl.checked ? "1" : "0",
+        );
+      } catch (_) {
+        /* ignore */
+      }
+    });
+    paintBox();
   }
 
   /**
@@ -1754,6 +2092,7 @@
     host.style.setProperty("--map-cols", String(width));
     /** @type {any} */ (host).__cellStore = { cells, width, height };
     bindCellHoverTip(host);
+    _afterBoardPaint(host);
   }
 
   /**
@@ -1995,6 +2334,47 @@
     bindCellHoverTip(host);
     _startFogWaveTicker();
     _applyFogWave();
+    _afterBoardPaint(host);
+  }
+
+  /**
+   * Single landing point for "the cell DOM was just rebuilt".
+   *
+   * Every painter blows the grid away with `innerHTML`, which strands any
+   * overlay sized against cell rects. Re-anchoring from one place rather
+   * than at each of the dozen paint call sites is deliberate: the redsign
+   * pre-reveal bug came from exactly that kind of scattered duty, where two
+   * of the three paint branches returned before reaching the shared line.
+   *
+   * @param {HTMLElement} host  only the main board owns the FX overlays
+   */
+  function _afterBoardPaint(host) {
+    if (host !== mapPlayer) return;
+    // v1.22 — hand the pending replay frame over to the border layer HERE,
+    // at the one moment we know the cells it describes are on the board.
+    // `_paintReplayBoard` parks the frame and every painter ends up here, so
+    // a LIVE paint arrives with nothing parked and correctly clears it.
+    //
+    // Why not just test `mainMapSource === "replay"`: that flag flips at the
+    // top of `_paintReplayFrameMain`, before any frame has painted, so there
+    // is a window where the mode says "replay" while the board still shows
+    // the previous night — and the last frame handed over is that night's
+    // FINAL one. Anything repainting the overlay in that window (a zoom, a
+    // resize behind the title card) drew turn-end borders over a pre-turn
+    // board. Making the handover part of the paint closes the window by
+    // construction instead of asking eight call sites to remember.
+    _visionFrame = _visionFramePending;
+    _visionFramePending = null;
+    try {
+      paintVisionBorders();
+    } catch (_e) {
+      /* non-fatal — a missing border must never break the board */
+    }
+    try {
+      paintAoeOverlay();
+    } catch (_e) {
+      /* non-fatal — a missing footprint must never break the board */
+    }
   }
 
   /**
@@ -2059,6 +2439,10 @@
       `<div class="${cls}" style="--map-cols:${String(width)}">${parts.join("")}</div>`;
     host.style.setProperty("--map-cols", String(width));
     /** @type {any} */ (host).__cellStore = { cells: playerCells, obsCells: observerCells, width, height };
+    // v1.22 — this painter rebuilds the cell DOM like the others, so it owes
+    // the overlay a repaint; without it the border layer describes the
+    // previous board.
+    _afterBoardPaint(host);
     bindCellHoverTip(host);
   }
 
@@ -2122,6 +2506,7 @@
     host.style.setProperty("--map-cols", String(width));
     /** @type {any} */ (host).__cellStore = { cells: obsCells, width, height };
     bindCellHoverTip(host);
+    _afterBoardPaint(host);
   }
 
   function fmtUnits(rows) {
@@ -5125,6 +5510,15 @@
     collisionFxLayer
       .querySelectorAll(".harvester-path-badge, .harvester-path-leg, .cc-order-marker")
       .forEach((n) => n.remove());
+    // v1.23 — footprints ride along on every call site that already
+    // refreshes the queue overlay. Ahead of the early returns below: an
+    // emptied queue must clear its footprints too, and `paintAoeOverlay`
+    // does its own gating.
+    try {
+      paintAoeOverlay();
+    } catch (_e) {
+      /* non-fatal */
+    }
     // Only meaningful on the live player's own map (not replay scrubbing).
     if (mainMapSource !== "live") return;
     const armedUnit =
@@ -11613,6 +12007,675 @@
    *  the map never pinpoints the exact pure square. Rebuilt only when the
    *  overlay changes or the map resizes, so the CSS pulse breathes
    *  smoothly across ordinary repaints. */
+  /* ── Vision borders (v1.22, RULEBOOK §3.11) ───────────────────────────
+   *
+   * Draw the perimeter of each House's live line-of-sight in that seat's
+   * colour, so "what can I actually see right now" reads at a glance.
+   *
+   * WHY THIS IS AN SVG AND NOT CELL BORDERS. Styling the cells themselves
+   * is the obvious approach and it does not work here, for four reasons
+   * that compound:
+   *
+   *   1. The board is a `display: table` with `border-collapse: collapse`.
+   *      Adjacent cells argue over the shared edge and the winner is
+   *      decided by the collapse rules, not by us.
+   *   2. A `border` eats into a fixed `2ch × 1em` cell (`box-sizing:
+   *      border-box`), so glyphs shift the moment an edge appears.
+   *   3. Every paint rebuilds the grid with `innerHTML`, so per-cell
+   *      classes evaporate on the next tick.
+   *   4. Fatally: a per-cell box cannot express a REGION outline with
+   *      real corners, and where two seats' vision overlaps a single cell
+   *      can only be one colour.
+   *
+   * So the border is geometry, not decoration. One <svg> over the board
+   * whose `viewBox` is in CELL UNITS — a path coordinate is just a cell
+   * index, so there is no per-cell pixel arithmetic to drift or round.
+   * `vector-effect: non-scaling-stroke` holds the line at a constant pixel
+   * width through the whole zoom range. Each seat gets its own <path>, so
+   * overlapping vision draws both outlines instead of one hiding the other.
+   */
+
+  /** Is this dense cell in the seat's LIVE line-of-sight?
+   *  Mirrors the engine's own branch in ``GameSession.player_dense_view``:
+   *  the live arm stamps ``stale: False``, echo/memory stamp ``stale:
+   *  True``, and fog is its own ``kind``. */
+  function _cellIsLive(c) {
+    return Boolean(c) && c.kind !== "fog" && !c.stale;
+  }
+
+  /**
+   * Closed boundary rings for a set of cells, in cell units.
+   *
+   * Emits the directed edges where an in-set cell meets an out-of-set
+   * neighbour, wound so the interior is always 90° clockwise of travel
+   * (top→right, right→down, bottom→left, left→up), then chains them
+   * head-to-tail into closed loops. Every boundary edge belongs to exactly
+   * one cell — its outward neighbour is by definition not in the set — so
+   * there is nothing to de-duplicate and no double-drawn line.
+   *
+   * v1.22 — `skipEdge(x, y, dir)` may drop individual boundary edges, which
+   * turns some loops into OPEN chains. An open chain is marked by its last
+   * vertex differing from its first; `_collapseCollinear` and `_ringsToPath`
+   * both key off that, so a closed ring behaves exactly as before.
+   *
+   * @param {(x:number,y:number)=>boolean} inSet
+   * @param {((x:number,y:number,dir:string)=>boolean)=} skipEdge
+   * @returns {number[][]} rings as flat [x0,y0,x1,y1,...] — closed ones
+   *   repeat the first vertex last
+   */
+  function _visionRings(inSet, w, h, skipEdge) {
+    /** @type {Map<string, number[][]>} start vertex -> outgoing end vertices */
+    const out = new Map();
+    const push = (ax, ay, bx, by) => {
+      const k = `${ax},${ay}`;
+      const arr = out.get(k);
+      if (arr) arr.push([bx, by]);
+      else out.set(k, [[bx, by]]);
+    };
+    const edge = (x, y, dir, ax, ay, bx, by) => {
+      if (skipEdge && skipEdge(x, y, dir)) return;
+      push(ax, ay, bx, by);
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!inSet(x, y)) continue;
+        if (!inSet(x, y - 1)) edge(x, y, "n", x, y, x + 1, y);
+        if (!inSet(x + 1, y)) edge(x, y, "e", x + 1, y, x + 1, y + 1);
+        if (!inSet(x, y + 1)) edge(x, y, "s", x + 1, y + 1, x, y + 1);
+        if (!inSet(x - 1, y)) edge(x, y, "w", x, y + 1, x, y);
+      }
+    }
+    const rings = [];
+    const budget = 4 * w * h + 8;
+    // A closed ring needs 5 vertices to be a real shape; an open chain can
+    // legitimately be a single segment, so only filter the degenerate walk.
+    const minNums = skipEdge ? 4 : 10;
+    for (const key of Array.from(out.keys())) {
+      // A vertex can start more than one edge where the region pinches to a
+      // diagonal touch. Draining the list means every edge lands in some
+      // ring; which ring a pinch splits into is arbitrary but consistent.
+      for (;;) {
+        const seed = out.get(key);
+        if (!seed || !seed.length) break;
+        const sx = Number(key.slice(0, key.indexOf(",")));
+        const sy = Number(key.slice(key.indexOf(",") + 1));
+        const ring = [sx, sy];
+        let cx = sx;
+        let cy = sy;
+        for (let guard = 0; guard < budget; guard++) {
+          const here = out.get(`${cx},${cy}`);
+          if (!here || !here.length) break;
+          const nxt = here.shift();
+          ring.push(nxt[0], nxt[1]);
+          cx = nxt[0];
+          cy = nxt[1];
+          if (cx === sx && cy === sy) break;
+        }
+        // A single cell is 4 edges = 5 vertices = 10 numbers; anything
+        // shorter is a malformed walk and is dropped rather than drawn.
+        if (ring.length >= minNums) rings.push(ring);
+      }
+    }
+    return rings;
+  }
+
+  /** Drop vertices that sit mid-run on a straight edge, so a 40-cell wall is
+   *  one line segment rather than forty. Purely a path-size win — the shape
+   *  is identical — but it keeps the emitted `d` attribute small enough to
+   *  rewrite every replay tick without churn. */
+  function _collapseCollinear(ring) {
+    if (!_ringIsClosed(ring)) {
+      // Open chain: the two endpoints are real and must survive; only
+      // interior vertices are candidates for collapsing.
+      const m = ring.length / 2;
+      if (m < 3) return ring;
+      const open = [ring[0], ring[1]];
+      for (let i = 1; i < m - 1; i++) {
+        const p = (i - 1) * 2;
+        const c = i * 2;
+        const q = (i + 1) * 2;
+        const ax = ring[c] - ring[p];
+        const ay = ring[c + 1] - ring[p + 1];
+        const bx = ring[q] - ring[c];
+        const by = ring[q + 1] - ring[c + 1];
+        if (ax * by - ay * bx !== 0) open.push(ring[c], ring[c + 1]);
+      }
+      open.push(ring[(m - 1) * 2], ring[(m - 1) * 2 + 1]);
+      return open;
+    }
+    const n = ring.length / 2 - 1; // closing vertex repeats the first
+    if (n < 3) return ring;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const p = ((i - 1 + n) % n) * 2;
+      const c = i * 2;
+      const q = ((i + 1) % n) * 2;
+      const ax = ring[c] - ring[p];
+      const ay = ring[c + 1] - ring[p + 1];
+      const bx = ring[q] - ring[c];
+      const by = ring[q + 1] - ring[c + 1];
+      if (ax * by - ay * bx !== 0) out.push(ring[c], ring[c + 1]);
+    }
+    if (out.length < 6) return ring;
+    out.push(out[0], out[1]);
+    return out;
+  }
+
+  /** Does this walk come back to where it started? Open chains are produced
+   *  only by the `skipEdge` path in `_visionRings`. */
+  function _ringIsClosed(ring) {
+    const n = ring.length;
+    return n >= 4 && ring[0] === ring[n - 2] && ring[1] === ring[n - 1];
+  }
+
+  /** Rings -> one SVG path `d`, in cell units. Closed rings get `Z`; open
+   *  chains must not, or the gap would be bridged by a phantom segment. */
+  function _ringsToPath(rings) {
+    const parts = [];
+    for (const raw of rings) {
+      const closed = _ringIsClosed(raw);
+      const r = _collapseCollinear(raw);
+      let d = `M${r[0]} ${r[1]}`;
+      const end = closed ? r.length - 2 : r.length;
+      for (let i = 2; i < end; i += 2) d += `L${r[i]} ${r[i + 1]}`;
+      parts.push(closed ? `${d}Z` : d);
+    }
+    return parts.join("");
+  }
+
+  /** Probe vision radius, read from the live rules block rather than baked
+   *  in — a retune of SOC_PROBE_RADIUS must move the drawn disk with it
+   *  (AGENTS.md: prefer meta.rules over a hardcoded copy). */
+  function _probeRadius() {
+    const r = Number(window.__SOC_PROBE_RADIUS__);
+    return Number.isFinite(r) && r > 0 ? r : 4;
+  }
+
+  /**
+   * Rival vision the seat can legitimately infer, as {seat: maskFn}.
+   *
+   * No payload carries a rival's LOS — fog would be meaningless if it did.
+   * What a seat DOES lawfully know is where some rival probes are: launches
+   * are public (§3.15) and any probe standing in your own LOS is visible.
+   * The disk around a known probe is then simple arithmetic, because the
+   * radius is published in the canonical config. So this reconstructs the
+   * part of a rival's vision the seat has earned the right to know, and no
+   * more — which is why it is drawn dashed. It is a partial, inferred
+   * footprint, not the rival's true sight.
+   */
+  function _inferredRivalMasks(cells, w, h) {
+    /** @type {Map<string, Array<number[]>>} seat -> probe centres */
+    const bySeat = new Map();
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      if (!c) continue;
+      // v1.22 — only a probe standing in your LIVE sight counts. An echo or
+      // memory cell can still carry the occupant that was there last night,
+      // and inferring a live disk from a remembered probe would outline
+      // vision the rival may have picked up and moved on from.
+      if (!_cellIsLive(c)) continue;
+      const occ = Array.isArray(c.occupants) ? c.occupants : [];
+      for (const o of occ) {
+        if (!o || o.type !== "probe") continue;
+        const owner = String(o.owner || "");
+        if (!owner || owner === MY_SEAT) continue;
+        const arr = bySeat.get(owner);
+        if (arr) arr.push([i % w, Math.floor(i / w)]);
+        else bySeat.set(owner, [[i % w, Math.floor(i / w)]]);
+      }
+    }
+    const masks = [];
+    const rr = _probeRadius() * _probeRadius();
+    for (const [seat, centres] of bySeat) {
+      const mask = new Uint8Array(w * h);
+      for (const [px, py] of centres) {
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const dx = x - px;
+            const dy = y - py;
+            // Euclidean disk, matching _euclidean_disk in the engine.
+            if (dx * dx + dy * dy <= rr) mask[y * w + x] = 1;
+          }
+        }
+      }
+      masks.push({ seat, mask, inferred: true });
+    }
+    return masks;
+  }
+
+  /** Build the list of {seat, mask, inferred} to outline. */
+  function _visionBands() {
+    const store = mapPlayer && /** @type {any} */ (mapPlayer).__cellStore;
+    if (!store || !Array.isArray(store.cells)) return [];
+    const { cells, width: w, height: h } = store;
+    if (!w || !h) return [];
+    const bands = [];
+
+    const maskOf = (arr) => {
+      const m = new Uint8Array(w * h);
+      let n = 0;
+      for (let i = 0; i < arr.length && i < m.length; i++) {
+        if (_cellIsLive(arr[i])) {
+          m[i] = 1;
+          n++;
+        }
+      }
+      // An all-live board is the omniscient watcher (or visibility_mode
+      // "open"): the only ring would trace the board edge, which tells the
+      // player nothing. Suppress rather than draw a useless rectangle.
+      return n && n < w * h ? m : null;
+    };
+
+    const frame = mainMapSource === "replay" ? _visionFrame : null;
+    if (frame) {
+      // Rival seats are gated exactly like the replay seat-toggle is: during
+      // a live season a player must not be handed a rival's true LOS, so
+      // outside watch/season-complete only the viewer's own band is built.
+      const rivalsOk = opponentSeatVisible();
+      for (const seat of _activeSeatsForView()) {
+        if (!rivalsOk && seat !== MY_SEAT) continue;
+        const arr = frame.cells_by_seat?.[seat]
+          || frame[`cells_player_${seat}`]
+          || (seat === "p1" ? frame.cells_player : null);
+        if (!Array.isArray(arr) || !arr.length) continue;
+        const mask = maskOf(arr);
+        if (mask) bands.push({ seat, mask, inferred: false });
+      }
+      if (bands.length) return bands;
+    }
+
+    // Live play (or a frame with no per-seat arrays): the painted board IS
+    // the viewing seat's percept, so its own border comes free.
+    const viewSeat = mainMapSource === "replay" && replayViewSeat !== "obs"
+      ? replayViewSeat
+      : MY_SEAT;
+    const own = maskOf(cells);
+    if (own) bands.push({ seat: viewSeat, mask: own, inferred: false });
+    // v1.22 — a rival band is clipped to ground you can currently see.
+    //
+    // The disk around a rival probe is arithmetic, so it happily extends
+    // out over fog you know nothing about, and drawing it there claims a
+    // certainty the seat has not earned — it reads as "their vision ends
+    // HERE" when all you really know is "their probe is there". Masking by
+    // your own live set leaves only the arc that falls on ground you can
+    // see for yourself, which is the honest statement: *this* is where
+    // your sight and theirs overlap.
+    if (own) {
+      for (const band of _inferredRivalMasks(cells, w, h)) {
+        let n = 0;
+        for (let i = 0; i < band.mask.length; i++) {
+          band.mask[i] = band.mask[i] & own[i];
+          n += band.mask[i];
+        }
+        // `clipTo` also tells the painter which of this band's edges are
+        // really YOUR edge — see the note in paintVisionBorders.
+        if (n) bands.push(Object.assign(band, { clipTo: own }));
+      }
+    }
+    return bands;
+  }
+
+  const _VISION_SVG_NS = "http://www.w3.org/2000/svg";
+
+  /**
+   * Repaint the vision-border layer.
+   *
+   * Must be called after EVERY board paint: the painters rebuild the grid
+   * with `innerHTML`, which changes the cell rects this layer is sized
+   * against (and on zoom the rects change without a repaint at all).
+   */
+  function paintVisionBorders() {
+    if (!collisionFxLayer || !mapPlayer) return;
+    const existing = collisionFxLayer.querySelector(".vision-border-layer");
+    const grid = mapPlayer.querySelector(".map-grid");
+    const bands = grid ? _visionBands() : [];
+    if (!grid || !bands.length || !_visionBordersOn()) {
+      if (existing) existing.remove();
+      return;
+    }
+    const store = /** @type {any} */ (mapPlayer).__cellStore;
+    const w = store.width;
+    const h = store.height;
+    const gridRect = grid.getBoundingClientRect();
+    const hostRect = collisionFxLayer.getBoundingClientRect();
+    if (!gridRect.width || !gridRect.height) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const svg = existing || document.createElementNS(_VISION_SVG_NS, "svg");
+    if (!existing) {
+      svg.setAttribute("class", "vision-border-layer");
+      svg.setAttribute("aria-hidden", "true");
+      collisionFxLayer.appendChild(svg);
+    }
+    // viewBox in CELL UNITS: a path coordinate is a cell index, so the
+    // geometry never needs to know the pixel size of a cell.
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.style.left = `${gridRect.left - hostRect.left}px`;
+    svg.style.top = `${gridRect.top - hostRect.top}px`;
+    svg.style.width = `${gridRect.width}px`;
+    svg.style.height = `${gridRect.height}px`;
+
+    let markup = "";
+    for (const band of bands) {
+      // v1.22 — a clipped rival band borrows most of its outline from YOUR
+      // outline: wherever their disk runs past the edge of your sight, the
+      // clip lands the band's edge exactly on yours, and the dotted line
+      // just re-draws a line already on the board in your own colour.
+      //
+      // Worse, it misreads. That segment is not their vision ending — it is
+      // yours; theirs carries on into fog you cannot see. So drop any edge
+      // whose outward neighbour is also outside your live set (the board rim
+      // counts, since your outline runs along it too). What survives is the
+      // part that says something: where their sight stops INSIDE ground you
+      // can see. If their disk covers everything you can see, nothing is
+      // drawn — which is the honest answer, because then you have learned
+      // nothing about where their sight ends.
+      const clip = band.clipTo;
+      const skipEdge = clip
+        ? (x, y, dir) => {
+            const nx = dir === "e" ? x + 1 : dir === "w" ? x - 1 : x;
+            const ny = dir === "s" ? y + 1 : dir === "n" ? y - 1 : y;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) return true;
+            return clip[ny * w + nx] !== 1;
+          }
+        : undefined;
+      const d = _ringsToPath(
+        _visionRings((x, y) => (
+          x >= 0 && y >= 0 && x < w && y < h && band.mask[y * w + x] === 1
+        ), w, h, skipEdge),
+      );
+      if (!d) continue;
+      const colour = playerColor(band.seat);
+      const cls = band.inferred
+        ? "vision-border vision-border--inferred"
+        : "vision-border";
+      // v1.22 — one stroke, not two. This used to lay a wide low-opacity
+      // halo under the line for legibility over bright terrain; it read as
+      // a coloured bleed around the border rather than as contrast, so the
+      // line carries itself now (see the CSS note on the dark liner).
+      markup += `<path class="${cls}" d="${d}" stroke="${esc(colour)}"></path>`;
+    }
+    svg.innerHTML = markup;
+  }
+
+  /** SETTINGS toggle — some players find the outlines busy on a crowded
+   *  board, and a watcher replaying four seats certainly will. */
+  function _visionBordersOn() {
+    return visionBordersEl ? Boolean(visionBordersEl.checked) : true;
+  }
+
+  /* ── v1.23 — order footprints ────────────────────────────────────────
+   *
+   * Three of the orders a seat can queue do not land on the cell you click:
+   * a probe lights a radius-4 disk, an EMP fills a radius-2 diamond, a mine
+   * arms a five-cell cluster. Until now the map showed only the centre
+   * glyph, so aiming any of them meant counting squares by eye and hoping —
+   * and a queued salvo gave no clue what ground it actually covered.
+   *
+   * Drawn the same way as the vision borders (see the essay above): one SVG
+   * over the board with the viewBox in CELL UNITS, boundary rings out of
+   * `_visionRings`. Per-cell divs were the obvious alternative and are the
+   * wrong tool — a probe disk alone is ~49 of them, rebuilt on every
+   * pointermove, and 49 abutting squares read as a mosaic rather than as
+   * one region with an edge.
+   *
+   * The shapes MUST mirror the engine's own helpers, so each reads its dial
+   * off the rules block rather than restating it: probe is
+   * `_euclidean_disk` at `meta.rules.probe_radius`, EMP is `_manhattan_disk`
+   * at `weapon_specs.emp.radius`, mine is `_mine_cluster_cells` under
+   * `weapon_specs.mine.batch_shape`.
+   * ──────────────────────────────────────────────────────────────────── */
+
+  /** EMP blast radius (Manhattan), mirroring ``weapons.EMP_RADIUS``. */
+  function _empRadius() {
+    const r = Number(window.__SOC_EMP_RADIUS__);
+    return Number.isFinite(r) && r > 0 ? r : 2;
+  }
+
+  /** Mine cluster shape, mirroring ``weapons.MINE_BATCH_SHAPE``. */
+  function _mineShape() {
+    return String(window.__SOC_MINE_SHAPE__ || "plus");
+  }
+
+  /** Does this action cover ground beyond the cell you click? `drop` and
+   *  `step` land on exactly one square and already carry a path badge, so
+   *  outlining them would just trace the hover ring a second time. */
+  function _actionHasArea(action) {
+    return action === "probe" || action === "emp_launch" || action === "mine_lay";
+  }
+
+  /**
+   * Cells an action centred on (cx, cy) would touch, clipped to the board.
+   * @returns {number[][]} [x, y] pairs
+   */
+  function _actionFootprint(action, cx, cy, w, h) {
+    const out = [];
+    const add = (x, y) => {
+      if (x >= 0 && y >= 0 && x < w && y < h) out.push([x, y]);
+    };
+    if (action === "probe") {
+      const r = _probeRadius();
+      const rr = r * r;
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (dx * dx + dy * dy <= rr) add(cx + dx, cy + dy);
+        }
+      }
+    } else if (action === "emp_launch") {
+      const r = _empRadius();
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) + Math.abs(dy) <= r) add(cx + dx, cy + dy);
+        }
+      }
+    } else if (action === "mine_lay") {
+      const shape = _mineShape();
+      // Unknown shapes fall back to the centre alone, exactly as the
+      // engine's `_mine_cluster_cells` does.
+      const offs = shape === "plus"
+        ? [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]]
+        : shape === "cross3x3"
+          ? [[-1, -1], [0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]
+          : [[0, 0]];
+      for (const [dx, dy] of offs) add(cx + dx, cy + dy);
+    } else {
+      add(cx, cy);
+    }
+    return out;
+  }
+
+  /** The area order currently being aimed, or null. Covers both targeting
+   *  paths — the asset-first composer and the legacy toolbar's pickMode. */
+  function _aoeAiming() {
+    if (assetSelect && assetSelect.awaiting === "target"
+        && _actionHasArea(assetSelect.action)) {
+      return assetSelect.action;
+    }
+    if (pickMode && _actionHasArea(pickMode)) return pickMode;
+    return null;
+  }
+
+  /**
+   * Every footprint to draw: one per queued area order, plus the live one
+   * under the pointer while a target is being aimed.
+   * @returns {{action:string, cells:number[][], live:boolean}[]}
+   */
+  function _aoeShapes(w, h) {
+    const out = [];
+    for (const m of soloQueue) {
+      if (!m) continue;
+      if (m.a === "emp_launch" && Array.isArray(m.ats)) {
+        // A salvo is up to three independent missiles; each gets its own
+        // diamond rather than one blob, because that is how it detonates.
+        for (const t of m.ats) {
+          if (!Array.isArray(t)) continue;
+          const x = Number(t[0]);
+          const y = Number(t[1]);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          out.push({ action: "emp_launch", cells: _actionFootprint("emp_launch", x, y, w, h), live: false });
+        }
+        continue;
+      }
+      if (!_actionHasArea(m.a)) continue;
+      const x = Number(m.x);
+      const y = Number(m.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      out.push({ action: m.a, cells: _actionFootprint(m.a, x, y, w, h), live: false });
+    }
+    const aim = _aoeAiming();
+    if (aim && _aoeHover) {
+      out.push({
+        action: aim,
+        cells: _actionFootprint(aim, _aoeHover.x, _aoeHover.y, w, h),
+        live: true,
+      });
+    }
+    return out.filter((s) => s.cells.length);
+  }
+
+  /**
+   * Repaint the footprint layer.
+   *
+   * Called from `_afterBoardPaint` (the cell rects this is sized against
+   * move on every board rebuild and on zoom), from `paintPlannedOrdersOverlay`
+   * (which already runs on every queue change), and from the hover handler.
+   */
+  function paintAoeOverlay() {
+    if (!collisionFxLayer || !mapPlayer) return;
+    const existing = collisionFxLayer.querySelector(".aoe-layer");
+    const grid = mapPlayer.querySelector(".map-grid");
+    const store = /** @type {any} */ (mapPlayer).__cellStore;
+    // Orders only exist against the live board; scrubbing a replay shows
+    // what happened, not what you are planning.
+    const shapes = grid && store && mainMapSource === "live"
+      ? _aoeShapes(store.width, store.height)
+      : [];
+    if (!shapes.length) {
+      if (existing) existing.remove();
+      return;
+    }
+    const w = store.width;
+    const h = store.height;
+    const gridRect = grid.getBoundingClientRect();
+    const hostRect = collisionFxLayer.getBoundingClientRect();
+    if (!gridRect.width || !gridRect.height) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const svg = existing || document.createElementNS(_VISION_SVG_NS, "svg");
+    if (!existing) {
+      svg.setAttribute("class", "aoe-layer");
+      svg.setAttribute("aria-hidden", "true");
+      collisionFxLayer.appendChild(svg);
+    }
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.style.left = `${gridRect.left - hostRect.left}px`;
+    svg.style.top = `${gridRect.top - hostRect.top}px`;
+    svg.style.width = `${gridRect.width}px`;
+    svg.style.height = `${gridRect.height}px`;
+
+    let markup = "";
+    for (const shape of shapes) {
+      const mask = new Uint8Array(w * h);
+      for (const [x, y] of shape.cells) mask[y * w + x] = 1;
+      const d = _ringsToPath(
+        _visionRings((x, y) => (
+          x >= 0 && y >= 0 && x < w && y < h && mask[y * w + x] === 1
+        ), w, h),
+      );
+      if (!d) continue;
+      const kind = shape.action === "emp_launch" ? "emp"
+        : shape.action === "mine_lay" ? "mine"
+        : "probe";
+      const cls = `aoe-shape aoe-shape--${kind}`
+        + (shape.live ? " aoe-shape--live" : "");
+      markup += `<path class="${cls}" d="${d}"></path>`;
+    }
+    svg.innerHTML = markup;
+  }
+
+  /**
+   * Pointer moved onto (x, y) — or off the board, when x is null.
+   *
+   * Repaints only when the cell actually CHANGES: a pointermove fires many
+   * times crossing one square, and each repaint rebuilds a ~49-cell mask.
+   */
+  function _setAoeHover(host, x, y) {
+    if (host !== mapPlayer) return;
+    const same = _aoeHover
+      ? (_aoeHover.x === x && _aoeHover.y === y)
+      : x == null;
+    if (same) return;
+    _aoeHover = x == null ? null : { x, y };
+    // Nothing is aimed most of the time, so skip the paint entirely rather
+    // than clear-and-rebuild an empty layer on every hover.
+    if (!_aoeAiming() && !collisionFxLayer?.querySelector(".aoe-layer")) return;
+    try {
+      paintAoeOverlay();
+    } catch (_e) {
+      /* non-fatal — a missing footprint must never break the board */
+    }
+  }
+
+  /** Test hook for scripts/_fx_aoe.py. Aiming an order normally takes a
+   *  live game, an armed chip and a real pointer; this lets the harness set
+   *  the same three things directly and read the drawn shapes back. The
+   *  `footprint` entry is the one that matters most — it is diffed against
+   *  the engine's own AoE helpers, which is the check that catches the
+   *  client's copy of a radius drifting from the rules. */
+  window.__SOC_AOE_DBG__ = {
+    footprint: (action, x, y, w, h) => _actionFootprint(action, x, y, w, h),
+    aim: (action) => {
+      if (action) enterAssetSelect({ action, awaiting: "target" });
+      else exitAssetSelect();
+    },
+    hover: (x, y) => _setAoeHover(mapPlayer, x, y),
+    setQueue: (rows) => {
+      soloQueue = Array.isArray(rows) ? rows : [];
+      paintPlannedOrdersOverlay();
+    },
+    shapes: () => {
+      const store = /** @type {any} */ (mapPlayer).__cellStore;
+      return store
+        ? _aoeShapes(store.width, store.height).map((s) => ({
+            action: s.action,
+            live: s.live,
+            cells: s.cells.length,
+          }))
+        : [];
+    },
+    tip: (x, y) => _aoeTipBlock(
+      mapPlayer, x, y, /** @type {any} */ (mapPlayer).__cellStore,
+    ),
+  };
+
+  /** Test hook for scripts/_fx_vision.py. Lets a harness paint a hand-built
+   *  board and read back the rings, so the awkward cases (two seats
+   *  overlapping, a rival disk clipped by the board edge, a hole in your own
+   *  vision) can be checked on demand instead of waiting for a season to
+   *  produce them. Read-only from the app's point of view. */
+  window.__SOC_VISION_DBG__ = {
+    paintBoard: (w, h, cells) => paintPlayerMap(mapPlayer, { width: w, height: h, cells }),
+    repaint: () => paintVisionBorders(),
+    rings: (fn, w, h) => _visionRings(fn, w, h),
+    bands: () => _visionBands().map((b) => ({
+      seat: b.seat,
+      inferred: b.inferred,
+      cells: b.mask.reduce((a, v) => a + v, 0),
+    })),
+    // Which branch the bands came from. `replay` means a frame's exact
+    // per-seat cells; `live` means own percept + inferred rivals. A frame
+    // that is parked but not painted reads as `live`, which is the whole
+    // point of the pending/consume handover.
+    source: () => (mainMapSource === "replay" && _visionFrame ? "replay" : "live"),
+    tip: (c, x, y) => formatCellTip(c, x, y, undefined),
+  };
+
   function paintRedsignOverlay() {
     if (!collisionFxLayer || !mapPlayer) return;
     collisionFxLayer
@@ -12018,7 +13081,18 @@
     const strip = document.getElementById("cc-extract-strip");
     if (!strip) return;
     const x = replayExtraction;
-    const showing = mainMapSource === "replay" && !!x && x.map_red_value > 0;
+    // v1.22 — this used to require ``mainMapSource === "replay"``, which is
+    // only set once a frame has actually been painted onto the main map. So
+    // opening a season in the watcher — the one place the figure is the
+    // headline — showed nothing at all until you scrubbed. The watcher owns
+    // the whole surface, so being in it is enough.
+    //
+    // Still barred from live play, and deliberately: ``pullAllMaps`` fetches
+    // /replay for the night cinematic, so the extraction payload is sitting
+    // on the client in a fogged game too, and it is omniscient — the map's
+    // total RED and every seat's take.
+    const surfaceOk = WATCH_MODE || mainMapSource === "replay";
+    const showing = surfaceOk && !!x && x.map_red_value > 0;
     if (!showing) {
       strip.hidden = true;
       return;
@@ -13018,6 +14092,11 @@
   function _paintReplayBoard(frame) {
     const dims = { width: replayDims.width, height: replayDims.height };
     const activeSeats = _activeSeatsForView();
+    // v1.22 — park the frame for the vision-border layer. The post-paint
+    // hook picks it up once the cells are actually on the board, so it can
+    // outline every seat exactly (replay frames carry cells_by_seat)
+    // instead of inferring.
+    _visionFramePending = frame || null;
     const seatCells = (seat) =>
       frame?.cells_by_seat?.[seat] ||
       frame?.[`cells_player_${seat}`] ||
@@ -16292,25 +17371,23 @@
   }
 
   /**
-   * Header identity: name the season, and drop the controls that only
-   * configure the *next* game once one is on.
+   * Header identity: name the season. Pass ``null`` for the idle state.
    *
-   * NIGHTS sets the length of a game you have not started yet, so it is
-   * pure noise beside a live board (and the New Game modal carries its
-   * own copy anyway). Pass ``null`` for the idle state.
+   * v1.22 — the nameplate stands down while the watcher's season picker
+   * is up. The picker's selected option already names the season, and
+   * the two sat a few centimetres apart saying the same word.
    */
   function updateHeaderIdentity(st) {
-    const live = !!(st && sessionId);
-    for (const el of document.querySelectorAll(".cc-newgame-cap")) {
-      el.hidden = live;
-    }
     liveSeasonDayCap = Number(st?.season_day_cap) || 0;
     updateBackendBadge(st);
     const nameEl = document.getElementById("cc-season-name");
     if (!nameEl) return;
+    const pickerUp = !!(
+      watchPickerWrap && !watchPickerWrap.hasAttribute("hidden")
+    );
     const name = st && st.season_name ? String(st.season_name) : "";
     nameEl.textContent = name;
-    nameEl.hidden = !name;
+    nameEl.hidden = !name || pickerUp;
   }
 
   /**
@@ -16551,13 +17628,20 @@
       updateHeaderIdentity(st);
       updateLiveClock(st);
       
-      const night =
-        st.phase === "planning" ?
-          st.pending?.[MY_SEAT] ?
-            (waitingForLabel(st) || "locking…")
-          : "pick orders → TRANSMIT · rival auto-idle"
-        : String(st.phase);
-      phaseLine.textContent = `# day ${st.day} · ${night}`;
+      // v1.22 — the watcher already reads the night off the picker's
+      // selected row and the transport clock, and "pick orders → TRANSMIT"
+      // is addressed to a seat it does not have. Leaving this blank keeps
+      // the line free for the errors it also carries, and stops the header
+      // wrapping to two rows.
+      if (!WATCH_MODE) {
+        const night =
+          st.phase === "planning" ?
+            st.pending?.[MY_SEAT] ?
+              (waitingForLabel(st) || "locking…")
+            : "pick orders → TRANSMIT · rival auto-idle"
+          : String(st.phase);
+        phaseLine.textContent = `# day ${st.day} · ${night}`;
+      }
       // v0.9.12 — surface the cross-browser "waiting for: pN" strip from
       // the per-seat pending map (only meaningful in a multi-human game).
       renderWaitingStrip(st);
@@ -16814,12 +17898,38 @@
       if (qmult && typeof qmult === "object") {
         window.__SOC_QUALITY_MULT__ = qmult;
       }
+      // v1.22 — GREEN's flat settlement charge, for the cell readout. Same
+      // rule as the multipliers: mirror the engine, don't restate it.
+      const gpen = Number(
+        j?.agent_view?.orbit?.settlement?.green_penalty
+        ?? j?.orbit?.settlement?.green_penalty,
+      );
+      if (Number.isFinite(gpen)) window.__SOC_GREEN_PENALTY__ = gpen;
+      // v1.22 — probe vision radius, for reconstructing the footprint of a
+      // rival probe this seat can see (vision borders). Read from the live
+      // rules block so a SOC_PROBE_RADIUS retune moves the drawn disk with
+      // the engine instead of leaving the UI lying.
+      const pr = Number(j?.agent_view?.meta?.rules?.probe_radius);
+      if (Number.isFinite(pr) && pr > 0) window.__SOC_PROBE_RADIUS__ = pr;
       // v0.9.x — live EMP salvo size for the targeting picker.
       const empSpec =
         j?.agent_view?.orbit?.weapon_specs?.emp
         ?? j?.orbit?.weapon_specs?.emp;
       if (empSpec && Number.isFinite(Number(empSpec.missiles_per_launch))) {
         window.__SOC_EMP_MISSILES__ = Number(empSpec.missiles_per_launch);
+      }
+      // v1.23 — blast radius + mine cluster shape, for the order-footprint
+      // preview. Same rule as the probe radius above: mirror the engine's
+      // dials so a retune moves the drawn area instead of leaving the UI
+      // promising a shape the night will not deliver.
+      if (empSpec && Number.isFinite(Number(empSpec.radius))) {
+        window.__SOC_EMP_RADIUS__ = Number(empSpec.radius);
+      }
+      const mineSpec =
+        j?.agent_view?.orbit?.weapon_specs?.mine
+        ?? j?.orbit?.weapon_specs?.mine;
+      if (mineSpec && mineSpec.batch_shape) {
+        window.__SOC_MINE_SHAPE__ = String(mineSpec.batch_shape);
       }
       // v0.9.x — stash the static blue-sign overlay (orbit-wide,
       // fog-independent radiative signatures) for the map painter.
@@ -17112,6 +18222,9 @@
     },
   };
   const NGM_SEAT_IDS = ["p1", "p2", "p3", "p4"];
+  /** Season length used when a caller reaches ``newGame`` without one.
+   *  Matches the launcher's own default; keep the two in step. */
+  const DEFAULT_SEASON_NIGHTS = 7;
   const NGM_SEAT_LABELS = { p1: "WHITE", p2: "YELLOW", p3: "MAGENTA", p4: "CYAN" };
 
   // v1.12 — the selectable-agent roster, served from the binding
@@ -17545,6 +18658,45 @@
     });
   }
 
+  /**
+   * v1.22 — restate the pending game on one line above SPAWN.
+   *
+   * The panel is tall enough that the board size, the roster and the
+   * storage choice are never on screen together, and storage is the one
+   * decision you cannot revise afterwards — a season started on memory is
+   * gone when the process stops.
+   */
+  function updateNewGameSummary() {
+    const el = document.getElementById("ngm-summary");
+    if (!el) return;
+    const num = (id, fallback) => {
+      const raw = parseInt(
+        /** @type {HTMLInputElement|null} */ (
+          document.getElementById(id)
+        )?.value || "", 10,
+      );
+      return Number.isFinite(raw) ? raw : fallback;
+    };
+    const seats = newGameModalState.seatCount;
+    const roster = NGM_SEAT_IDS.slice(0, seats)
+      .map((sid) => newGameModalState.agents[sid] || "human");
+    const humans = roster.filter((a) => a === "human").length;
+    const nights = num("ngm-cap", 7);
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const who = humans === seats
+      ? plural(seats, "human")
+      : humans === 0
+        ? plural(seats, "bot")
+        : `${plural(humans, "human")} + ${plural(seats - humans, "bot")}`;
+    el.textContent = [
+      `${num("ngm-width", 40)}x${num("ngm-height", 28)}`,
+      plural(nights, "night"),
+      who,
+      newGameModalState.visibility === "open" ? "omniscient" : "fog",
+      String((selectedBackend() || {}).label || "").toLowerCase(),
+    ].filter(Boolean).join("  ·  ");
+  }
+
   async function openNewGameModal() {
     const modal = document.getElementById("new-game-modal");
     if (!modal) return;
@@ -17578,15 +18730,11 @@
         __SOC_DEFAULT_COLORS__ = Object.assign({}, __SOC_FALLBACK_DEFAULTS__);
       }
     }
-    
-    // Sync the inline NIGHTS field into the modal so the two surfaces agree.
-    const inlineCap = document.getElementById("new-game-cap");
-    const modalCap = document.getElementById("ngm-cap");
-    if (inlineCap && modalCap) modalCap.value = inlineCap.value;
     // Backends before seats: the roster is filtered by the choice.
     renderNewGameBackends();
     renderNewGameSeats();
     updateNewGameSeatCountButtons();
+    updateNewGameSummary();
     modal.hidden = false;
   }
 
@@ -17602,12 +18750,32 @@
         newGameModalState.seatCount = count;
         renderNewGameSeats();
         updateNewGameSeatCountButtons();
+        updateNewGameSummary();
       });
     });
     document.querySelectorAll('input[name="ngm-visibility"]').forEach((r) => {
       r.addEventListener("change", () => {
         if (r.checked) newGameModalState.visibility = r.value;
+        updateNewGameSummary();
       });
+    });
+    // The rest of the panel is rebuilt on every open (seat rows, storage
+    // rows), so the summary listens at the container instead of binding
+    // each control — a re-render would drop per-control listeners.
+    const modal = document.getElementById("new-game-modal");
+    if (modal) {
+      modal.addEventListener("input", updateNewGameSummary);
+      modal.addEventListener("change", updateNewGameSummary);
+      // Backdrop click and Escape both close: this dialog is a detour, and
+      // it had no way out but the X.
+      modal.addEventListener("mousedown", (ev) => {
+        if (ev.target === modal) closeNewGameModal();
+      });
+    }
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      const m = document.getElementById("new-game-modal");
+      if (m && !m.hidden) closeNewGameModal();
     });
     const closeBtn = document.getElementById("new-game-modal-close");
     if (closeBtn) closeBtn.addEventListener("click", closeNewGameModal);
@@ -17663,16 +18831,11 @@
     resetSoloFormForNewGame();
     if (errSoloEl) errSoloEl.hidden = true;
     try {
-      const capInput = document.getElementById("new-game-cap");
-      const capRaw = capInput ? parseInt(capInput.value, 10) : NaN;
-      const fallbackCap = Number.isFinite(capRaw)
-        ? Math.max(1, Math.min(60, capRaw))
-        : 10;
       const body = {
         width: (opts && Number.isFinite(opts.width)) ? opts.width : 40,
         height: (opts && Number.isFinite(opts.height)) ? opts.height : 28,
         season_day_cap: (opts && Number.isFinite(opts.season_day_cap))
-          ? opts.season_day_cap : fallbackCap,
+          ? opts.season_day_cap : DEFAULT_SEASON_NIGHTS,
         players: (opts && Array.isArray(opts.players) && opts.players.length)
           ? opts.players : ["p1", "p2"],
         agents: (opts && opts.agents) ? opts.agents : { p1: "human", p2: "human" },
@@ -17798,16 +18961,11 @@
       ? sessions
       : sessions.filter((r) => !isFixture(r) || r.session_id === activeId);
     const hiddenCount = sessions.length - visible.length;
-    if (watchFixturesEl) {
-      watchFixturesEl.parentElement?.toggleAttribute(
-        "hidden", !showFixtures && !hiddenCount,
-      );
-    }
     if (!visible.length) {
       const opt = document.createElement("option");
       opt.value = "";
       opt.textContent = hiddenCount
-        ? `// ${hiddenCount} fixture(s) hidden — tick "fixtures" to show`
+        ? `// ${hiddenCount} frozen test night(s) hidden — see SETTINGS`
         : "// no persisted seasons yet";
       watchPickerEl.appendChild(opt);
       watchPickerEl.disabled = true;
@@ -17947,6 +19105,10 @@
     _lastCinematicDay = 0;
     try {
       await pullAllMaps({ claimCinematic: true });
+      // v1.22 — clear it explicitly. The status poller no longer rewrites
+      // this line in the watcher, so "loading season…" would otherwise sit
+      // there for the rest of the session.
+      if (phaseLine) phaseLine.textContent = "";
       // Default tab in watcher mode is REPLAY — that's the whole point.
       activateCcTab("replay");
     } catch (e) {
@@ -18993,24 +20155,6 @@
     }
   }
 
-  /** Populate watcher meta line with season summary so the user can
-   * see which season is loaded at a glance.
-   * @param {Object} row
-   */
-  function renderWatcherMeta(row) {
-    if (!watchPickerMetaEl) return;
-    if (!row) {
-      watchPickerMetaEl.textContent = "";
-      return;
-    }
-    const shortId = row.session_id.slice(0, 8);
-    const name = row.season_name ? `${row.season_name} · ${shortId}` : shortId;
-    const day = String(row.day || 0);
-    watchPickerMetaEl.textContent =
-      `${name} · day ${day} · ${formatSeasonScores(row)}` +
-      (row.phase === "season_complete" ? " · season_complete" : "");
-  }
-
   /** Resolve a season slug to a session_id via the cached payload.
    * Returns "" when the slug doesn't match any persisted season.
    * @param {string} slug
@@ -19055,8 +20199,6 @@
         renderSeasonPicker(sessions, watchPickerEl ? watchPickerEl.value : targetId);
       });
     }
-    const activeRow = sessions.find((s) => s.session_id === targetId);
-    renderWatcherMeta(activeRow || null);
     if (targetId) {
       await loadWatcherSession(targetId);
     } else if (mapPlayer) {
@@ -19128,6 +20270,10 @@
     if (typeof requestAnimationFrame === "function") {
       requestAnimationFrame(() => {
         try { paintPlannedOrdersOverlay(); } catch (_e) { /* non-fatal */ }
+        // Zoom resizes cells WITHOUT repainting the board, so the post-paint
+        // hook never fires — the border layer has to be re-anchored here or
+        // it stays sized to the old grid.
+        try { paintVisionBorders(); } catch (_e) { /* non-fatal */ }
       });
     }
     // The blue-sign overlay is positioned in absolute pixels snapshotted

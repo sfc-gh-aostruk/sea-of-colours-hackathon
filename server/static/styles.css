@@ -1603,37 +1603,73 @@ button.cli-btn:not(#new-game-btn):disabled {
   position: relative;
 }
 
-.map-host .cell:hover {
-  outline: 1px solid var(--green);
-  outline-offset: -1px;
-  z-index: 2;
+/* v1.22 — the hovered square reads as a hard target, not a hairline.
+ *
+ * Stays an OUTLINE on purpose: cells are a fixed 2ch x 1em with box-sizing:
+ * border-box, so a `border` would eat the content box and shove the glyph
+ * one pixel every time the pointer moved. Outlines take no layout space.
+ * Drawn outside the cell edge (offset 0) so it frames the square rather
+ * than covering the terrain in it, with a dark liner underneath so a bright
+ * rule survives on top of a pure-RED or GREEN tile.
+ *
+ * The selector is deliberately verbose. The gridlines rule above is
+ * `.map-host > .map-grid.map-grid--lines .row .cell`, five classes deep,
+ * which OUT-SPECIFIES a plain `.map-host .cell:hover` — so the old hover
+ * outline was silently losing to a 0.5px grey gridline whenever grid lines
+ * were on, which is the default. Match its weight or the rule does nothing.
+ */
+.map-host > .map-grid .row .cell:hover {
+  outline: 2px solid var(--green);
+  outline-offset: 0;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.85),
+    0 0 0 3px rgba(0, 0, 0, 0.55),
+    0 0 6px rgba(63, 185, 80, 0.5);
+  z-index: 4;
 }
 
-.map-host .cell.cell--fog:hover {
-  outline-color: rgba(88, 166, 255, 0.65);
+.map-host > .map-grid .row .cell.cell--fog:hover {
+  outline-color: rgba(126, 190, 255, 0.9);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.85),
+    0 0 0 3px rgba(0, 0, 0, 0.55),
+    0 0 6px rgba(88, 166, 255, 0.45);
 }
 
 /* CRT phosphor bloom on hovered cells. box-shadow renders above siblings
- * because z-index: 2 is already set, so it bleeds out as a soft glow
- * without clipping. */
-.crt-viewport--on .map-host .cell:hover {
-  box-shadow: 0 0 3px rgba(63, 185, 80, 0.75), 0 0 7px rgba(63, 185, 80, 0.35);
+ * because z-index is already raised, so it bleeds out as a soft glow
+ * without clipping. Keeps the dark liner from the base rule — the bloom is
+ * additive on top of it, not a replacement. */
+.crt-viewport--on .map-host > .map-grid .row .cell:hover {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.85),
+    0 0 0 3px rgba(0, 0, 0, 0.55),
+    0 0 5px rgba(63, 185, 80, 0.9),
+    0 0 11px rgba(63, 185, 80, 0.45);
 }
 
-.crt-viewport--on .map-host .cell.cell--fog:hover {
-  outline-color: rgba(88, 166, 255, 0.8);
-  box-shadow: 0 0 3px rgba(88, 166, 255, 0.55), 0 0 7px rgba(88, 166, 255, 0.25);
+.crt-viewport--on .map-host > .map-grid .row .cell.cell--fog:hover {
+  outline-color: rgba(126, 190, 255, 0.95);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.85),
+    0 0 0 3px rgba(0, 0, 0, 0.55),
+    0 0 5px rgba(88, 166, 255, 0.75),
+    0 0 11px rgba(88, 166, 255, 0.35);
 }
 
 /* Pick-mode: crosshair cursor + green highlight on hover */
 .map--pick-mode {
   cursor: crosshair;
 }
-.map--pick-mode .cell:hover {
+/* Same specificity trap as the hover rule above — the gridlines selector
+ * was beating this too, so pick mode's 2px target ring never drew with grid
+ * lines on. */
+.map--pick-mode .map-host > .map-grid .row .cell:hover,
+.map-host.map--pick-mode > .map-grid .row .cell:hover {
   outline: 2px solid var(--green);
-  outline-offset: -1px;
+  outline-offset: 0;
   background: rgba(63, 185, 80, 0.15);
-  z-index: 2;
+  z-index: 4;
 }
 
 .pick-mode-cancel-btn {
@@ -1641,6 +1677,9 @@ button.cli-btn:not(#new-game-btn):disabled {
   font-size: 0.85em;
 }
 
+/* v1.22 — the cell readout is a structured card, not a block of preformatted
+ * text. It leads with what the square is worth, because that is the number
+ * the whole night's planning turns on. */
 .cell-tooltip {
   position: fixed;
   left: 0;
@@ -1649,19 +1688,160 @@ button.cli-btn:not(#new-game-btn):disabled {
   pointer-events: none;
   font-family: var(--mono);
   font-size: 11px;
-  line-height: 1.45;
+  line-height: 1.4;
   letter-spacing: 0.04em;
-  padding: 5px 9px;
+  padding: 7px 10px 8px;
   color: var(--green);
-  background: rgba(0, 0, 0, 0.92);
+  background: rgba(0, 0, 0, 0.95);
   border: 1px solid var(--frame);
-  white-space: pre;
-  box-shadow: 0 1px 0 rgba(63, 185, 80, 0.12);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.9),
+    0 6px 22px rgba(0, 0, 0, 0.6);
+  min-width: 168px;
   max-width: 320px;
 }
 
 .cell-tooltip[hidden] {
   display: none;
+}
+
+.cc-celltip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.16);
+}
+
+.cc-celltip-xy {
+  font-size: 12px;
+  color: #d8e6d8;
+}
+
+.cc-celltip-vis {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  opacity: 0.85;
+}
+.cc-celltip-vis--live { color: var(--green); }
+.cc-celltip-vis--echo { color: #c9a227; }
+.cc-celltip-vis--fog  { color: #6f8fb8; }
+
+.cc-celltip-dim {
+  padding-top: 4px;
+  color: var(--dim);
+}
+
+.cc-celltip-terrain {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding-top: 5px;
+  flex-wrap: wrap;
+}
+
+.cc-celltip-tile {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+}
+/* Hue carries the resource identity here exactly as it does on the board,
+ * so the readout never disagrees with the tile it is describing. */
+.cc-celltip-terrain--red   .cc-celltip-tile { color: #ff5b5b; }
+.cc-celltip-terrain--green .cc-celltip-tile { color: #3fb950; }
+.cc-celltip-terrain--blue  .cc-celltip-tile { color: #58a6ff; }
+.cc-celltip-terrain--empty .cc-celltip-tile { color: var(--dim); }
+
+.cc-celltip-tier {
+  color: #d8e6d8;
+  opacity: 0.9;
+}
+
+.cc-celltip-purity {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 10px;
+}
+
+/* The headline figure: what this square banks if it reaches the vault. */
+.cc-celltip-score {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.cc-celltip-score-num {
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: #ff8b6b;
+  text-shadow: 0 0 10px rgba(255, 91, 91, 0.35);
+}
+
+.cc-celltip-score--neg .cc-celltip-score-num {
+  color: #f3c64a;
+  text-shadow: 0 0 10px rgba(243, 198, 74, 0.3);
+}
+
+.cc-celltip-score--blue .cc-celltip-score-num {
+  color: #58a6ff;
+  text-shadow: none;
+}
+
+/* v1.23 — a band estimate, not the engine's number. Same colour so it reads
+ * as the same quantity, dropped a size and dimmed so it never gets mistaken
+ * for the exact figure a v1.22+ payload gives. */
+.cc-celltip-score--est .cc-celltip-score-num {
+  font-size: 17px;
+  opacity: 0.82;
+}
+
+.cc-celltip-score-calc {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.cc-celltip-asset {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.cc-celltip-glyph {
+  display: inline-block;
+  min-width: 1.1em;
+  text-align: center;
+  font-size: 13px;
+}
+
+.cc-celltip-asset-main {
+  font-size: 11px;
+}
+
+/* Seat tag rides the inherited owner colour set on the row. */
+.cc-celltip-seat {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  opacity: 0.75;
+}
+
+.cc-celltip-asset-meta {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.cc-celltip-note {
+  margin-top: 3px;
+  color: var(--dim);
+  font-size: 10px;
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -2208,6 +2388,208 @@ body.cc-mode {
   margin: 4px 0;
   color: var(--dim);
   font-family: 'VT323', 'JetBrains Mono', monospace;
+}
+
+/* ---- v1.22 vision borders (RULEBOOK §3.11) ----
+ *
+ * The perimeter of each House's live line-of-sight, drawn as real geometry
+ * over the board rather than as borders on the cells (see the long note in
+ * app.js `paintVisionBorders` for why cell borders cannot work here).
+ *
+ * The <svg> is sized to the grid's pixel rect but its viewBox is in CELL
+ * UNITS, so `vector-effect: non-scaling-stroke` is what holds the line at a
+ * fixed pixel weight across the 10px..28px zoom range — without it the
+ * stroke would scale with the cells and go from hairline to slab.
+ */
+.vision-border-layer {
+  position: absolute;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 1;
+  /* Screen blending means two seats whose borders run along the same edge
+   * ADD instead of the later one hiding the earlier. On this near-black
+   * board that reads as a brighter blended line: "we both end here". */
+  mix-blend-mode: screen;
+}
+
+.vision-border-layer path {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* ── the two dials worth touching ──────────────────────────────────────
+ * `stroke-width` is in real pixels at any zoom (that is what
+ * `non-scaling-stroke` buys), and so is `stroke-dasharray` — the dash
+ * pattern leaves the viewBox's coordinate space along with the width.
+ *
+ * v1.22 — this was 3px over a wide 0.22-opacity halo. The halo was there to
+ * keep the line legible over a bright pure-RED tile, but at that width it
+ * read as a coloured bleed around the border rather than as contrast.
+ * Dropped; the line is thinner and carries itself, with a 1px dark liner
+ * doing the separation the halo was supposed to do at a twentieth of the
+ * footprint. `drop-shadow` rather than a second stroke so it costs no
+ * geometry and cannot fall out of register with the path.
+ * ──────────────────────────────────────────────────────────────────── */
+.vision-border {
+  stroke-width: 2px;
+  opacity: 1;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.85));
+}
+
+/* Inferred rival footprint: reconstructed from probes this seat can
+ * lawfully see and then clipped to the seat's OWN live vision, so it marks
+ * only where the two overlap. That is a floor on what they can see, never a
+ * guarantee — dotted to say "inferred", against your own solid edge.
+ *
+ * Dots are a zero-length dash under the round linecap inherited above; the
+ * gap is what sets their spacing. */
+.vision-border--inferred {
+  /* A hair fatter than the solid line: at 2px the dots read as noise on a
+   * busy board. The gap is what carries "inferred", not the weight. */
+  stroke-width: 2.5px;
+  stroke-dasharray: 0 4;
+  opacity: 0.95;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vision-border-layer {
+    mix-blend-mode: normal;
+  }
+}
+
+/* ── v1.23 — proposed-order footprints ─────────────────────────────────
+ * Same SVG-in-cell-units technique as the vision borders above, but this
+ * layer answers a different question: not "what can I see" but "what
+ * would this order cover". Sits above the borders and below the path
+ * badges, so a queued waypoint glyph still reads over its own area.
+ *
+ * Two states. A COMMITTED footprint (an order already in the queue) is a
+ * quiet dashed outline over a barely-there wash — it has to survive being
+ * drawn three times over for a full EMP salvo without turning the board
+ * into soup. The LIVE one under the cursor is solid and brighter, because
+ * exactly one of them exists and it is the thing being decided.
+ *
+ * Colours match the centre glyphs in `.cc-order-marker--*` so the outline
+ * and the marker read as the same order.
+ * ──────────────────────────────────────────────────────────────────── */
+.aoe-layer {
+  position: absolute;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 2;
+}
+
+.aoe-layer path {
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  /* Belt and braces: a footprint is convex so it has no holes, but
+   * evenodd keeps a clipped shape honest if one ever does. */
+  fill-rule: evenodd;
+}
+
+.aoe-shape {
+  fill: var(--aoe-col);
+  fill-opacity: 0.14;
+  stroke: var(--aoe-col);
+  stroke-width: 1.5px;
+  stroke-opacity: 0.7;
+  /* A long dash, deliberately not the vision border's `0 4` dots: both
+   * layers are thin coloured lines over the same board, and if the two
+   * patterns rhyme you cannot tell "their sight ends here" from "my EMP
+   * lands here" at a glance. */
+  stroke-dasharray: 7 3;
+}
+
+.aoe-shape--live {
+  fill-opacity: 0.2;
+  stroke-width: 2px;
+  stroke-opacity: 1;
+  stroke-dasharray: none;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.85));
+}
+
+.aoe-shape--probe { --aoe-col: #7ab8ff; }
+.aoe-shape--emp   { --aoe-col: #74dcff; }
+.aoe-shape--mine  { --aoe-col: #ff5fd7; }
+
+/* Area readout at the head of the hover tooltip while aiming. */
+.cc-celltip-aoe {
+  margin: -2px 0 6px;
+  padding: 4px 6px 5px;
+  border-left: 2px solid var(--aoe-col, #7ab8ff);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.cc-celltip-aoe--probe { --aoe-col: #7ab8ff; }
+.cc-celltip-aoe--emp   { --aoe-col: #74dcff; }
+.cc-celltip-aoe--mine  { --aoe-col: #ff5fd7; }
+
+.cc-celltip-aoe-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: var(--aoe-col, #7ab8ff);
+}
+
+.cc-celltip-aoe-shape {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  opacity: 0.6;
+}
+
+.cc-celltip-aoe-figs {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 1px;
+}
+
+.cc-celltip-aoe-num {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.05;
+  color: var(--aoe-col, #7ab8ff);
+}
+
+.cc-celltip-aoe-unit {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+.cc-celltip-aoe-note {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  opacity: 0.72;
+}
+
+.cc-celltip-aoe-note--warn {
+  color: #ffb454;
+  opacity: 0.95;
+}
+
+.cc-celltip-aoe-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+/* Your own kit inside a blast you are aiming is the one thing here worth
+ * interrupting for. */
+.cc-celltip-aoe-hit--own {
+  font-weight: 700;
+}
+
+.cc-celltip-aoe-hit--own .cc-celltip-asset-meta {
+  color: #ffb454;
 }
 
 /* ---- v0.7.3 collision animation + wreckage glyph ---- */
@@ -7254,29 +7636,6 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
   letter-spacing: 0.08em;
 }
 
-.cc-newgame-cap-label {
-  font-size: 0.8em;
-  letter-spacing: 0.08em;
-  margin-left: 6px;
-}
-
-.cc-newgame-cap-input {
-  background: var(--bg);
-  color: var(--green);
-  border: 1px solid var(--green);
-  font-family: inherit;
-  font-size: 0.9em;
-  padding: 2px 4px;
-  width: 4ch;
-  text-align: center;
-}
-
-.cc-newgame-cap-input:focus {
-  outline: none;
-  border-color: var(--green);
-  box-shadow: 0 0 0 1px var(--green);
-}
-
 .cc-watch-picker-select {
   background: var(--bg);
   color: var(--green);
@@ -7284,7 +7643,10 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
   font-family: inherit;
   font-size: 0.95em;
   padding: 2px 6px;
-  max-width: 36ch;
+  /* v1.22 — 36ch cut the selected row mid-score. The meta line that used
+     to carry the same text is gone, so this is now the only place the
+     season's identity is written; it gets the width that freed up. */
+  max-width: 52ch;
 }
 
 .cc-watch-picker-select:focus {
@@ -7296,14 +7658,6 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
 .cc-watch-picker-select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.cc-watch-picker-meta {
-  font-size: 0.85em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 40ch;
 }
 
 /* Bin button beside the season picker — deletes the selected replay. */
@@ -7545,78 +7899,180 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
 .cc-newgame-modal[hidden] { display: none; }
 
 .cc-newgame-modal-panel {
-  width: min(720px, 92vw);
-  max-height: 88vh;
-  overflow-y: auto;
-  background: #0d0d12;
+  width: min(760px, 94vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: #0b0b10;
   border: 1px solid var(--frame);
-  box-shadow: 0 0 28px rgba(63, 185, 80, 0.18);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 18px 60px rgba(0, 0, 0, 0.65),
+    0 0 40px rgba(63, 185, 80, 0.1);
   font-family: var(--mono);
   color: var(--fg);
 }
+
+/* v1.22 — head reads as a terminal banner: the title in the accent, a
+ * one-line statement of what the dialog is for underneath. The hairline
+ * is a gradient so it fades out rather than boxing the panel in. */
 .cc-newgame-modal-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 14px 18px;
+  gap: 16px;
+  padding: 16px 20px 14px;
   border-bottom: 1px solid var(--frame);
+  background: linear-gradient(
+    180deg,
+    rgba(63, 185, 80, 0.07),
+    rgba(0, 0, 0, 0) 100%
+  );
 }
+.cc-newgame-modal-titlewrap { min-width: 0; }
 .cc-newgame-modal-head h2 {
   margin: 0;
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--fg);
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--green);
 }
+.cc-newgame-modal-head h2::before {
+  content: "// ";
+  opacity: 0.45;
+}
+.cc-newgame-modal-sub {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+}
+
+/* Close control: a bracket glyph, not a button chrome. */
+.cc-newgame-x {
+  flex: none;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.cc-newgame-x:hover,
+.cc-newgame-x:focus-visible {
+  color: var(--green);
+  border-color: var(--frame);
+  outline: none;
+}
+
 .cc-newgame-modal-body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 18px;
+  gap: 20px;
+  padding: 18px 20px 20px;
+  overflow-y: auto;
+  min-height: 0;
 }
-.cc-newgame-row {
+
+/* Section blocks, matching the SETTINGS pane's "# HEADING" idiom so the
+ * two configuration surfaces read as the same language. */
+.cc-newgame-block {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
   gap: 10px;
 }
-.cc-newgame-row--vert {
-  flex-direction: column;
-  align-items: stretch;
-}
-.cc-newgame-label {
-  font-size: 14px;
-  letter-spacing: 0.06em;
-  color: var(--dim);
+.cc-newgame-block-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
-  min-width: 6.5ch;
+  color: var(--dim);
+}
+/* The rule runs from the heading to the panel edge — cheap structure
+   without drawing a box around every section. */
+.cc-newgame-block-head::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: linear-gradient(
+    90deg, var(--frame), rgba(255, 255, 255, 0.03)
+  );
+}
+
+/* ── # board ───────────────────────────────────────────────────── */
+.cc-newgame-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+}
+.cc-newgame-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cc-newgame-field-label {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.cc-newgame-field-input {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
 }
 .cc-newgame-input {
-  background: #0a0a10;
+  background: #060609;
   border: 1px solid var(--frame);
+  border-bottom-color: rgba(63, 185, 80, 0.45);
   color: var(--fg);
   font-family: inherit;
-  font-size: 16px;
-  padding: 5px 9px;
-  width: 5.5ch;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  padding: 5px 8px;
+  width: 6ch;
   text-align: right;
 }
 .cc-newgame-input:focus {
-  outline: 1px solid var(--green);
-  outline-offset: 1px;
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px rgba(63, 185, 80, 0.35);
 }
+.cc-newgame-unit {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ── # seats ───────────────────────────────────────────────────── */
 .cc-newgame-seatcount {
-  display: flex;
-  gap: 6px;
+  display: inline-flex;
+  gap: 4px;
+  margin-left: -2px;
 }
 .cc-newgame-seatbtn {
-  min-width: 3.6ch;
-  padding: 4px 10px;
-  font-family: inherit;
+  min-width: 3.2ch;
+  padding: 3px 9px;
+  background: #060609;
+  border: 1px solid var(--frame);
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
+.cc-newgame-seatbtn:hover { color: var(--fg); border-color: var(--dim); }
 .cc-newgame-seatbtn--on {
-  outline: 1px solid var(--green);
-  background: rgba(63, 185, 80, 0.12);
+  color: #04140a;
+  background: var(--green);
+  border-color: var(--green);
+  font-weight: 700;
 }
 .cc-newgame-seats {
   list-style: none;
@@ -7629,9 +8085,10 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
 .cc-newgame-seat {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px;
-  background: #0a0a10;
+  gap: 9px;
+  padding: 10px 12px;
+  background: #08080c;
+  border: 1px solid var(--frame);
   border-left: 3px solid var(--seat-color, var(--frame));
 }
 .cc-newgame-seat[data-seat="p1"] { --seat-color: var(--seat-p1); }
@@ -7645,21 +8102,32 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
   align-items: center;
   gap: 10px;
 }
+/* v1.22 — `nowrap`: the name is user-supplied, and "P2 · YELLOW" was
+   folding onto two lines the moment a seat got a longer one. */
 .cc-newgame-seat-id {
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
   color: var(--seat-color, var(--fg));
-  min-width: 3ch;
+  min-width: 12ch;
   text-transform: uppercase;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cc-newgame-seat-select {
   flex: 1 1 auto;
-  background: #0a0a10;
+  min-width: 0;
+  background: #060609;
   border: 1px solid var(--frame);
   color: var(--fg);
   font-family: inherit;
-  font-size: 15px;
+  font-size: 13.5px;
   padding: 4px 8px;
+}
+.cc-newgame-seat-select:focus {
+  outline: none;
+  border-color: var(--green);
 }
 
 /* v0.9.18 — player customization row (name, tag, color) */
@@ -7708,58 +8176,130 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
   outline-offset: 1px;
 }
 
-/* v0.9.18 — color picker swatches */
+/* v0.9.18 — color picker swatches. v1.22 — square, unrounded, and the
+   selection is a ring rather than a glow: the board is a grid of hard
+   squares and the launcher should not be the one rounded thing. */
 .cc-newgame-cust-colorpicker {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
 }
 .cc-newgame-cust-swatch {
-  width: 24px;
-  height: 24px;
-  border: 2px solid rgba(255,255,255,0.15);
-  border-radius: 3px;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0;
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: box-shadow 0.12s ease, border-color 0.12s ease;
   padding: 0;
 }
 .cc-newgame-cust-swatch:hover {
-  border-color: rgba(255,255,255,0.5);
-  transform: scale(1.1);
+  border-color: rgba(255, 255, 255, 0.65);
 }
 .cc-newgame-cust-swatch--selected {
-  border-color: var(--green);
-  border-width: 3px;
-  box-shadow: 0 0 8px rgba(63, 185, 80, 0.5);
+  border-color: #0b0b10;
+  box-shadow: 0 0 0 2px var(--green);
 }
+
+/* ── # visibility / # storage ──────────────────────────────────────
+ * v1.22 — the OS radio is replaced by an ASCII marker drawn on the
+ * label text, so the dialog stays monospace end to end. The real input
+ * is still in the DOM and still focusable — it is moved off-screen
+ * rather than `display:none`, which would drop it out of the tab order
+ * and off the accessibility tree. `input:checked + span` does the work,
+ * so app.js can keep building these rows exactly as it does.
+ * ────────────────────────────────────────────────────────────────── */
 .cc-newgame-visgroup {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   flex: 1 1 auto;
 }
 .cc-newgame-visopt {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  color: var(--fg);
+  align-items: baseline;
+  gap: 9px;
+  padding: 7px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--dim);
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
 }
-.cc-newgame-visopt input { accent-color: var(--green); }
+.cc-newgame-visopt:hover { color: var(--fg); background: rgba(255, 255, 255, 0.03); }
+
+.cc-newgame-visopt input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.cc-newgame-visopt span { flex: 1 1 auto; }
+.cc-newgame-visopt span::before {
+  content: "( )";
+  margin-right: 9px;
+  color: var(--dim);
+  letter-spacing: -0.05em;
+}
+.cc-newgame-visopt input:checked + span::before {
+  content: "(\2022)";
+  color: var(--green);
+}
+.cc-newgame-visopt:has(input:checked) {
+  color: var(--fg);
+  background: rgba(63, 185, 80, 0.07);
+  border-left-color: var(--green);
+}
+.cc-newgame-visopt input:focus-visible + span {
+  outline: 1px solid var(--green);
+  outline-offset: 3px;
+}
+.cc-newgame-visopt b {
+  color: var(--fg);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.cc-newgame-visopt:has(input:checked) b { color: var(--green); }
+
 /* v1.14 — an unavailable storage backend stays listed but dimmed, with
    its reason in the label. Hiding it reads as "this build can't do
    Snowflake" rather than "you haven't set it up yet". */
 .cc-newgame-visopt.is-disabled {
   color: var(--dim);
   cursor: not-allowed;
+  opacity: 0.55;
 }
+.cc-newgame-visopt.is-disabled:hover { background: none; }
 .cc-newgame-visopt.is-disabled input { cursor: not-allowed; }
+.cc-newgame-visopt.is-disabled span::before { content: "(\2717)"; }
+
 .cc-newgame-modal-foot {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 14px 18px;
+  padding: 13px 20px;
   border-top: 1px solid var(--frame);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* v1.22 — one line restating what SPAWN is about to create. The seat and
+   storage choices are far enough apart in the panel that you cannot see
+   them together, and storage in particular is unfixable after the fact. */
+.cc-newgame-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ───────────────────────────────────────────────────────────────────

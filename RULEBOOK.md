@@ -1,7 +1,7 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.15
-Last updated: 2026-08-26
+Version: 1.23
+Last updated: 2026-08-27
 
 This is the single source of truth for the world, the fiction, and how
 play resolves. Every change is recorded in the [Changelog](#changelog) at
@@ -25,6 +25,8 @@ The following settings define the **canonical competitive ruleset** as of v0.9.1
 | `RED_QUALITY_MULTIPLIER` | `0.75 / 1.0 / 1.5 / 3.0` | trace / vein / mass / pure. The convex curve is why probing beats scraping (§4.4). |
 | `GREEN_ENDGAME_PENALTY` | `100` | Flat charge per GREEN parcel, regardless of purity (§4.7). |
 | `HOARD_CAPACITY` | `15` | Vault slots. Since v1.13 the vault empties every orbit, so this caps **one night's** haul (§3.14). |
+| `decluster_pure_red` | `True` | No two `pure` (255) cells may be 8-adjacent. Extras in a touching group are demoted to high `mass`, so a jackpot is always a single contested cell (§2.2). |
+| Pure demotion band | `220 – 254` | Where a demoted pure lands — top of `mass`, still worth combing (§2.2). |
 
 These settings balance exploration, competition, and risk management — probes decay, drops require live intel, and damaged units cost credits to restore. Since v1.13 the strategic weight sits almost entirely in the **Nox phase**: the Orbit is where you spend, the night is where you play.
 
@@ -200,6 +202,45 @@ pocket lands on either, the pocket wins.
 | 2     | vein  | 51 – 150     | up to 150          | shallow interior                         |
 | 3     | mass  | 151 – 254    | up to 254          | deep interior, just shy of the core      |
 | 4     | pure  | **255** only | **255**            | seam core — Manhattan depth ≥ 3          |
+
+#### Pure cells never touch (v1.21)
+
+A `pure` is the jackpot a redsign broadcasts, and contesting it is the
+centrepiece of the night. Raw ridge noise does not respect that: a thick
+seam core saturates across a whole patch, so pures sometimes arrive in
+**slabs**. Because a landing auto-harvests the cell it lands on, a slab is
+one seat banking several jackpots off a single drop, with no contest at all.
+
+Measured over 500 seeds on the **played 40×28 board** (what `/api/game/new`
+serves — note `GenerationParams` *defaults* to 80×50, which clusters far
+more heavily and is not what anyone plays): the median board carries **1**
+pure, but **7%** of seeds put at least two pures in contact, and the worst
+observed produced a contiguous **8-cell** block. So it is uncommon — and
+decisive when it lands.
+
+So, after purity is assigned:
+
+- Take each **8-connected group** of `pure` cells. Exactly **one** cell
+  survives at 255 — the one nearest the group's centroid (ties resolved
+  row-major), so the seam's core stays pure while its shoulders drop.
+- Every other cell in the group is demoted into `[220, 254]` — the top of
+  `mass`. The ground is still worth combing and the seam keeps its shape;
+  it simply stops paying out twice.
+
+The rule is deliberately narrow: **only touching pures are thinned.** Two
+pures a few cells apart are two separate finds and both survive. After the
+rule no board has any two pures 8-adjacent, and because most boards were
+never clustered the mean pure count barely moves (1.2 → 1.1 over 500 seeds).
+It removes the pathological 7%, and leaves every other board alone.
+
+The guarantee in §2.2's `ensure_pure_red` promotes the peak RED cell **only**
+(it used to promote the peak plus its two richest neighbours, which was the
+one remaining path deliberately minting a cluster).
+
+**Planner consequence.** A visible pure no longer implies more pure next
+door — the neighbours of a pure are now, if anything, *likelier* to be high
+`mass` than pure. Agents must not treat a found pure as evidence of a pure
+cluster.
 
 These tier names are the canonical vocabulary across the codebase
 (`sea_of_colours.render.RED_LEVEL_NAMES`), the agent view payload
@@ -867,10 +908,79 @@ grammar but massively simplified:
   keeps the last snapshot but loses live coverage, and must re-probe (a
   public act, §3.15) to keep farming the spot under live-only drops.
   Probe vision radius is `SOC_PROBE_RADIUS` (canonical default `4`; see §3.9.7).
-- **Player vision edges:** live line-of-sight tiles include a per-side
-  bit (``vedge ∈ {n, e, s, w}``) marking which neighbours sit outside
-  the LOS. The client renders this as a soft white inset on those
-  sides so the limit of a House's vision is always visually framed.
+- **Player vision edges (v1.22):** the limit of a House's live
+  line-of-sight is drawn as a **closed outline around the whole lit
+  region**, in that House's seat colour, so you can always see where
+  your sight stops and — where your own coverage reaches far enough —
+  where a rival's starts.
+  - The outline is a boundary of the live set only. **Echo and memory
+    are outside it**: remembering a square is not seeing it.
+  - **Solid** means the viewer knows the region exactly. That is always
+    true of your own vision, and true of every seat in the watcher and
+    in replay (§7.3), where per-seat visibility is shipped in full.
+  - **Dotted** means *inferred*. A live game never tells you what a
+    rival can see, so during play a rival's outline is reconstructed
+    from what their presence publicly implies: the disk (radius
+    `SOC_PROBE_RADIUS`, §3.9.7) around a rival probe **standing in your
+    own live sight**, and the square under a rival harvester likewise.
+    Two limits apply, and both are deliberate (v1.22):
+    - The probe must be visible **now**. An echo or memory square still
+      names the probe that was there last Nox, but a disk drawn off it
+      would outline coverage the rival may have picked up and moved on
+      from.
+    - The disk is then **clipped to your own live set**, so only the arc
+      falling on ground you can see for yourself is drawn. Unclipped, it
+      ran out over fog and claimed a certainty you have not earned — it
+      reads as "their sight ends *here*" when all you actually know is
+      "their probe is *there*".
+    - Finally, any stretch of the clipped outline that lies **on your own
+      outline** is dropped. Where their disk runs past the edge of your
+      sight the clip lands their edge exactly on yours, and drawing it
+      would both re-state a line already on the board and misreport it:
+      that boundary is *yours*, and theirs carries on into fog. What is
+      left is an open arc marking where their sight stops on ground you
+      can actually see — which is the only part that told you anything.
+    The result is a floor, never a guarantee: a rival always sees at
+    least what the dotted line admits, usually more. It is also, by
+    construction, **rare** — on most nights you have no enemy probe
+    inside your own sight, and even with one, a disk that blankets
+    everything you can see leaves no interior edge to draw. Nothing shown
+    is the rule working, not a missing feature.
+  - Coincident edges blend rather than occlude, so a boundary two
+    Houses share reads as both colours at once.
+  - Purely a rendering of state already known to the viewer — it
+    discloses nothing the percept did not already carry. Players who
+    prefer a bare board can switch it off (SETTINGS ▸ DISPLAY).
+  - Live LOS tiles also carry a per-side bit (``vedge ∈ {n, e, s, w}``)
+    marking which neighbours sit outside the LOS. The renderer derives
+    the region boundary itself instead, because it must outline seats
+    other than the recipient (whose cells carry no `vedge`); the field
+    is retained for consumers that want the per-cell form.
+- **Order footprints (v1.23):** three orders cover ground beyond the
+  square you pick, and each draws that ground as a region outline on the
+  same layer as the vision edges:
+  - `probe` — Euclidean disk, radius `SOC_PROBE_RADIUS` (§3.9.7).
+  - `emp_launch` — Manhattan diamond, radius `EMP_RADIUS` (§4.9), one per
+    missile in the salvo rather than one blob, because that is how it
+    detonates.
+  - `mine_lay` — the `MINE_BATCH_SHAPE` cluster (§5.2).
+
+  A footprint **already in the queue** is drawn quietly in a long dash;
+  the one **being aimed** follows the pointer, solid and brighter, and
+  only one of these exists at a time. The dash is deliberately not the
+  vision edge's dot — both are thin coloured lines over the same board,
+  and a shared pattern would blur "their sight ends here" into "my EMP
+  lands here". Footprints are drawn against the live board only; scrubbing
+  a replay shows what happened, not what you are planning.
+
+  While aiming, the square readout leads with the footprint: how many
+  squares it covers, how many of those are **currently dark** (the figure
+  that decides where a probe is worth putting), what is standing inside a
+  blast — **your own hardware included**, since §4.9 does not spare it —
+  and how much of the shape a board edge would waste.
+
+  This discloses nothing: a footprint is arithmetic on an order the House
+  is itself composing, over squares it can already see.
 - This loop is client-side illustrative only unless explicitly aligned with §4
   numbers; changes here must bump the changelog entry below.
 
@@ -2336,13 +2446,12 @@ a season library you can scrub through without touching live state.
   opacity and dim the observer terrain to ~22 % opacity behind it,
   so the full map shape stays readable but only the chosen seat's
   vision is crisp. OBS shows the unfogged observer map.
-- **OBS vision-boundary overlay.** When OBS is active, the renderer
-  draws per-cell boundary edges around each seat's currently-visible
-  region: **P1 — sharp 1px blue-white** (`rgba(160,210,255,0.85)`,
-  no blur), **P2 — 1px yellow with a 1px inward blur**
-  (`rgba(255,195,30,0.65)`). Shared-vision edges stack both shadows
-  so the boundary reads as a doubled line — at a glance you can
-  tell which seat saw what, and where they overlapped.
+- **Vision-boundary overlay (v1.22).** Every seat's live region is
+  outlined in its own seat colour, per §3.11. Replay ships each seat's
+  visibility in full, so all outlines here are **solid** — including
+  under P1 / P2, where you see both the chosen seat's fog *and* the
+  true extent of what its rival could see that night. Overlapping
+  boundaries blend, so shared ground reads as both colours at once.
 - **Writable controls hidden.** The watcher hides `#new-game-btn`
   and the ORDERS tab (via `body.cc-mode--watch`), so the read-only
   surface can never accidentally submit policies or start a fresh
@@ -2399,6 +2508,149 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.23 — 2026-08-27
+
+**§3.11 — an order shows the ground it will cover.** Three of the orders a
+House can queue do not land on the square you pick. A probe lights a disk of
+radius `probe_radius` (49 squares at r4), an EMP fills a Manhattan diamond of
+radius `EMP_RADIUS` (13 at r2), and a `mine_lay` arms a cluster of
+`MINE_BATCH_SHAPE` (5 as a plus). Until now the board marked only the centre,
+so aiming any of them meant counting squares by eye, and a queued salvo gave
+no indication of the ground it actually covered.
+
+Each of those three now draws its **footprint** as a region outline over the
+board, using the same vector layer and ring-tracing as the vision edges above.
+A footprint already in the queue is drawn quietly, in a long dash — deliberately
+not the vision edge's dot, so "their sight ends here" and "my EMP lands here"
+cannot be confused. The one being aimed follows the pointer, solid and brighter,
+and there is only ever one of it.
+
+The footprint shapes are the *engine's* shapes, read from the published dials
+(`meta.rules.probe_radius`, `orbit.weapon_specs.emp.radius`,
+`orbit.weapon_specs.mine.batch_shape`) rather than restated in the client, so a
+retune moves the drawn area with it. `scripts/_fx_aoe.py` diffs the shipped
+client geometry against `_euclidean_disk` / `_manhattan_disk` /
+`_mine_cluster_cells` over every square of a board, which is the check that
+would catch a drift.
+
+The square readout leads with the same figures while aiming: how many squares
+the order covers, how many of them are currently dark (the question that
+decides where a probe goes), what is standing inside a blast — **including your
+own hardware**, since §4.9 does not spare it — and how much of the footprint a
+board edge would waste.
+
+Nothing new is disclosed: a footprint is arithmetic on an order the House is
+itself composing.
+
+**§3.11 — a square with no stated purity now prices as a band.** The exact
+score line added in v1.22 needs the `purity` the payload carries from that
+version on. Where it is absent the client falls back to reading tier out of the
+render colour, which recovers the band but not the number — and the readout
+then printed *no score at all*. The visible effect was that only GREEN (a flat
+charge, which needs no purity) and pure RED / deep BLUE (saturated, so the
+colour alone pins them at 255) stated a value, while every dithered square —
+most of the board — went silent. Such a square now prices as a range
+(`151–254 × 1.5 = 227–381`), marked as a band estimate.
+
+### v1.22 — 2026-08-27
+
+**§3.11 — a House's vision has a visible edge.** Two earlier attempts at this
+were written into the rules and never built: a per-cell `vedge` inset (§3.11)
+and a per-cell OBS boundary in blue-white and yellow (§7.3). Both specified an
+edge *per square*, which is why neither survived contact with the renderer —
+the board is a `display:table` grid rebuilt wholesale on every paint, its
+`border-collapse` drops half the edges you ask for, and a per-cell border
+cannot express "outline this region" or let two Houses' boundaries occupy the
+same line. The rules described a feature the players did not have.
+
+Replaced with a **region outline**: the live set's boundary is traced into
+closed rings and stroked once per seat on a vector layer over the board, in
+seat colour. Coincident edges blend, so ground two Houses both see reads as
+both colours. **Solid** where the viewer knows the region exactly (always your
+own; every seat in replay, which ships per-seat visibility in full). **Dashed**
+where it is inferred — in a live game nothing tells you a rival's sight, so
+theirs is reconstructed from what their presence publicly implies (§3.15): the
+disk around a rival probe you can see or whose launch you witnessed, and the
+square under a rival harvester in your sight. That is a floor, never a
+guarantee. No new information is disclosed; this only draws what the percept
+already contained. Toggle in SETTINGS ▸ DISPLAY.
+
+`vedge` still ships. The renderer derives the boundary itself because it must
+outline seats *other than* the recipient, whose cells carry no `vedge` bit.
+
+**§3.11 — the square readout states the score.** Hovering a square used to
+give a line of text that named a purity *band* ("mid (purity 51–150)"),
+because the dense map payload carried only render colours — the client was
+reading tier back out of the pixels. The payload now carries `tile`, `purity`
+and `tier` outright, on live squares and on the frozen echo/memory snapshots
+alike, so the readout can state the exact figure and, for RED, the score it
+settles for: purity × the §4 tier multiplier, shown as the arithmetic. GREEN
+shows its flat settlement charge and BLUE is marked as spend, not score.
+Anything standing on the square is listed with its glyph, in its owner's
+colour. This is the same purity an agent already receives in its percept
+(§6.1); the human seat was simply not being told.
+
+**§7.3 — the replay header says each thing once.** The strip had grown to
+name the season three times (a nameplate, the picker's selected row, and a
+meta line that restated that row word for word) and the night twice, beside
+an unlabelled `fixtures` tickbox — a developer filter for frozen test nights,
+now a SETTINGS preference — and a `NIGHTS` spinner that only ever seeded the
+launcher's own copy. All four are gone.
+
+That clutter was also hiding a real defect. The SEED / RED ON MAP /
+EXTRACTED readout added in v1.20 had never once rendered: `get_replay`
+returns `seed` and `extraction`, but the HTTP layer rebuilds that response
+key by key (a deliberate payload-size guard) and neither field was ever added
+to the projection, so the client read `undefined` and the strip hid itself.
+The renderer then compounded it by waiting for a painted replay frame, which
+meant that even with data it stayed blank in the watcher until you scrubbed.
+Both fixed, and `tests/test_replay_payload_keys.py` now fails if the engine
+grows a replay field the route forgets to forward. The figure stays out of
+live play on purpose: it is omniscient, and the payload is already on the
+client because the night cinematic fetches it.
+
+### v1.21 — 2026-08-27
+
+**§2.2 — pure cells may no longer touch.** A `pure` (255) is the jackpot a
+redsign broadcasts and the thing the night is fought over, but ridge noise
+sometimes handed them out in slabs. Since a landing auto-harvests the cell
+it lands on, that let one seat bank several jackpots off a single drop with
+nothing to contest — not a lucky board, a different game.
+
+Measured over 500 seeds on the **played 40×28 board**: the median board has
+**1** pure, but **7%** of seeds put two or more in contact and the worst
+produced a contiguous **8-cell** block. Uncommon, and decisive when it
+lands. (An earlier draft of this entry quoted a median of 17 pures and a
+14-cell worst case; those came from `GenerationParams`' 80×50 *default*,
+which is not the board `/api/game/new` serves. The 40×28 figures above are
+the ones that describe real games.)
+
+After purity is assigned, each 8-connected group of pures keeps exactly one
+cell at 255 — the one nearest the group's centroid, so the core stays pure
+and the shoulders drop — and the rest are demoted into `[220, 254]`, the top
+of `mass`. The ground stays worth combing and the seam keeps its shape; it
+just stops paying twice. Deliberately narrow: **only touching pures are
+thinned**, so two pures a few cells apart remain two separate finds. After
+the rule no board has any two pures 8-adjacent, and since most boards were
+never clustered the mean pure count barely moves (1.2 → 1.1 over 500 seeds)
+— it removes the pathological 7% and leaves everything else alone.
+
+`ensure_pure_red` (the guarantee that every board has at least one pure)
+now promotes the peak RED cell **only**. It used to promote the peak plus
+its two richest neighbours, deliberately, "so the guaranteed pure reads as a
+small natural seam" — which made it the one remaining path minting exactly
+the cluster this rule removes.
+
+Seed stability is preserved: the demotion draws from a fresh
+`random.Random(seed + 4_000)` stream (RED uses `1_000`, GREEN `2_000`, BLUE
+`3_000`), so no existing layer's noise is perturbed and every other feature
+of a given seed's terrain is unchanged. Set `decluster_pure_red=False` for
+the raw noise output.
+
+**Planner consequence.** A visible pure no longer implies more pure next
+door; if anything its neighbours are now likelier to be high `mass`. Agents
+must not treat a found pure as evidence of a cluster.
 
 ### v1.15 — 2026-08-26
 

@@ -44,3 +44,7 @@ secrets.toml
 /reports/*.csv
 /reports/*.log
 /reports/baseline_*.md
+# Screenshots shot by the scratch harnesses (scripts/_fx_*.py). Regenerable by
+# re-running the harness, and several MB a session. The frozen/*.json fixtures
+# under reports/ are deliberately tracked and unaffected by this.
+/reports/**/*.png
