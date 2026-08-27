@@ -137,9 +137,23 @@ class GenerationParams:
     #: only form in thick seam cores (depth >= ``red_pure_min_depth`` with the
     #: ridge saturated), so many seeds produce none — leaving a board with no
     #: redsign to contest. When True, :func:`generate_grid` deterministically
-    #: promotes the strongest RED core (peak cell + up to two of its richest
-    #: neighbours) to pure. Set False to restore the raw noise output.
+    #: promotes the strongest RED core to pure. Set False to restore the raw
+    #: noise output.
     ensure_pure_red: bool = True
+
+    #: v1.21 — thin touching pures down to one per cluster. A pure is the
+    #: jackpot the whole redsign mechanic is built around, so a seed that
+    #: hands out a contiguous slab of them (measured: up to 14 cells, and
+    #: 98% of boards had at least a touching pair) is not a lucky board,
+    #: it is a different game — one seat lands once and banks the lot.
+    #: See :func:`_decluster_pure_red`. Set False for the raw noise output.
+    decluster_pure_red: bool = True
+
+    #: Purity band a demoted pure lands in. Top of the ``mass`` tier
+    #: ([151..254]), so a thinned cluster still reads as a rich core worth
+    #: combing — it just stops being a second jackpot.
+    pure_demote_min: int = 220
+    pure_demote_max: int = 254
 
 
 def _percentile_threshold(field: Field, top_fraction: float) -> float:
@@ -576,17 +590,100 @@ def _apply_blue(grid: Grid, params: GenerationParams) -> None:
                 grid[cy][cx] = Cell(Tile.BLUE, purity)
 
 
+def _pure_clusters(
+    grid: Grid, width: int, height: int
+) -> List[List[Tuple[int, int]]]:
+    """8-connected groups of pure(255) RED cells, in row-major discovery order."""
+    seen = [[False] * width for _ in range(height)]
+    out: List[List[Tuple[int, int]]] = []
+    for y in range(height):
+        for x in range(width):
+            c = grid[y][x]
+            if seen[y][x] or c.tile != Tile.RED or c.purity < 255:
+                continue
+            stack = [(y, x)]
+            seen[y][x] = True
+            group: List[Tuple[int, int]] = []
+            while stack:
+                cy, cx = stack.pop()
+                group.append((cy, cx))
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        if dy == 0 and dx == 0:
+                            continue
+                        ny, nx = cy + dy, cx + dx
+                        if not (0 <= ny < height and 0 <= nx < width):
+                            continue
+                        if seen[ny][nx]:
+                            continue
+                        n = grid[ny][nx]
+                        if n.tile == Tile.RED and n.purity >= 255:
+                            seen[ny][nx] = True
+                            stack.append((ny, nx))
+            out.append(group)
+    return out
+
+
+def _decluster_pure_red(grid: Grid, params: GenerationParams) -> None:
+    """Leave one pure per 8-connected cluster; demote the rest to high mass.
+
+    RULEBOOK §2.2. A pure(255) is the jackpot a redsign broadcasts, and the
+    contest for it is the game's centrepiece. Raw ridge noise does not
+    respect that: a thick seam core saturates over a whole patch, so pures
+    arrive in slabs. One landing auto-harvests the cell it lands on, so a
+    slab is a single seat banking several jackpots off one drop with no
+    contest at all.
+
+    The survivor is the cell nearest the cluster's centroid (ties row-major),
+    which reads as the seam's core staying pure while its shoulders drop a
+    tier. Demoted cells land in ``[pure_demote_min, pure_demote_max]`` — top
+    of ``mass``, so the ground is still worth combing and the seam keeps its
+    shape; it just stops paying out twice.
+
+    Deliberately narrow: only *touching* pures are thinned. Two pures a few
+    cells apart are two separate finds and both survive.
+
+    RNG comes off a FRESH ``random.Random(seed + 4_000)`` (RED uses 1_000,
+    GREEN 2_000, BLUE 3_000) so existing layers' streams are untouched and
+    old seeds still reproduce their terrain.
+    """
+    width, height = params.width, params.height
+    lo = max(0, min(255, int(params.pure_demote_min)))
+    hi = max(lo, min(255, int(params.pure_demote_max)))
+    rng = random.Random(params.seed + 4_000)
+
+    for group in _pure_clusters(grid, width, height):
+        if len(group) < 2:
+            continue
+        cy = sum(p[0] for p in group) / len(group)
+        cx = sum(p[1] for p in group) / len(group)
+        keep = min(
+            group,
+            key=lambda p: ((p[0] - cy) ** 2 + (p[1] - cx) ** 2, p[0], p[1]),
+        )
+        # Sorted so the RNG is consumed in a stable order regardless of the
+        # flood fill's traversal.
+        for y, x in sorted(group):
+            if (y, x) == keep:
+                continue
+            grid[y][x] = Cell(Tile.RED, rng.randint(lo, hi))
+
+
 def _ensure_pure_red(grid: Grid, params: GenerationParams) -> None:
     """Guarantee at least one pure (255) RED cell on the board.
 
     Natural pures only occur in thick seam cores (see :func:`_finalize_red_purity`),
     so many seeds produce a board with no redsign to contest. If none exists, this
-    deterministically promotes the strongest RED core to pure: the richest RED cell
-    (peak, tie-broken by coordinates) plus up to two of its richest 8-neighbours,
-    so the guaranteed pure reads as a small natural seam rather than an isolated
-    cell. No-op when a pure already exists or the board carries no RED at all.
-    Purely a function of the already-assigned purities — no RNG, so it is
-    seed-stable.
+    deterministically promotes the richest RED cell (peak, tie-broken by
+    coordinates) to pure. No-op when a pure already exists or the board carries no
+    RED at all. Purely a function of the already-assigned purities — no RNG, so it
+    is seed-stable.
+
+    v1.21 — this used to promote the peak PLUS its two richest neighbours, "so the
+    guaranteed pure reads as a small natural seam". That is exactly the slab
+    :func:`_decluster_pure_red` now removes, so the fallback would have been the
+    one path still minting a cluster. The peak alone is promoted instead; the
+    neighbours keep their own high purity, which already reads as a core.
     """
     width, height = params.width, params.height
     reds: List[Tuple[int, int, int]] = []  # (purity, y, x)
@@ -606,22 +703,6 @@ def _ensure_pure_red(grid: Grid, params: GenerationParams) -> None:
     _, py, px = reds[0]
     grid[py][px] = Cell(Tile.RED, 255)
 
-    # Grow a tiny core: promote up to two of the peak's richest RED neighbours.
-    neighbours: List[Tuple[int, int, int]] = []
-    for dy in (-1, 0, 1):
-        for dx in (-1, 0, 1):
-            if dy == 0 and dx == 0:
-                continue
-            ny, nx = py + dy, px + dx
-            if not (0 <= ny < height and 0 <= nx < width):
-                continue
-            c = grid[ny][nx]
-            if c.tile == Tile.RED and c.purity < 255:
-                neighbours.append((c.purity, ny, nx))
-    neighbours.sort(key=lambda r: (-r[0], r[1], r[2]))
-    for _, ny, nx in neighbours[:2]:
-        grid[ny][nx] = Cell(Tile.RED, 255)
-
 
 def generate_grid(params: GenerationParams) -> Grid:
     """Generate a topography grid by compositing the three biome layers."""
@@ -639,6 +720,10 @@ def generate_grid(params: GenerationParams) -> Grid:
     _apply_green(grid, params)
     _apply_blue(grid, params)
     _finalize_red_purity(grid, ridge_t, params)
+    # Thin clusters BEFORE the guarantee, so a board whose only pures were a
+    # single slab still ends up with one rather than none.
+    if params.decluster_pure_red:
+        _decluster_pure_red(grid, params)
     if params.ensure_pure_red:
         _ensure_pure_red(grid, params)
     return grid
