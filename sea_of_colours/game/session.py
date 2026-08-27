@@ -30,7 +30,13 @@ from sea_of_colours.game.tuning import (
     probe_vision_radius,
 )
 from sea_of_colours.generator import Cell, GenerationParams, Grid, Tile, generate_grid
-from sea_of_colours.render import cell_visual
+from sea_of_colours.render import (
+    BLUE_LEVEL_NAMES,
+    RED_LEVEL_NAMES,
+    blue_level,
+    cell_visual,
+    red_level,
+)
 
 
 def _rgb(triple: tuple[int, int, int]) -> str:
@@ -43,6 +49,46 @@ def cell_to_paint(cell: Cell) -> dict[str, Any]:
     if fg is not None:
         d["fg"] = _rgb(fg)
     return d
+
+
+def cell_facts(tile: Tile, purity: int) -> dict[str, Any]:
+    """Terrain identity for the map hover readout: colour, tier, purity.
+
+    v1.22 — the dense map payload had only ever carried render colours
+    (``ch``/``fg``/``bg``), so the client had to *infer* the tier from the
+    dither glyph. That can recover the three-wide band (``▒▒`` → "51–150")
+    but never the number, while agents have always read exact purity off
+    ``agent_view``. Shipping it closes a gap that was tilting the board in
+    the agent's favour.
+
+    Tier names come from :mod:`sea_of_colours.render`, not a second copy of
+    the cutoffs (RULEBOOK §2.2). GREEN and EMPTY have no tier ladder, so
+    they get a colour and nothing else.
+    """
+    p = max(0, min(255, int(purity)))
+    facts: dict[str, Any] = {"tile": tile.name, "purity": p}
+    if tile == Tile.RED:
+        facts["tier"] = RED_LEVEL_NAMES[red_level(p) - 1]
+    elif tile == Tile.BLUE:
+        facts["tier"] = BLUE_LEVEL_NAMES[blue_level(p) - 1]
+    return facts
+
+
+def _snapshot_facts(snap: Mapping[str, Any]) -> dict[str, Any]:
+    """:func:`cell_facts` for a frozen echo / memory tile.
+
+    Returns ``{}`` for snapshots written before v1.22 (they carry paint but
+    no ``tile``), so an in-flight season keeps rendering — those cells just
+    fall back to the tier the client infers from the dither glyph, exactly
+    as every cell did before.
+    """
+    raw_tile = snap.get("tile")
+    if raw_tile is None:
+        return {}
+    try:
+        return cell_facts(Tile(int(raw_tile)), int(snap.get("purity", 0)))
+    except (TypeError, ValueError):
+        return {}
 
 
 #: Per-player CSS colours used everywhere a unit is rendered — on the
@@ -1800,9 +1846,15 @@ class GameSession:
         wk = {(x, y) for x in range(self.width) for y in range(self.height)}
         for xy in visible:
             k = f"{xy[0]}:{xy[1]}"
+            _cell = self.grid[xy[1]][xy[0]]
             entry: dict[str, Any] = {
-                "paint": dict(cell_to_paint(self.grid[xy[1]][xy[0]])),
+                "paint": dict(cell_to_paint(_cell)),
                 "stale": False,
+                # v1.22 — freeze tile+purity alongside the paint so a stale
+                # memory tile can quote the number it remembers, not just the
+                # dither band. Mirrors _probe_tile_snapshot, which already did.
+                "tile": int(_cell.tile),
+                "purity": int(_cell.purity),
             }
             # v1.8 — freeze the trail into the memory tile at sighting time
             # (bug #1). See _probe_tile_snapshot: stale cells must serve the
@@ -2602,6 +2654,9 @@ class GameSession:
                         "stale": False,
                         "echo_probe": False,
                         **paint,
+                        **cell_facts(
+                            self.grid[y][x].tile, self.grid[y][x].purity,
+                        ),
                     }
                     if vedge:
                         cell["vedge"] = vedge
@@ -2663,6 +2718,11 @@ class GameSession:
                         "stale": True,
                         "echo_probe": True,
                         **painted,
+                        # The echo froze tile+purity at sighting time, so the
+                        # readout quotes what the seat REMEMBERS, matching the
+                        # paint beside it. Snapshots taken before v1.22 have
+                        # neither key and simply omit the facts.
+                        **_snapshot_facts(snap),
                     }
                     # v0.9.13 — the terrain echo persists as remembered
                     # ground, but the stale entity silhouette (ghost probe /
@@ -2718,6 +2778,7 @@ class GameSession:
                         "stale": bool(m["stale"]),
                         "echo_probe": False,
                         **m["paint"],
+                        **_snapshot_facts(m),
                     }
                     # v1.8 — frozen trail from the memory tile (bug #1).
                     _ftm = m.get("trail_markup")

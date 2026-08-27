@@ -1609,6 +1609,14 @@ def api_game_replay(
         "player_profiles": reply.get("player_profiles") or {},
         "is_season_complete": bool(reply.get("is_season_complete", False)),
         "season_day_cap": reply.get("season_day_cap") or 0,
+        # v1.22 — the map's identity and the season's extraction curve.
+        # ``get_replay`` has returned both since v1.20, but this response is
+        # an explicit key-by-key projection and they were never added to it,
+        # so the header's SEED / RED ON MAP / EXTRACTED readout has been
+        # reading ``undefined`` and hiding itself for its whole life.
+        # tests/test_replay_payload_keys.py now pins the projection.
+        "seed": reply.get("seed"),
+        "extraction": reply.get("extraction") or None,
     }
 
 
