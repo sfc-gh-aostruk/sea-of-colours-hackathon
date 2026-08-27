@@ -64,8 +64,19 @@ def main() -> int:
         )
         print(f"fully on-screen: {onscreen}")
 
-        pg.screenshot(path=f"{OUT}/badge_tip.png",
-                      clip={"x": 0, "y": 0, "width": w, "height": 240})
+        pg.screenshot(
+            path=f"{OUT}/badge_tip.png",
+            clip={"x": 0, "y": 0, "width": w,
+                  "height": int(tbox.get("y", 0) + tbox.get("height", 0) + 20)},
+        )
+        # The card on its own, for looking at the design rather than the
+        # placement.
+        tip.screenshot(path=f"{OUT}/badge_card.png")
+        wrapped = tip.evaluate(
+            "el => [...el.querySelectorAll('.cc-backend-tip__li')]"
+            "        .filter(r => r.getBoundingClientRect().height > 20).length"
+        )
+        print(f"ledger rows that wrap: {wrapped}")
 
         badge.evaluate("el => el.blur()")
         pg.mouse.move(w / 2, h / 2)

@@ -1756,37 +1756,115 @@ body.cc-mode {
 /* v1.20 — the badge's own tooltip. The native `title` was unusable here:
  * a ~1s browser delay, no styling, and it renders in OS chrome outside
  * the CRT filter so it looked pasted on. This is body-anchored and
- * `position: fixed` so the header's own stacking context cannot clip it. */
+ * `position: fixed` so the header's own stacking context cannot clip it.
+ *
+ * Styled as a readout card rather than a paragraph of prose: the whole
+ * card takes its accent from the badge it belongs to, and the trade-off
+ * is a +/− ledger, because "what does this cost me" is the only question
+ * anyone hovers it to answer. */
 .cc-backend-tip {
   position: fixed;
   z-index: 5300;
-  max-width: 46ch;
-  padding: 8px 11px;
-  background: rgba(8, 9, 14, 0.96);
-  border: 1px solid var(--frame);
-  border-radius: 3px;
-  box-shadow: 0 0 18px rgba(0, 0, 0, 0.6);
+  /* Wide enough that no ledger line wraps — a wrapped "+ ..." row reads
+     as two items rather than one. */
+  width: 48ch;
+  overflow: hidden;
+  background: #05070a;
+  border: 1px solid var(--tip-accent, var(--frame));
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 0 20px var(--tip-glow, rgba(0, 0, 0, 0.4)),
+    0 10px 28px rgba(0, 0, 0, 0.7);
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.5;
   letter-spacing: 0.02em;
-  color: var(--fg);
+  color: rgba(226, 228, 238, 0.86);
   pointer-events: none;
   opacity: 0;
-  transition: opacity 120ms ease-out;
+  transform: translateY(-3px);
+  transition:
+    opacity 130ms ease-out,
+    transform 130ms ease-out;
 }
 .cc-backend-tip[hidden] { display: none; }
-.cc-backend-tip--in { opacity: 1; }
-.cc-backend-tip__head {
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  margin-bottom: 4px;
+.cc-backend-tip--in {
+  opacity: 1;
+  transform: none;
 }
-.cc-backend-tip__row { color: var(--dim); }
-.cc-backend-tip__row + .cc-backend-tip__row { margin-top: 4px; }
-.cc-backend-tip--memory .cc-backend-tip__head { color: #00ff00; }
-.cc-backend-tip--snowflake .cc-backend-tip__head { color: #82f4fb; }
-.cc-backend-tip--file .cc-backend-tip__head { color: var(--green); }
+
+/* Aperture-grille wash, so the card sits inside the CRT rather than on
+   top of it. Pointer-events off — the card is already inert. */
+.cc-backend-tip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.028) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+.cc-backend-tip__head {
+  display: flex;
+  align-items: center;
+  gap: 0.9ch;
+  padding: 6px 11px 5px;
+  background: var(--tip-wash);
+  border-bottom: 1px dashed var(--tip-rule);
+  color: var(--tip-accent);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.cc-backend-tip__head::before {
+  content: "▌";
+  letter-spacing: 0;
+}
+
+.cc-backend-tip__body { padding: 7px 11px 8px; }
+
+.cc-backend-tip__lede { color: rgba(228, 231, 240, 0.9); }
+
+.cc-backend-tip__list {
+  margin-top: 7px;
+  display: grid;
+  gap: 2px;
+}
+.cc-backend-tip__li {
+  display: grid;
+  grid-template-columns: 1.6ch 1fr;
+  gap: 0.5ch;
+  color: rgba(206, 210, 224, 0.7);
+}
+.cc-backend-tip__mark {
+  font-weight: 700;
+  text-align: center;
+}
+.cc-backend-tip__li--pro .cc-backend-tip__mark { color: #88c0a4; }
+.cc-backend-tip__li--con .cc-backend-tip__mark { color: #f0876a; }
+
+.cc-backend-tip--memory {
+  --tip-accent: #00ff00;
+  --tip-wash: rgba(0, 255, 0, 0.07);
+  --tip-rule: rgba(0, 255, 0, 0.28);
+  --tip-glow: rgba(0, 255, 0, 0.16);
+}
+.cc-backend-tip--snowflake {
+  --tip-accent: #82f4fb;
+  --tip-wash: rgba(130, 244, 251, 0.08);
+  --tip-rule: rgba(130, 244, 251, 0.30);
+  --tip-glow: rgba(130, 244, 251, 0.18);
+}
+.cc-backend-tip--file {
+  --tip-accent: var(--green);
+  --tip-wash: rgba(63, 185, 80, 0.08);
+  --tip-rule: rgba(63, 185, 80, 0.30);
+  --tip-glow: rgba(63, 185, 80, 0.16);
+}
 
 .cc-backend-badge--memory {
   color: #00ff00;

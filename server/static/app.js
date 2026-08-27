@@ -16296,37 +16296,51 @@
     };
   })();
 
-  /** What each backend buys and costs — the badge's whole reason to exist. */
+  /**
+   * What each backend buys and costs — the badge's whole reason to exist.
+   *
+   * A lede plus a +/− ledger rather than paragraphs: the question people
+   * hover this to answer is "can I use the agent, and will this game still
+   * be here tomorrow", and a list answers that at a glance.
+   */
   const BACKEND_TIP_COPY = {
     snowflake: {
       head: "SNOWFLAKE",
-      rows: [
-        "This game is written to your own Snowflake account.",
-        "That buys the LLM agent seats (ASK V12), agent memory that "
-          + "carries across nights, and a replay you can still scrub "
-          + "tomorrow.",
-        "The cost is latency — every move is a round-trip.",
+      lede: "Written to your own Snowflake account.",
+      pro: [
+        "LLM agent seats — ASK V12",
+        "agent memory carries across nights",
+        "replay still scrubbable tomorrow",
       ],
+      con: ["every move is a round-trip"],
     },
     file: {
       head: "FILE",
-      rows: [
-        "This game is written to local JSON on disk.",
-        "It survives a restart and keeps its replay, but there is no "
-          + "Snowflake account behind it, so LLM agent seats are "
-          + "unavailable.",
-      ],
+      lede: "Written to local JSON on disk.",
+      pro: ["survives a restart", "keeps its replay"],
+      con: ["no Snowflake account — no LLM agent seats"],
     },
     memory: {
       head: "LOCAL MEMORY",
-      rows: [
-        "This game lives in the server process. Nothing is written down.",
-        "Moves are instant and it works fully offline, but there are no "
-          + "LLM agent seats, no cross-night agent memory, and the season "
-          + "and its replay die when the server stops.",
+      lede: "Lives in the server process. Nothing is written down.",
+      pro: ["moves are instant", "works fully offline"],
+      con: [
+        "no LLM agent seats (ASK V12)",
+        "no cross-night agent memory",
+        "season and replay die with the server",
       ],
     },
   };
+
+  /** Flatten a tip entry to one string, for aria-label. */
+  function backendTipText(copy) {
+    return [
+      `${copy.head}.`,
+      copy.lede,
+      copy.pro.length ? `Gains: ${copy.pro.join("; ")}.` : "",
+      copy.con.length ? `Costs: ${copy.con.join("; ")}.` : "",
+    ].filter(Boolean).join(" ");
+  }
 
   function showBackendTip(anchor, kind) {
     const copy = BACKEND_TIP_COPY[kind];
@@ -16338,11 +16352,18 @@
       "cc-backend-tip--file",
     );
     tip.classList.add(`cc-backend-tip--${kind}`);
+    const li = (mark, cls, txt) =>
+      `<div class="cc-backend-tip__li cc-backend-tip__li--${cls}">`
+      + `<span class="cc-backend-tip__mark">${mark}</span>`
+      + `<span>${esc(txt)}</span></div>`;
     tip.innerHTML =
       `<div class="cc-backend-tip__head">${esc(copy.head)}</div>`
-      + copy.rows
-        .map((r) => `<div class="cc-backend-tip__row">${esc(r)}</div>`)
-        .join("");
+      + `<div class="cc-backend-tip__body">`
+      + `<div class="cc-backend-tip__lede">${esc(copy.lede)}</div>`
+      + `<div class="cc-backend-tip__list">`
+      + copy.pro.map((t) => li("+", "pro", t)).join("")
+      + copy.con.map((t) => li("−", "con", t)).join("")
+      + `</div></div>`;
     tip.hidden = false;
     // Measure before placing: the badge is hard right, so the tip is
     // right-aligned to it and clamped to the viewport rather than
@@ -16390,7 +16411,7 @@
     // OS chrome outside the CRT filter. aria-label carries the same words
     // for a screen reader, which the styled tip cannot.
     el.removeAttribute("title");
-    el.setAttribute("aria-label", `${copy.head}. ${copy.rows.join(" ")}`);
+    el.setAttribute("aria-label", backendTipText(copy));
     el.setAttribute("aria-describedby", "cc-backend-tip");
     if (!el.dataset.tipWired) {
       el.dataset.tipWired = "1";
