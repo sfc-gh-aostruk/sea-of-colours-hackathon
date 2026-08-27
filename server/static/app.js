@@ -11183,7 +11183,34 @@
       endResolvingFrame();
     };
 
+    // v1.21 — see the diagnostic in ``pullAllMaps``. That one only records
+    // the decision to START; the cinematic then has four more silent exits
+    // that all end in the same hard cut to the live board, so name them too.
+    const _cineNote = (stage, detail) => {
+      const entry = {
+        at: new Date().toISOString(),
+        stage,
+        detail,
+        startTickIdx,
+        ticks: replayTicks.length,
+        mainMapSource,
+        replayTicker: !!replayTicker,
+      };
+      (window._socCinematicLog ||= []).push(entry);
+      if (window._socCinematicLog.length > 40) window._socCinematicLog.shift();
+      console.warn(`[soc] cinematic bailed at ${stage} — ${detail}`, entry);
+    };
+
     if (startTickIdx >= replayTicks.length || _liveFxPlaying || replayTicker) {
+      _cineNote(
+        "entry",
+        startTickIdx >= replayTicks.length
+          ? `start tick ${startTickIdx} past the last tick `
+            + `(${replayTicks.length}) — no frames for this night`
+          : _liveFxPlaying
+            ? "another cinematic already playing"
+            : "replay scrubber is running",
+      );
       await revealLiveAndReport();
       return;
     }
@@ -11208,6 +11235,15 @@
         const duskHold = Math.max(900, Number(window._osPendingDwellMs) || 0);
         await new Promise((r) => setTimeout(r, duskHold));
         if (mainMapSource !== "replay" || replayTicker) {
+          // The suspect path: the DUSK beat repaints the board (which is
+          // what the player sees "jump"), then we bail BEFORE the PRAXIS
+          // card ever shows. Something took the map back to live during
+          // the hold.
+          _cineNote(
+            "after-dusk-hold",
+            `map source is "${mainMapSource}" (wanted "replay")`
+            + `${replayTicker ? " + scrubber running" : ""}`,
+          );
           interrupted = true;
           return;
         }
@@ -11218,6 +11254,7 @@
       // Only bail if the user kicked off their own playback while the
       // opening card played.
       if (replayTicker) {
+        _cineNote("after-praxis-card", "scrubber started during the card");
         interrupted = true;
         return;
       }
@@ -11259,6 +11296,11 @@
           await new Promise((r) => setTimeout(r, holdMs));
         }
         if (mainMapSource !== "replay" || replayTicker) {
+          _cineNote(
+            `mid-night tick ${t}`,
+            `map source is "${mainMapSource}"`
+            + `${replayTicker ? " + scrubber running" : ""}`,
+          );
           interrupted = true;
           return;
         }
@@ -16950,6 +16992,49 @@
       && info
       && _infoDay > _lastCinematicDay
       && replayTicks.length > 0;
+    // v1.21 — diagnostic for "the night hard-cut to the end state and
+    // PRAXIS BEGINS never played". The skip has EIGHT possible causes and
+    // the symptom is identical for all of them, so guessing from a bug
+    // report has not worked twice now. Record the inputs on every resolve
+    // and name the first failing one; `window._socCinematicLog` keeps the
+    // last 40 for after the fact. Cheap, and only runs when playFx is set.
+    if (playFx) {
+      const why =
+        !replayLastTurnFx ? "replay-fx turned off in settings"
+        : reduceMotionMq.matches ? "OS prefers-reduced-motion"
+        : _liveFxPlaying ? "another cinematic still playing"
+        : replayTicker ? "replay scrubber is running"
+        : !info ? "night replay fetch returned nothing"
+        : replayTicks.length === 0 ? "replay returned zero ticks"
+        : _infoDay <= _lastCinematicDay
+          ? `day ${_infoDay} already animated `
+            + `(_lastCinematicDay=${_lastCinematicDay})`
+        : "";
+      const entry = {
+        at: new Date().toISOString(),
+        replayLastDay: _infoDay,
+        lastCinematicDay: _lastCinematicDay,
+        ticks: replayTicks.length,
+        // Leading hypothesis for the hard cut: on Snowflake the status
+        // flips as soon as the night resolves, but the frames for that
+        // night are still being written, so the replay we fetch a beat
+        // later is still a day behind and there is nothing to animate.
+        // If these two disagree on a skip, that is the bug.
+        statusDay: liveSyncDay,
+        statusFrames: replayWindowCount,
+        played: wantCinematic,
+        skippedBecause: why,
+      };
+      (window._socCinematicLog ||= []).push(entry);
+      if (window._socCinematicLog.length > 40) {
+        window._socCinematicLog.shift();
+      }
+      if (!wantCinematic) {
+        console.warn(
+          `[soc] night ${_infoDay} did NOT animate — ${why}`, entry,
+        );
+      }
+    }
     if (wantCinematic) {
       // Claim before playing: the cinematic awaits, and a poll landing
       // mid-play must not queue a second run of the same night.
@@ -18568,13 +18653,29 @@
       const prevDay = liveSyncDay;
       const prevPhase = liveSyncPhase;
       const prevWindows = liveSyncWindows;
+      // v1.21 — stay out of the way while the map is not live (the user is
+      // scrubbing the replay bar, or a cinematic owns the board), but do NOT
+      // advance the baseline on the way out.
+      //
+      // This is the "the seat that WAITED lost the animation" bug. The
+      // baseline used to be committed above this guard, so a night that
+      // resolved while the map was off-live was diffed away: the next poll
+      // compared against the already-advanced values, saw no change, and the
+      // night was never animated for that seat — it just appeared resolved.
+      // A waiting player scrubbing back through the replay to pass the time
+      // is exactly how you end up off-live at the moment the night lands,
+      // which is why it hit waiters and never the seat that resolved last
+      // (their own submit drives the cinematic directly).
+      //
+      // Leaving the baseline untouched keeps the transition pending, so the
+      // next poll after the map returns to live still sees it and animates.
+      if (!first && mainMapSource !== "live") return;
       liveSyncSig = sig;
       liveSyncDay = Number(st.day || 0);
       liveSyncPhase = String(st.phase || "");
       liveSyncWindows = Number(st.replay_windows || 0);
-      // First sample just seeds the baseline; never act on it. Also stay out
-      // of the way while the user is scrubbing replay frames.
-      if (first || mainMapSource !== "live") return;
+      // First sample just seeds the baseline; never act on it.
+      if (first) return;
       // A fresh night/orbit RESOLVED only when a new replay window (night
       // frames) landed, a new day rolled, or the phase flipped (orbit→planning
       // resolves without new night frames). That's the sole signal that drives
