@@ -33,8 +33,10 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Collection, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12 import chain_filter
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12 import comb_shapes
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12 import option_economics
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12 import packager
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12 import value_pyramid
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12.seam_control import (
     SeamPattern,
@@ -550,12 +552,49 @@ def _count_strong_chains(
     return n
 
 
+# A chain is "the same dig" as the seam once more than this share of its cells
+# lies inside the redsign footprint. Single-sourced from chain_filter, which
+# already uses the identical rule to collapse two chains onto one cluster.
+_SEAM_OVERLAP_MAX = chain_filter._OVERLAP_MAX
+
+
+def _deploy_capacity(
+    reg: "Mapping[str, Option]", agent_view: Mapping[str, Any],
+) -> int:
+    """How many harvesters this menu can actually field tonight.
+
+    Not "how many deploy options exist" — how many the seat can PAY for. A hot
+    drop the agent cannot afford is not an option, it is a line of text, and
+    counting it is what let Caelum_Compass d6 look like a seven-option menu when
+    it was a one-option menu: six hot drops against a probe stock of zero.
+
+    Zero-probe runs all count; probe-funded ones are capped by stock, since two
+    options needing a probe each cannot both fly on a single probe.
+    """
+    stock = packager._probe_stock(agent_view)
+    free = paid = 0
+    for opt in reg.values():
+        if packager._harvester_demand(opt) <= 0:
+            continue
+        need = packager._probe_demand(opt)
+        if need <= 0:
+            free += 1
+        elif need <= stock:
+            paid += 1
+    return free + min(paid, stock)
+
+
 def _chains_off_the_seam(
     chain_hints: Sequence[Mapping[str, Any]],
     agent_view: Mapping[str, Any],
     has_seam: bool,
-) -> List[Mapping[str, Any]]:
+) -> Tuple[List[Mapping[str, Any]], List[Mapping[str, Any]]]:
     """Drop juice chains that walk INSIDE a fresh redsign footprint (fix 1.5).
+
+    Returns ``(kept, suppressed)``. The suppressed half used to be discarded
+    here; it is handed back so ``build_registry`` can put chains BACK when the
+    rest of the menu cannot field the fleet (see ``_deploy_capacity``). Menu
+    pressure is a nice-to-have — a harvester with nothing legal to do is not.
 
     On a redsign night the seam patterns already offer that ground, in shapes
     built for a contested race — so a chain over the same cells is a duplicate
@@ -574,17 +613,18 @@ def _chains_off_the_seam(
     """
     hints = [h for h in (chain_hints or []) if isinstance(h, Mapping)]
     if not has_seam or not hints:
-        return hints
+        return hints, []
 
     age = option_economics.sign_age_nights(agent_view)
     if age is not None and age > option_economics._SIGN_FRESH_NIGHTS:
-        return hints
+        return hints, []
 
     footprint = option_economics.redsign_footprint(agent_view)
     if not footprint:
-        return hints
+        return hints, []
 
     kept: List[Mapping[str, Any]] = []
+    suppressed: List[Mapping[str, Any]] = []
     for h in hints:
         cells = {
             (int(c[0]), int(c[1]))
@@ -594,9 +634,16 @@ def _chains_off_the_seam(
         drop = h.get("drop_at")
         if isinstance(drop, (list, tuple)) and len(drop) == 2:
             cells.add((int(drop[0]), int(drop[1])))
-        if not (cells & footprint):
-            kept.append(h)
-    return kept
+        # MAJORITY overlap, not first contact. The footprint is the smear
+        # DILATED by _REDSIGN_PUBLIC_RADIUS, so an any-cell test deletes chains
+        # that merely clip the outer ring on their way past — Caelum_Compass d6
+        # lost a chain whose DROP CELL was outside the footprint entirely, on
+        # three of six walk cells. The threshold matches chain_filter's own
+        # "more than half its cells = the same dig" rule, so a chain is only
+        # suppressed when it really does duplicate the seam ground.
+        share = len(cells & footprint) / max(1, len(cells))
+        (suppressed if share > _SEAM_OVERLAP_MAX else kept).append(h)
+    return kept, suppressed
 
 
 def build_registry(
@@ -649,8 +696,10 @@ def build_registry(
             opt = _probe_option(i, h)
             reg[opt.option_id] = opt
 
-    for i, h in enumerate(_chains_off_the_seam(chain_hints, agent_view,
-                                               bool(seam_patterns)), start=1):
+    kept_chains, seam_suppressed = _chains_off_the_seam(
+        chain_hints, agent_view, bool(seam_patterns),
+    )
+    for i, h in enumerate(kept_chains, start=1):
         if isinstance(h, Mapping):
             for opt in _chain_shape_options(i, h):
                 reg[opt.option_id] = opt
@@ -691,6 +740,27 @@ def build_registry(
     )
     if frontier is not None:
         reg[frontier.option_id] = frontier
+
+    # IDLE-FLEET BACKSTOP. Menu pressure (the seam filter above) is a
+    # nice-to-have; a harvester with nothing legal to do is a wasted night. If
+    # everything else on the menu still cannot field the fleet, put the
+    # seam-suppressed chains BACK, richest first, until it can.
+    #
+    # Caelum_Compass d6 is why this exists: a live redsign suppressed the
+    # chains, probe stock was 0 so all six hot drops read UNAFFORDABLE, and
+    # three harvesters were offered ONE playable option. The think pass then
+    # described the plays it wanted in prose — it had no menu id to name them
+    # with — and resolve_plan, which only accepts ids, dropped two thirds of
+    # the plan. Runs silent whenever the menu can already field the fleet.
+    if harvesters_alive:
+        shortfall = int(harvesters_alive) - _deploy_capacity(reg, agent_view)
+        if shortfall > 0 and seam_suppressed:
+            restored = sorted(
+                seam_suppressed, key=chain_filter._chain_ev, reverse=True,
+            )[:shortfall]
+            for i, h in enumerate(restored, start=len(kept_chains) + 1):
+                for opt in _chain_shape_options(i, h):
+                    reg[opt.option_id] = opt
 
     _apply_hazard(reg, hazard_cells)
     return reg

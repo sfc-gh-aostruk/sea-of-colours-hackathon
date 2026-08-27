@@ -90,11 +90,46 @@ def pure_ship_points() -> int:
     return int(round(_red_ship_points(255)))
 
 
+def view_day(agent_view: Mapping[str, Any]) -> Optional[int]:
+    """Tonight's day number, wherever the view happens to carry it.
+
+    The engine publishes it under ``hud.day`` / ``meta.day`` and NOT at the top
+    level, so every reader here that asked for ``agent_view["day"]`` silently got
+    nothing on a real board — and each swallowed it differently, which is why a
+    datum that was dead in production stayed green in the suite. Single-sourced
+    so the next key move breaks one function, not three.
+    """
+    for value in (
+        agent_view.get("day"),
+        (agent_view.get("hud") or {}).get("day"),
+        (agent_view.get("meta") or {}).get("day"),
+    ):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def sign_found_day(row: Mapping[str, Any]) -> Optional[int]:
+    """The night a redsign was broadcast, whatever the row calls it.
+
+    ``view._redsign_for_seat`` copies the engine's region through verbatim, and
+    the engine names this ``day`` — the ``found_day`` / ``day_found`` spellings
+    the readers used exist only in hand-built test fixtures.
+    """
+    for key in ("found_day", "day_found", "day"):
+        try:
+            return int(row[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
 def sign_ages_by_beacon(agent_view: Mapping[str, Any]) -> Dict[Cell, int]:
     """``(x, y) -> nights since broadcast``, keyed by the sign's centre cell."""
-    try:
-        day = int(agent_view.get("day") or 0)
-    except (TypeError, ValueError):
+    day = view_day(agent_view)
+    if day is None:
         return {}
     out: Dict[Cell, int] = {}
     for row in (agent_view.get("redsign") or []):
@@ -103,9 +138,11 @@ def sign_ages_by_beacon(agent_view: Mapping[str, Any]) -> Dict[Cell, int]:
         centre = row.get("center", row.get("centre"))
         if not (isinstance(centre, (list, tuple)) and len(centre) >= 2):
             continue
+        found = sign_found_day(row)
+        if found is None:
+            continue
         try:
             cell = (int(round(float(centre[0]))), int(round(float(centre[1]))))
-            found = int(row.get("found_day", row.get("day_found")))
         except (TypeError, ValueError):
             continue
         out[cell] = max(0, day - found)
@@ -424,21 +461,15 @@ def _redsign_smear_meta(agent_view: Mapping[str, Any]) -> List[Dict[str, Any]]:
     that decided a 252-1366 loss. The finder had held exact vision of that pure
     for a full night, which is all anyone needs to take one.
     """
-    try:
-        day = int(agent_view.get("day") or 0)
-    except (TypeError, ValueError):
-        day = 0
+    day = view_day(agent_view)
     out: List[Dict[str, Any]] = []
     for row in (agent_view.get("redsign") or []):
         if not isinstance(row, Mapping):
             continue
         if not (row.get("cells") or []):
             continue  # matches _redsign_smear_regions, which skips empty smears
-        try:
-            found = int(row.get("found_day", row.get("day_found")))
-            nights = max(0, day - found)
-        except (TypeError, ValueError):
-            nights = 0
+        found = sign_found_day(row)
+        nights = 0 if (day is None or found is None) else max(0, day - found)
         out.append({"mine": bool(row.get("mine")), "nights_held": nights})
     return out
 
@@ -817,23 +848,20 @@ def sign_age_nights(agent_view: Mapping[str, Any]) -> Optional[int]:
 
     Sign age has three consumers — the blind-attack expectation, the
     rival-knowledge label, and (fix 1.5) menu pressure — and they were each
-    about to derive it themselves. One definition, read from
-    ``redsign[].found_day`` against the current day; ``None`` when no sign is
-    live or none carries a date, which callers must treat as "do not ease".
+    about to derive it themselves. One definition, read via ``sign_found_day``
+    against ``view_day``; ``None`` when no sign is live or none carries a date,
+    which callers must treat as "do not ease".
     """
-    try:
-        day = int(agent_view.get("day"))
-    except (TypeError, ValueError):
+    day = view_day(agent_view)
+    if day is None:
         return None
     ages: List[int] = []
     for r in (agent_view.get("redsign") or []):
         if not isinstance(r, Mapping):
             continue
-        found = r.get("found_day", r.get("day_found"))
-        try:
-            ages.append(max(0, day - int(found)))
-        except (TypeError, ValueError):
-            continue
+        found = sign_found_day(r)
+        if found is not None:
+            ages.append(max(0, day - found))
     return min(ages) if ages else None
 
 

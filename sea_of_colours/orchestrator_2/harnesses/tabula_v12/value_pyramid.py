@@ -54,6 +54,10 @@ EXPECTED = "EXPECTED"  # redsign fog — not force-surfaced here (see seam_contr
 # Value tiers mirror the engine purity bands (probe_hints._tier_name).
 _PURE_MIN = 255
 _MASS_MIN = 151
+# A real vein, matching the engine band and chain_filter's own value floor. Only
+# surfaced for a harvester that would otherwise sit in orbit — see the VEIN
+# branch in ``force_surface_grabs`` for why the pyramid has to reach this low.
+_VEIN_MIN = 51
 # Rich blue worth a grab — matches the sanitizer's blue-loot floor so we never
 # surface a blue the corrector would then reroute around.
 _BLUE_GRAB_MIN = 192
@@ -225,6 +229,7 @@ def force_surface_grabs(
     existing_targets: Set[Tuple[int, int]] = frozenset(),
     max_pure: int = 2,
     max_mass: int = 1,
+    max_vein: int = 2,
     max_blue: int = 1,
     blue_requested: bool = False,
     harvesters_alive: Optional[int] = None,
@@ -346,12 +351,54 @@ def force_surface_grabs(
         covered.update(path)
         n_mass += 1
 
-    # 3. Rich LIVE BLUE (drop-legal) — HIGH-YIELD BLUE. Only surface it when it
-    #    would NOT steal a harvester from red: orbital asks, OR there is a spare
-    #    harvester beyond the strong red chains it could otherwise run.
     spare_harvester = (
         harvesters_alive is not None and harvesters_alive > strong_chain_count
     )
+
+    # 3. LIVE VEIN (drop-legal) — the pyramid's bottom rung, and the ONLY path
+    #    onto an isolated vein. A vein is too poor for the mass branch above and
+    #    too short to form a juice chain (heuristic_chains needs a contiguous
+    #    run), so a lone one falls through every surfacing path and no menu id
+    #    can take it — the R2.9 gap one tier down. Caelum_Compass d6 is the case:
+    #    a redsign suppressed both chains, probe stock was 0 so every hot drop
+    #    read UNAFFORDABLE, and the seat's whole menu was ONE option for THREE
+    #    harvesters while four drop-legal veins sat in plain view. The think pass
+    #    named two of them in prose and the plan pass could not select them,
+    #    because resolve_plan only accepts menu ids.
+    #
+    #    Gated exactly like blue below: only a harvester that would otherwise
+    #    IDLE gets sent to a vein, so rich nights keep a clean menu. A drop
+    #    auto-harvests its own cell, so even a bare landing banks the vein.
+    if spare_harvester:
+        veins = sorted(
+            ((c, p) for c, p in live.items()
+             if _VEIN_MIN <= p < _MASS_MIN and c in live_cells
+             and c not in green and c not in covered),
+            key=lambda kv: (-kv[1], kv[0][1], kv[0][0]),
+        )
+        n_vein = 0
+        for cell, p in veins:
+            if n_vein >= max_vein or cell in covered:
+                continue
+            tail = _mass_tail(
+                agent_view, cell, green, width, height, {cell}, _HOLD_CAP_STEPS,
+            )
+            specs.append(GrabSpec(
+                action="GRAB_VEIN", target=cell, drop_at=cell, cells=tail,
+                tier="vein", provenance=LIVE, purity=p,
+                note=(
+                    f"spare harvester ({harvesters_alive}) beyond "
+                    f"{strong_chain_count} strong red chain(s) — a vein banks "
+                    f"less than a seam but an idle harvester banks nothing"
+                ),
+            ))
+            covered.add(cell)
+            covered.update(tail)
+            n_vein += 1
+
+    # 4. Rich LIVE BLUE (drop-legal) — HIGH-YIELD BLUE. Only surface it when it
+    #    would NOT steal a harvester from red: orbital asks, OR there is a spare
+    #    harvester beyond the strong red chains it could otherwise run.
     if blue_requested or spare_harvester:
         if blue_requested:
             blue_note = (
