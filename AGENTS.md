@@ -64,8 +64,14 @@ pytest                   # tests/ (pythonpath=. via pytest.ini)
   `backend.snowpark_session_for(store)`. `tests/test_per_game_backend.py`
   pins both, including a scan that fails if a V12 module reads the
   frozen `SOC_BACKEND` constant again.
-- A dev server is usually already running (see the terminals folder). Check
-  before starting another.
+- **The human owns the server process. Do not start, restart or kill it.**
+  The canonical command is theirs to run, in their own terminal:
+  `SOC_BACKEND=snowflake python run_web.py --no-reload`. A server an agent
+  launches is a child of the agent's shell and dies with it — mid-night,
+  looking exactly like a crash. Restarting one to test a fix while someone
+  is playing drops their turn and blanks the page with "Failed to fetch".
+  A dev server is usually already running (see the terminals folder):
+  check there, use it read-only, and if it needs bouncing, **ask**.
 
 ## Architecture
 

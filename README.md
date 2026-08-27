@@ -319,6 +319,44 @@ python run_web.py                # auto-detect storage; prints what it chose
 pytest                           # engine + orchestrator suites
 ```
 
+### The command to use for a real session
+
+If you are playing a season you care about — persisted games, replays
+you can scrub tomorrow, LLM seats, ASK V12 — start it like this, **in
+your own terminal**, and leave it alone:
+
+```bash
+SOC_BACKEND=snowflake python run_web.py --no-reload
+```
+
+Both halves earn their place:
+
+- **`SOC_BACKEND=snowflake`** makes Snowflake a requirement rather than
+  a preference. Auto-detect is forgiving by design: if anything about
+  the Snowpark path is unusable it quietly gives you a `memory` server,
+  and you find out an hour later when the season isn't there and the
+  LLM seats never appeared. Explicit is strict — the server refuses to
+  start and names the fix.
+- **`--no-reload`** because auto-reload is **on by default** and a file
+  save restarts the process. That drops any in-flight agent turn and
+  resets the cross-player submit lock (a per-process `threading.Lock`),
+  so an incidental edit mid-night reads to players as the game hanging.
+
+Add `--lan` to host others on the same Wi-Fi (it turns reload off for
+you), or see [`docs/MULTIPLAYER.md`](docs/MULTIPLAYER.md) for the tunnel
+route, which works on locked-down networks where `--lan` cannot.
+
+> **Start it yourself; don't let an AI coding agent run it.** A server
+> an agent launches belongs to that agent's shell session and dies when
+> the session does — mid-night, looking exactly like a crash. This is
+> also why the agent shouldn't restart it to test something while you
+> are playing.
+
+**If your Snowflake seasons vanish from the picker,** the server has
+been up long enough for the Snowpark auth token to expire. It currently
+fails quietly — you get fewer games rather than an error, and ASK V12
+greys out as though you were on a memory backend. Restart the server.
+
 **Storage is auto-detected, then chosen per game.** Unset means *auto*:
 `snowflake` when the Snowpark deps and key-pair auth are both present,
 otherwise the in-process `memory` store. `SOC_BACKEND` overrides that

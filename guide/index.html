@@ -1126,8 +1126,43 @@ PY</pre>
 
 <span class="s">$</span> python scripts/deploy_soc_schema.py
 <span class="s">$</span> python scripts/quickstart_check.py
-<span class="s">$</span> python run_web.py
+
+<span class="c"># the command to use from here on — see the note below</span>
+<span class="s">$</span> SOC_BACKEND=snowflake python run_web.py --no-reload
 <span class="o">[soc] store backend: snowflake (SOC_HACKATHON_DB.SEA_OF_COLOURS)</span></pre>
+          </div>
+          <div class="gd-note">
+            <b class="tag">Start it this way, in your own terminal</b>
+            <p>
+              <code>SOC_BACKEND=snowflake</code> turns Snowflake from a
+              preference into a requirement. Auto-detect is deliberately
+              forgiving &mdash; if anything about the Snowpark path is
+              unusable it hands you a <code>memory</code> server instead,
+              and you discover that an hour later when the season is gone
+              and the LLM seats never showed up. Explicit is strict: the
+              server refuses to start and tells you what to fix.
+            </p>
+            <p>
+              <code>--no-reload</code> because auto-reload is <b>on by
+              default</b>, and a file save restarts the process &mdash;
+              dropping any agent turn in flight and resetting the
+              per-process submit lock. Mid-night, that reads to players as
+              the game hanging.
+            </p>
+            <p>
+              Run it in a terminal you own and leave it running. A server
+              started by an AI coding agent is a child of that agent's
+              shell and dies with it, which looks exactly like a crash.
+            </p>
+          </div>
+          <div class="gd-note gd-note--warn">
+            <b class="tag">Seasons disappeared from the picker?</b>
+            <p>
+              The Snowpark auth token expires after a few hours. Today the
+              failure is silent &mdash; you get fewer games rather than an
+              error, and ASK V12 greys out as if you were on a memory
+              backend. Restart the server.
+            </p>
           </div>
           <div class="gd-note gd-note--warn">
             <b class="tag">If auth fails later</b>
@@ -1565,9 +1600,10 @@ PY</pre>
               <td>Edited a file, nothing changed</td>
               <td>
                 Static assets are served no-cache from disk, so JS/CSS need only
-                a hard refresh (Cmd-Shift-R). Python changes need the server
-                restarting unless you launched with <code>run_web.py</code>,
-                which reloads.
+                a hard refresh (Cmd-Shift-R). Python changes need a server
+                restart &mdash; <code>run_web.py</code> auto-reloads for you
+                unless you started it with <code>--no-reload</code>, which is
+                what the Snowflake command above recommends.
               </td>
             </tr>
             <tr>

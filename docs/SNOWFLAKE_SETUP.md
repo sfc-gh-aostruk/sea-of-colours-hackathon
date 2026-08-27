@@ -170,11 +170,18 @@ pip install -r requirements-snowflake.txt
    ```bash
    python scripts/quickstart_check.py
    ```
-7. Start the server as usual — with key-pair auth in `sf_config` it now
-   auto-detects Snowflake, so you don't need to set anything:
+7. Start the server. With key-pair auth in `sf_config` plain
+   `python run_web.py` will auto-detect Snowflake, but for a season you
+   intend to keep, be explicit and turn reload off:
    ```bash
-   python run_web.py
+   SOC_BACKEND=snowflake python run_web.py --no-reload
    ```
+   Explicit is **strict**: the server exits with the reason instead of
+   quietly handing you a `memory` store when something in the Snowpark
+   path is broken — which otherwise surfaces an hour later as a missing
+   season and absent LLM seats. `--no-reload` stops a file save from
+   restarting the process and dropping an agent turn mid-night. Run it
+   in your own terminal, not through an AI coding agent, and leave it up.
    Storage is a **per-game** choice from v1.14: the New Game launcher
    offers Snowflake or Memory per season, so you can still take a fast
    throwaway game against a heuristic without a warehouse round-trip per
