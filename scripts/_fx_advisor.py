@@ -24,8 +24,14 @@ STUB = {
     "player": "p1",
     "day": 1,
     "elapsed_ms": 4210,
+    # A five-step walk, then other work: exactly the shape the composer
+    # used to render as five near-identical coordinate rows.
     "moves": [
         {"a": "step", "unit": "harvester_p1", "to": [12, 8]},
+        {"a": "step", "unit": "harvester_p1", "to": [13, 8]},
+        {"a": "step", "unit": "harvester_p1", "to": [14, 9]},
+        {"a": "step", "unit": "harvester_p1", "to": [15, 10]},
+        {"a": "step", "unit": "harvester_p1", "to": [15, 11]},
         {"a": "pickup", "unit": "harvester_p1"},
         {"a": "probe", "at": [7, 5]},
         {"a": "emp_launch", "at": [[9, 9], [10, 9]]},
@@ -179,9 +185,89 @@ def main() -> int:
                  .map((r) => r.textContent.trim().replace(/\\s+/g, ' '))"""
         )
         print("adopted queue rows:", len(adopted))
-        for r in adopted[:8]:
+        for r in adopted[:10]:
             print("   ", r[:90])
         pg.screenshot(path="/tmp/advisor_panel.png")
+
+        # Does the composer actually fit its rail, or is the last
+        # control being clipped off the edge?
+        fit = pg.evaluate(
+            """() => {
+              const host = document.getElementById('solo-move-queue');
+              const rows = [...host.querySelectorAll('.solo-queue-row')];
+              return {
+                host: Math.round(host.clientWidth),
+                panel: Math.round(
+                  (document.querySelector('.cc-drawer') || host).clientWidth),
+                rows: rows.map((r) => ({
+                  w: Math.round(r.clientWidth),
+                  scroll: Math.round(r.scrollWidth),
+                  over: r.scrollWidth - r.clientWidth,
+                })),
+                chain: (() => {
+                  const out = [];
+                  let el = host;
+                  while (el && el !== document.body) {
+                    out.push({
+                      sel: el.tagName.toLowerCase()
+                        + (el.id ? '#' + el.id : '')
+                        + (typeof el.className === 'string' && el.className
+                          ? '.' + el.className.trim().split(/\\s+/).join('.')
+                          : ''),
+                      client: Math.round(el.clientWidth),
+                      scroll: Math.round(el.scrollWidth),
+                      overflowX: getComputedStyle(el).overflowX,
+                    });
+                    el = el.parentElement;
+                  }
+                  return out;
+                })(),
+              };
+            }"""
+        )
+        print("fit:", json.dumps(fit))
+
+        # The composer itself: the five-step walk must read as one row.
+        q = pg.query_selector("#solo-move-queue")
+        if q:
+            q.screenshot(path="/tmp/queue_collapsed.png")
+            print("collapsed -> /tmp/queue_collapsed.png")
+        # v1.20 — the whole ORDERS panel, to prove the sticky TRANSMIT
+        # foot stays on screen with a queue long enough to scroll.
+        panel = pg.query_selector("#cc-panel-orders")
+        if panel:
+            pg.evaluate(
+                """() => { const p = document.getElementById('cc-panel-orders');
+                           if (p) p.scrollTop = 0; }"""
+            )
+            panel.screenshot(path="/tmp/orders_full.png")
+            print("panel     -> /tmp/orders_full.png")
+            print(
+                "toolbar visible:",
+                pg.evaluate(
+                    """() => { const t =
+                         document.getElementById('solo-queue-toolbar');
+                       return !!(t && !t.hidden && t.offsetParent); }"""
+                ),
+            )
+            print(
+                "transmit label:",
+                pg.evaluate(
+                    """() => (document.getElementById('solo-commit-night')
+                        ||{}).textContent.trim().replace(/\\s+/g,' ')"""
+                ),
+            )
+
+        twist = pg.query_selector(".solo-queue-twist")
+        if twist:
+            twist.click()
+            pg.wait_for_timeout(350)
+            q = pg.query_selector("#solo-move-queue")
+            if q:
+                q.screenshot(path="/tmp/queue_expanded.png")
+                print("expanded  -> /tmp/queue_expanded.png")
+        else:
+            print("!! no chain summary row rendered")
         br.close()
 
     print("\npage errors:", errors or "none")

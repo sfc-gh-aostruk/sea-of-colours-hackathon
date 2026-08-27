@@ -26,12 +26,28 @@
           <span class="prompt-cmd">sea_of_colours</span>
           <span class="dim cc-subhead">· command centre</span>
           <span class="prompt-caret">_</span>
+          <!-- v1.20 — the season has always had a name and the playing UI
+               never showed it; it lived only in the watcher's picker. -->
+          <span id="cc-season-name" class="cc-season-name" hidden></span>
+          <!-- v1.20 — where THIS game is stored. Backend is a per-game
+               choice since v1.14, so this reads the session, not the
+               process default: a memory game and a Snowflake season can
+               be open on the same server. It is the difference between
+               "LLM seats, agent memory and replays" and "fast, offline,
+               gone when the process stops", which was previously
+               invisible once you were past the launcher. -->
+          <span id="cc-backend-badge" class="cc-backend-badge" hidden
+                tabindex="0" role="note"></span>
         </div>
         <div class="cc-header-mid">
           <button id="new-game-btn" type="button" class="cli-btn cli-btn-primary">
             [ &gt; NEW GAME ]
           </button>
-          <label class="dim cc-newgame-cap-label" for="new-game-cap"
+          <!-- v1.20 — NIGHTS sets the length of the NEXT game, so it is
+               noise once one is running (and the New Game modal carries
+               its own copy). ``cc-newgame-cap`` is the hook app.js hides
+               on a live session. -->
+          <label class="dim cc-newgame-cap-label cc-newgame-cap" for="new-game-cap"
                  title="Season length in nights (1-60). v0.9.18 default: 7.">
             NIGHTS
           </label>
@@ -42,7 +58,7 @@
             max="60"
             step="1"
             value="7"
-            class="cc-newgame-cap-input"
+            class="cc-newgame-cap-input cc-newgame-cap"
             aria-label="Season length in nights"
           />
           <!-- v0.9.6 — N-seat launcher modal lives at body level
@@ -75,16 +91,25 @@
           <span id="phase-line" class="dim cc-status"># idle — start a session</span>
         </div>
         <div class="cc-header-right">
-          <label class="cli-check dim" for="toggle-gridlines">
-            <input
-              type="checkbox"
-              id="toggle-gridlines"
-              class="cli-check-input"
-              checked
-            />
-            <span class="cli-check-box" aria-hidden="true">[x]</span>
-            <span class="cli-check-caption dim">grid</span>
-          </label>
+          <!-- v1.20 — replay readout. The seed names the map (a replay
+               could never tell you which one you were looking at), and
+               the extraction figure is the season's headline: what share
+               of the map's RED value came off the ground by this night.
+               Populated by app.js; hidden outside replay/watch. -->
+          <div id="cc-extract-strip" class="cc-extract" hidden>
+            <span class="cc-extract-cell" id="cc-extract-seed-cell">
+              <span class="cc-extract-k dim">SEED</span>
+              <span class="cc-extract-v" id="cc-extract-seed">—</span>
+            </span>
+            <span class="cc-extract-cell">
+              <span class="cc-extract-k dim">RED ON MAP</span>
+              <span class="cc-extract-v" id="cc-extract-total">—</span>
+            </span>
+            <span class="cc-extract-cell cc-extract-cell--pct">
+              <span class="cc-extract-k dim">EXTRACTED</span>
+              <span class="cc-extract-v" id="cc-extract-pct">—</span>
+            </span>
+          </div>
         </div>
       </header>
 
@@ -227,8 +252,16 @@
               >
                 [DAY&nbsp;&raquo;]
               </button>
-              <span id="replay-day-badge" class="replay-day-badge"></span>
-              <span id="replay-slot" class="replay-slot dim"></span>
+              <!-- v1.20 — the clock. NOX nn over the hour it is inside,
+                   pinned to the right of the toolbar so it anchors the
+                   bar. Hours carry their in-world names where they have
+                   one (AURORA / VESPERA) and are bare H01..Hnn inside
+                   the night. Replaces the two small inline spans that
+                   used to trail the transport buttons. -->
+              <div class="cc-clock" id="cc-clock" aria-live="polite">
+                <span id="replay-day-badge" class="cc-clock-day"></span>
+                <span id="replay-slot" class="cc-clock-hour"></span>
+              </div>
             </div>
             <div class="cc-replay-scrub-wrap">
               <input
@@ -266,13 +299,15 @@
                    of the scrub and has a pip on the timeline). -->
               <button type="button" id="replay-results-btn" class="cli-btn cc-replay-view-btn cc-replay-results-btn" title="Open the end-of-season results" hidden>[ RESULTS ]</button>
             </div>
-            <div id="replay-caption" class="replay-caption dim"></div>
           </section>
-          <!-- One-line latest-action ticker. In LIVE mode it shows the
-               most recent engine caption; in REPLAY mode it shows the
-               cursor-frame's caption + D{n} H{nn} clock. -->
+          <!-- The one latest-action ticker. v1.20 — there used to be two
+               of these saying the same thing: this row and a plainer
+               #replay-caption above it. This one survives because it is
+               the richer of the pair (owner tag, seat colour, failure
+               state) and it works in both live and replay mode. Its
+               D{n} H{nn} clock went with the duplicate: the clock block
+               in the toolbar now owns the time. -->
           <div id="replay-now-playing" class="cc-now-playing" aria-live="polite">
-            <span class="cc-now-clock" id="replay-now-clock">D&mdash; H&mdash;</span>
             <span class="cc-now-caption" id="replay-now-caption"># idle &mdash; start NEW GAME</span>
           </div>
         </section>
@@ -655,7 +690,7 @@
                   class="cc-orders-roster"
                   aria-label="Asset roster — click a unit to compose an order"
                 ></div>
-                <div class="cc-queue-toolbar">
+                <div class="cc-queue-toolbar" id="solo-queue-toolbar">
                   <button
                     type="button"
                     id="solo-queue-clear"
@@ -825,7 +860,10 @@
                   class="cli-btn cli-btn-primary cc-transmit-btn"
                   id="solo-commit-night"
                 >
-                  [ &raquo; TRANSMIT / PRAXIS ]
+                  [ &raquo; TRANSMIT / PRAXIS<span
+                    id="solo-commit-slots"
+                    class="cc-transmit-slots"
+                  ></span> ]
                 </button>
                 <ol
                   id="solo-commit-progress"
@@ -1303,6 +1341,22 @@
                 />
                 <span id="replay-orbit-flash-secs-val" class="cc-range-row-val">2.0s</span>
               </div>
+            </div>
+            <div class="cc-gfx-block">
+              <p class="cc-block-head dim"># DISPLAY</p>
+              <!-- v1.20 — moved out of the header. It is a set-once
+                   preference, and it was the only control in
+                   .cc-header-right, which the replay readout now uses. -->
+              <label class="cli-check" for="toggle-gridlines">
+                <input
+                  type="checkbox"
+                  id="toggle-gridlines"
+                  class="cli-check-input"
+                  checked
+                />
+                <span class="cli-check-box" aria-hidden="true">[x]</span>
+                <span class="cli-check-caption dim">grid lines on the map</span>
+              </label>
             </div>
             <div class="cc-gfx-block">
               <p class="cc-block-head dim"># CRT</p>

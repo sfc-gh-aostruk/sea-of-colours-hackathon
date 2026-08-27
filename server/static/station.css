@@ -163,6 +163,22 @@ body.os-active .cc-map-viewport { overflow: auto !important; }
   white-space: nowrap;
 }
 
+/* v1.20 — who is flying this seat: H human / B bot / A agent. Printed on
+   the lower lobe of the hull, in the same knocked-out black as the seat
+   tag and deliberately quiet — it answers a question you only ask once
+   per game, so it must not compete with the vault readout above it. */
+.os-diamond-kind {
+  position: absolute;
+  top: 69%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font: bold 8px/1 "Courier New", monospace;
+  color: #000;
+  letter-spacing: 0.1em;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
 /* ── central catapult panel (bottom of left column) ─────────────── */
 
 .os-catapult {

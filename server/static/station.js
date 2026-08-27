@@ -907,11 +907,28 @@
     _osBindHover();
   }
 
+  // v1.20 — who is flying this seat: H human, B heuristic bot, A LLM
+  // agent. app.js owns the classification (it has the agent roster and
+  // its needs_llm flags) and publishes the result; a seat we know
+  // nothing about gets no badge rather than a wrong one.
+  function _osSeatKind(seat) {
+    const kinds = window.__SOC_SEAT_KIND__;
+    const k = kinds && typeof kinds === "object" ? kinds[seat] : null;
+    return k === "H" || k === "B" || k === "A" ? k : "";
+  }
+
+  const _OS_KIND_TITLE = {
+    H: "human — piloted from a browser",
+    B: "bot — heuristic, no LLM",
+    A: "agent — LLM",
+  };
+
   function _osBuildStation(seat, profiles) {
     const color  = _seatColor(seat);
     const rawTag = profiles?.[seat]?.tag || seat.toUpperCase();
     const tag    = rawTag.slice(0, 3).padEnd(3).toUpperCase();
     const side   = OS_LEFT_SEATS.includes(seat) ? "left" : "right";
+    const kind   = _osSeatKind(seat);
 
     const div = document.createElement("div");
     div.className = "os-station";
@@ -923,6 +940,10 @@
   <pre class="os-diamond" data-os-diamond="${seat}" style="color:${color}"></pre>
   <pre class="os-vault-pre" data-os-vault="${seat}"></pre>
   <span class="os-diamond-tag">${tag}</span>
+  ${kind
+    ? `<span class="os-diamond-kind" data-os-kind="${kind}"` +
+      ` title="${_OS_KIND_TITLE[kind]}">${kind}</span>`
+    : ""}
   <div class="os-blue-flash" data-os-blue-flash="${seat}"></div>
 </div>
 <div class="os-score" data-os-score="${seat}">—</div>

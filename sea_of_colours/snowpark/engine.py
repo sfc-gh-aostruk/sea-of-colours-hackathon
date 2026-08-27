@@ -1636,6 +1636,155 @@ def get_replay(
         "season_day_cap": int(
             getattr(sess, "season_day_cap", None) or 0
         ),
+        # v1.20 — the replay header reads the map's identity (seed) and
+        # the season's extraction curve. The seed was previously only
+        # available at game creation and in the season picker, so a
+        # replay could never tell you which map you were looking at.
+        "seed": sess.seed,
+        "extraction": compute_extraction(
+            sess,
+            list(range(
+                1,
+                int(getattr(sess, "season_day_cap", None) or 0) + 1,
+            )),
+        ),
+    }
+
+
+def compute_extraction(sess: GameSession, days: List[int]) -> Dict[str, Any]:
+    """How much of the map's RED value came off the ground, and by whom.
+
+    v1.20 — the denominator is a **genesis constant**, not a running
+    total: harvesting a RED cell turns it into synthetic GREEN(255) and
+    nothing regrows it (:meth:`GameSession._harvest_at`), so the map only
+    ever depletes. That lets us fix "the prize" at generation time from
+    the square ledger and measure every season against the same number.
+
+    Value is tier-weighted exactly as scoring is — ``purity ×
+    RED_QUALITY_MULTIPLIER[tier]`` (RULEBOOK §3.1) — so a pure-255 cell
+    is worth 765 and a trace-40 cell 30. This is deliberate and it is
+    why the value percentage runs far ahead of the cell percentage:
+    seats go for the good squares, so a season can lift 39% of the map's
+    value out of 14% of its RED cells.
+
+    Two numerators, because they answer different questions:
+
+    * ``harvested`` — lifted off the map. Irreversible; the cell is
+      spent whether or not the seat ever banks it.
+    * ``shipped``   — actually settled into score. The shortfall is red
+      that died with a harvester or is still sitting in a vault.
+    """
+    from sea_of_colours.generator import Tile
+    from sea_of_colours.game.session import RED_QUALITY_MULTIPLIER
+
+    def value_of(purity: Any, tier: Optional[str] = None) -> int:
+        p = max(0, min(255, int(purity or 0)))
+        t = tier or GameSession._tier_for_purity(p)
+        return int(round(p * RED_QUALITY_MULTIPLIER.get(t, 1.0)))
+
+    # ── denominator: the map as generated ────────────────────────────
+    map_value = 0
+    map_cells = 0
+    map_by_tier: Dict[str, int] = {}
+    for entry in (sess.ledger.entries or {}).values():
+        try:
+            if int(entry["tile_at_generation"]) != int(Tile.RED):
+                continue
+            p = int(entry["purity_at_generation"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        # A RED tile can generate at purity 0 (tier "empty"). It is
+        # terrain, not prize — worth nothing to mine — so it stays out
+        # of both the value and the cell denominator. Counting it would
+        # put a floor under "% of cells mined" that no seat can clear.
+        if p <= 0:
+            continue
+        tier = GameSession._tier_for_purity(p)
+        map_cells += 1
+        map_value += value_of(p, tier)
+        map_by_tier[tier] = map_by_tier.get(tier, 0) + 1
+
+    def pct(part: int) -> float:
+        return round(100.0 * part / map_value, 1) if map_value else 0.0
+
+    # ── numerators, per seat ─────────────────────────────────────────
+    by_seat: Dict[str, Dict[str, Any]] = {}
+    harvested_by_day: Dict[str, List[int]] = {}
+    tot_harvested = tot_shipped = tot_cells = 0
+
+    for seat in sess.players:
+        h_value = h_cells = 0
+        per_day: Dict[int, int] = {}
+        for parcel in sess.harvest_log.get(seat, []) or []:
+            tile = parcel.get("tile_at_harvest")
+            if tile is None:
+                tile = parcel.get("origin_tile")
+            try:
+                if int(tile) != int(Tile.RED):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            purity = int(GameSession._parcel_purity(parcel) or 0)
+            if purity <= 0:
+                continue  # worthless ground — excluded from the map total too
+            v = value_of(purity)
+            h_value += v
+            h_cells += 1
+            d = int(parcel.get("harvested_on_planning_day", 0) or 0)
+            per_day[d] = per_day.get(d, 0) + v
+
+        s_value = 0
+        for parcel in sess.shipped_squares.get(seat, []) or []:
+            tile = parcel.get("tile_at_harvest")
+            if tile is None:
+                tile = parcel.get("origin_tile")
+            try:
+                if int(tile) != int(Tile.RED):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            eff = parcel.get("effective_purity")
+            if eff is None:
+                eff = GameSession._parcel_purity(parcel)
+            s_value += value_of(eff, parcel.get("score_tier"))
+
+        running = 0
+        series: List[int] = []
+        for d in days:
+            running += per_day.get(d, 0)
+            series.append(running)
+        harvested_by_day[seat] = series
+
+        by_seat[seat] = {
+            "harvested_value": h_value,
+            "shipped_value": s_value,
+            # Harvested but never banked: lost with a harvester, or
+            # still in the vault. The waffle shades this differently
+            # from banked value.
+            "unbanked_value": max(0, h_value - s_value),
+            "cells": h_cells,
+            "pct_harvested": pct(h_value),
+            "pct_shipped": pct(s_value),
+        }
+        tot_harvested += h_value
+        tot_shipped += s_value
+        tot_cells += h_cells
+
+    return {
+        "map_red_value": map_value,
+        "map_red_cells": map_cells,
+        "map_by_tier": map_by_tier,
+        "harvested_value": tot_harvested,
+        "shipped_value": tot_shipped,
+        "unmined_value": max(0, map_value - tot_harvested),
+        "cells_mined": tot_cells,
+        "pct_harvested": pct(tot_harvested),
+        "pct_shipped": pct(tot_shipped),
+        "pct_cells": (
+            round(100.0 * tot_cells / map_cells, 1) if map_cells else 0.0
+        ),
+        "by_seat": by_seat,
+        "harvested_by_day": harvested_by_day,
     }
 
 
@@ -1884,10 +2033,20 @@ def get_endgame_summary(store: SocStore, session_id: str) -> Dict[str, Any]:
         # parcel actually contributes (the same per-parcel term in
         # ``compute_player_score``); the parcel's ``score`` field is
         # stale (often 0) so we never read it.
+        # v1.20 — read ``shipped_day``, which is what OrbitResolver
+        # actually stamps at settlement. This asked for
+        # ``shipped_on_day``, a key nothing has ever written, so every
+        # parcel landed in day 0: the cumulative-shipped chart drew a
+        # flat zero line and every manifest row said "day 0". The test
+        # missed it by hand-building a parcel with the phantom key.
         shipped_per_day: Dict[int, int] = {}
         for parcel in sess.shipped_squares.get(seat, []) or []:
             value, eff, tier = _parcel_score_value(parcel)
-            ship_day = int(parcel.get("shipped_on_day", 0) or 0)
+            ship_day = int(
+                parcel.get("shipped_day")
+                or parcel.get("shipped_on_day")
+                or 0
+            )
             shipped_per_day[ship_day] = shipped_per_day.get(ship_day, 0) + value
             # Emit the FULL shipped parcel (paint, coords, purity, transit
             # charge, tier, lineage, …) so the results screen can render
@@ -1946,6 +2105,11 @@ def get_endgame_summary(store: SocStore, session_id: str) -> Dict[str, Any]:
         "red_by_day": red_by_day,
         "shipped_by_day": shipped_by_day,
         "manifest": manifest,
+        # v1.20 — extraction efficiency: what share of the map's RED
+        # value this season actually got off the ground, and how much of
+        # that was banked. See ``compute_extraction``.
+        "seed": sess.seed,
+        "extraction": compute_extraction(sess, days),
     }
 
 
@@ -2104,6 +2268,11 @@ def get_session_status(
         }
     return {
         "session_id": session_id,
+        # The season has a name and until v1.20 the playing UI never had
+        # it — the header could only say "day 4", and the name lived
+        # solely in the watcher's season picker.
+        "season_name": sess.season_name,
+        "season_day_cap": int(sess.season_day_cap),
         "day": sess.day,
         "phase": sess.phase.value,
         # True during the post-final-night settlement orbit so the UI can

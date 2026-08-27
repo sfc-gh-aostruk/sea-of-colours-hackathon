@@ -1720,6 +1720,83 @@ body.cc-mode {
   font-size: 12px;
 }
 
+/* v1.20 — the season's nameplate. Sits on the prompt line because the
+ * season IS the thing you are looking at; bracketed and letterspaced so
+ * it reads as an identifier rather than another button. */
+.cc-season-name {
+  margin-left: 1ch;
+  padding: 1px 8px;
+  border: 1px solid var(--frame);
+  color: var(--green);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.cc-season-name[hidden] { display: none; }
+
+/* v1.20 — per-game storage badge. Cyan for Snowflake, green for memory:
+ * both are outside the R/G/B resource palette's job on the *board*, and
+ * here in the chrome they read as status rather than terrain. */
+.cc-backend-badge {
+  margin-left: 1ch;
+  padding: 1px 8px;
+  border: 1px solid currentColor;
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: help;
+}
+.cc-backend-badge[hidden] { display: none; }
+
+.cc-backend-badge--memory {
+  color: #00ff00;
+  background: rgba(0, 255, 0, 0.08);
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.22);
+}
+
+.cc-backend-badge--snowflake {
+  color: #82f4fb;
+  background: rgba(130, 244, 251, 0.09);
+  box-shadow: 0 0 8px rgba(130, 244, 251, 0.24);
+}
+
+/* v1.20 — replay extraction readout, right of the header. Tabular
+ * figures so the percentage doesn't jitter the row as you scrub. */
+.cc-extract {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+}
+.cc-extract[hidden] { display: none; }
+
+.cc-extract-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.7ch;
+  white-space: nowrap;
+}
+
+.cc-extract-k {
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.cc-extract-v {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-extract-cell--pct .cc-extract-v {
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .cc-header-mid {
   display: inline-flex;
   align-items: center;
@@ -3294,6 +3371,14 @@ body.cc-mode {
   padding: 8px 10px 10px;
   /* v0.9.11 — grow to fit the queue + roster; the panel scrolls. */
   min-height: 0;
+  /* v1.20 — a <fieldset> defaults to `min-width: min-content` and will
+   * not shrink below its widest child, so the composer measured ~62px
+   * wider than the rail that holds it. The ORDERS panel is
+   * `overflow-x: hidden`, so that surplus was not scrolled to — it was
+   * silently cut off, taking the last control on every row with it.
+   * This one line is most of why the orders menu felt unusable on a
+   * small laptop. */
+  min-width: 0;
 }
 
 .cc-queue-legend {
@@ -3326,6 +3411,12 @@ body.cc-mode {
   flex-wrap: wrap;
   gap: 5px;
   align-items: center;
+}
+
+/* An explicit `display` beats the UA sheet's `[hidden]` rule, so the
+ * empty-queue collapse needs this to actually hide. */
+.cc-queue-toolbar[hidden] {
+  display: none;
 }
 
 /* v0.9.5 — vertical-stack variant used by the ORBIT toolbar so the
@@ -4980,16 +5071,44 @@ body.cc-mode {
   text-align: right;
 }
 
+/* v1.20 — TRANSMIT has to be reachable without scrolling to the foot of
+ * a 21-slot queue. The ORDERS panel owns the scroll, so this row sticks
+ * to its lower edge and the composer runs underneath it. The gradient
+ * is so rows fade out beneath the button instead of being guillotined
+ * by a hard background edge. */
 .cc-orders-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  margin: 0 -8px -8px;
+  padding: 8px;
+  border-top: 1px solid var(--frame);
+  background: linear-gradient(
+    180deg,
+    rgba(13, 13, 18, 0) 0,
+    var(--panel-bg) 14px
+  );
 }
 
 .cc-transmit-btn {
   font-size: 13px;
   padding: 8px 10px;
   letter-spacing: 0.07em;
+}
+
+/* v1.20 — a section with nothing in it says so in its own divider and
+ * emits no body row, so it costs one dim line rather than three. */
+.cc-orders-divider--empty {
+  opacity: 0.55;
+}
+
+/* Slot count carried on the button so it survives the scroll. */
+.cc-transmit-slots {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
 }
 
 /* ── INTEL panel ─────────────────────────────────────────────────── */
@@ -5541,21 +5660,9 @@ body.cc-mode {
   accent-color: var(--green);
 }
 
-.cc-replay-bar .replay-caption {
-  font-size: 11px;
-  /* FIXED footprint: reserve exactly two lines and clamp overflow so a long /
-     multi-line caption can't grow the replay strip and shove the board +
-     flanking station panels around. Full text still lives in the now-playing
-     ticker + timeline log. */
-  line-height: 1.2;
-  height: 2.4em;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  white-space: normal;
-  word-break: break-word;
-}
+/* v1.20 — the #replay-caption rules that lived here went with the node.
+   It was the plainer of two tickers saying the same thing; the
+   now-playing row below is the one that survived. */
 
 /* v0.7.5 — single-line "now playing" ticker pinned below the replay
    controls. Always visible, VT323 face to match the timeline. In
@@ -5575,12 +5682,6 @@ body.cc-mode {
   border-top: 1px dashed rgba(120, 200, 140, 0.18);
   color: var(--green);
   text-shadow: 0 0 4px rgba(63, 185, 80, 0.30);
-}
-.cc-now-clock {
-  flex: 0 0 auto;
-  color: #f4eedb;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.92;
 }
 .cc-now-caption {
   flex: 1 1 auto;
@@ -5685,27 +5786,32 @@ button.cli-btn.cli-btn--live-pulse {
   background: #b6ffc0;
   box-shadow: 0 0 10px rgba(157, 255, 168, 0.95);
 }
-/* v1.2 — DAWN (☀ sunrise → DAY) and DUSK (☾ → NIGHT) slot markers.
-   Always present on the scrubber; click jumps + opens the orbit report. */
+/* AURORA / VESPERA slot markers. Always present on the scrubber; click
+   jumps + opens the orbit report.
+
+   v1.20 — these used to carry ☀ and ☾ glyphs, which read as emoji next
+   to everything else on this bar. The distinction is now the fill:
+   AURORA is a lit disc, VESPERA an unlit one. That says day-vs-night
+   without spending a hue, which matters here — red, green and blue all
+   mean a resource on this board and must not be borrowed for chrome. */
 .cc-replay-orbit-pip--dawn {
-  background: rgba(255, 211, 74, 0.95);
-  border-color: #ffd34a;
-  color: #2a1a00;
-  box-shadow: 0 0 7px rgba(255, 211, 74, 0.7);
+  background: var(--fg);
+  border-color: var(--fg);
+  box-shadow: 0 0 7px rgba(240, 246, 252, 0.5);
 }
 .cc-replay-orbit-pip--dawn:hover {
-  background: #ffe08a;
-  box-shadow: 0 0 11px rgba(255, 211, 74, 1);
+  background: #ffffff;
+  box-shadow: 0 0 11px rgba(240, 246, 252, 0.95);
 }
 .cc-replay-orbit-pip--dusk {
-  background: rgba(120, 150, 235, 0.92);
-  border-color: #8aa0f0;
-  color: #f0f3ff;
-  box-shadow: 0 0 7px rgba(120, 150, 235, 0.6);
+  background: var(--bg);
+  border-color: var(--dim);
+  box-shadow: 0 0 6px rgba(168, 177, 189, 0.26);
 }
 .cc-replay-orbit-pip--dusk:hover {
-  background: #9fb2f4;
-  box-shadow: 0 0 11px rgba(120, 150, 235, 0.95);
+  background: #1b1b24;
+  border-color: var(--fg);
+  box-shadow: 0 0 10px rgba(240, 246, 252, 0.5);
 }
 
 /* v1.0 — season-results pip, pinned at the far end of a complete
@@ -5747,21 +5853,44 @@ button.cli-btn.cli-btn--live-pulse {
   background: rgba(120, 196, 255, 0.14);
 }
 
-.replay-day-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  margin-left: 4px;
-  border: 1px solid rgba(157, 255, 168, 0.6);
-  border-radius: 3px;
-  font-size: 10px;
-  letter-spacing: 0.5px;
-  color: var(--green);
-  background: rgba(0, 28, 0, 0.45);
-  text-transform: uppercase;
+/* v1.20 — the bar's clock, pinned right of the transport buttons: NOX
+ * over the hour it is inside. The two 10px inline spans this replaces
+ * could not be found at a glance, which is the one job a clock has.
+ * Sized to be legible across a desk without becoming a headline. */
+.cc-clock {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding-left: 12px;
+  line-height: 1;
 }
 
-.replay-day-badge[hidden] {
-  display: none;
+.cc-clock-day {
+  font-size: 21px;
+  letter-spacing: 0.12em;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 8px rgba(240, 246, 252, 0.22);
+}
+
+.cc-clock-day[hidden] { display: none; }
+
+/* Season length. Quiet, because it never changes mid-game — it is
+ * context for the NOX beside it, not a number you read each turn. */
+.cc-clock-of {
+  margin-left: 2px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+.cc-clock-hour {
+  margin-top: 3px;
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--green);
 }
 
 /* ── Agent button + log line (RED_HARVEST / AI agents) ─────────── */
@@ -6105,17 +6234,31 @@ button.cli-btn.cli-btn--live-pulse {
 /* ── Queue rows (override the older crowded look) ────────────────── */
 
 .cc-move-queue .solo-queue-row {
-  /* v0.9.5 — 6 cells: drag handle, num, label, xWrap, yWrap,
-   * controls. The drag handle gives the row a visible "grab here"
-   * affordance and lets the user drop a row anywhere on the row
-   * without clicking the inputs first. */
-  grid-template-columns: 2ch 2.4ch minmax(8ch, 1fr) auto auto auto;
-  gap: 6px;
+  /* Drag handle, num, label, xWrap, yWrap, controls. The drag handle
+   * gives the row a visible "grab here" affordance and lets the user
+   * drop a row anywhere on it without clicking the inputs first.
+   *
+   * v1.20 — was a fixed six-column grid. A row carrying two coordinate
+   * inputs AND three buttons needs about 42ch; this rail is about 34ch,
+   * so those columns ran straight off the edge into an
+   * `overflow-x: hidden` ancestor and the [ x ] button became
+   * unclickable. Flex-wrap lets the controls drop to a second line when
+   * they don't fit and sit inline when they do, so the composer degrades
+   * instead of truncating. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
   padding: 4px 6px;
   background: rgba(63, 185, 80, 0.04);
   border-color: rgba(63, 185, 80, 0.22);
   font-size: 12px;
   cursor: grab;
+}
+
+/* Push the controls to the right edge of whichever line they land on. */
+.cc-move-queue .solo-queue-controls {
+  margin-left: auto;
 }
 
 .cc-move-queue .solo-queue-row:hover {
@@ -6183,6 +6326,45 @@ button.cli-btn.cli-btn--live-pulse {
   color: rgba(190, 205, 220, 0.6);
 }
 
+/* v1.20 — collapsed walk chain.
+ *
+ * Consecutive same-unit steps are ONE intent the seat had once ("go
+ * there"), but the composer used to spell them out as five all-but
+ * identical rows, each with its own pair of coordinate inputs and three
+ * buttons. That was the single biggest source of noise on this panel
+ * and the first thing to go unreadable on a small laptop. The chain now
+ * states itself once — destination, slot span, step count — and [+]
+ * opens the individual steps when a coordinate actually needs editing.
+ * Presentation only: the queue underneath is untouched. */
+.cc-move-queue .solo-queue-row--chain {
+  cursor: default;
+  background: rgba(63, 185, 80, 0.09);
+  border-color: rgba(63, 185, 80, 0.38);
+}
+
+.cc-move-queue .solo-queue-row--chain:hover {
+  background: rgba(63, 185, 80, 0.14);
+}
+
+.solo-queue-twist {
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.solo-queue-chain-count {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Steps of an opened chain, ruled off under their summary so the
+ * grouping survives the fact that they are still full-width rows. */
+.cc-move-queue .solo-queue-row--chain-step {
+  margin-left: 12px;
+  border-left: 2px solid rgba(63, 185, 80, 0.35);
+  background: rgba(0, 0, 0, 0.24);
+}
+
 /* v0.9.5 — the toggle that flips the queue between "queued only"
  * and "all 21 slots" modes. Active state stays subtle (just an
  * inset bar) because the renderer change is the real signal. */
@@ -6224,16 +6406,55 @@ button.cli-btn.cli-btn--live-pulse {
   gap: 4px;
 }
 
+/* v1.20 — tightened from `1px 8px`. The composer lives in a ~34ch rail
+ * and the row was ~40ch wide, so the last control was clipped off the
+ * edge on a small laptop. Horizontal padding is the cheapest ch to
+ * reclaim; the hit area is still comfortable, and the touch rules in
+ * the max-width block below re-inflate it where it matters. */
 .cc-move-queue .solo-queue-mini {
-  padding: 1px 8px;
+  padding: 1px 4px;
   font-size: 11px;
   min-width: 4.2ch;
   white-space: nowrap;
 }
 
-/* Group label + xy on one flexible cell so they share a row neatly. */
+/* v1.20 — coordinates on this board are two digits, so 6ch of input was
+ * mostly air, twice per row. The spinner buttons go too: they cost more
+ * width than the digits do, and the arrow keys still step the value. */
+.cc-move-queue .solo-queue-xy .solo-num-input {
+  width: 4.4ch;
+  padding: 1px 3px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.cc-move-queue .solo-queue-xy .solo-num-input::-webkit-outer-spin-button,
+.cc-move-queue .solo-queue-xy .solo-num-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* v1.20 — a long label (an EMP salvo lists its extra cells) used to
+ * spill out of its grid cell and print over the coordinate inputs.
+ * Clip it instead; the full text is on the row's title. */
+/* The label is what the row is FOR, so it is the last thing allowed to
+ * give: 16ch keeps "pickup · H · p1" whole and forces the controls to
+ * wrap to a second line instead. Beyond that it ellipsises rather than
+ * printing over the coordinate inputs (an EMP salvo lists its extra
+ * cells); the full text is on the row's title. */
 .cc-move-queue .solo-queue-row > .solo-queue-label {
+  flex: 1 1 auto;
+  min-width: 16ch;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The chain summary is a sentence, not a slot label — let it wrap
+ * rather than lose the destination, which is its whole point. */
+.cc-move-queue .solo-queue-row--chain > .solo-queue-label {
+  white-space: normal;
+  overflow: visible;
 }
 
 /* Narrow viewports: stack tab strip on top, drawer below the map */
@@ -6322,6 +6543,14 @@ button.cli-btn.cli-btn--live-pulse {
   }
   .cc-drawer {
     padding-bottom: 0;
+  }
+  /* v1.20 — the phone layout already pins TRANSMIT in the fixed bottom
+   * action bar, so the sticky desktop foot would be a second copy of
+   * the same button a few pixels above it. */
+  .cc-orders-foot {
+    position: static;
+    border-top: 0;
+    background: none;
   }
   .cc-tab {
     grid-template-rows: auto;
@@ -6892,6 +7121,12 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
   flex-wrap: wrap;
   min-width: 0;
 }
+
+/* v1.20 — the markup ships this `hidden` and only watcher mode clears
+ * it, but a bare `[hidden]` is a UA rule and loses to the class above,
+ * so the season picker sat in the header of every live game it had no
+ * business being in. Same trap as the advisor timer further down. */
+.cc-watch-picker[hidden] { display: none; }
 
 .cc-watch-picker-label {
   font-size: 0.85em;
@@ -8030,6 +8265,88 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
 .eg-line { filter: none; }
 @media (max-width: 680px) {
   .eg-charts-2up { grid-template-columns: 1fr; }
+}
+
+/* v1.20 — extraction efficiency. Figures left, waffle right; the waffle
+ * is a fixed 10x10 so "one square = 1%" is literally true and countable
+ * rather than something the legend has to assert. */
+.eg-extract {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 20px;
+  align-items: start;
+}
+.eg-extract-figures { min-width: 0; }
+
+.eg-extract-big {
+  display: flex;
+  align-items: baseline;
+  gap: 1ch;
+  margin-bottom: 8px;
+}
+.eg-extract-pct {
+  color: var(--green);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.eg-extract-cap {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.eg-extract-note {
+  margin: 10px 0 0;
+  max-width: 46ch;
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+.eg-extract-note em { font-style: normal; color: var(--fg); }
+
+.eg-waffle {
+  display: grid;
+  grid-template-columns: repeat(10, 13px);
+  grid-auto-rows: 13px;
+  gap: 2px;
+}
+.eg-waffle-cell {
+  width: 13px;
+  height: 13px;
+  border: 1px solid currentColor;
+}
+/* Banked value reads solid; mined-but-never-shipped keeps the seat's
+ * colour as an outline only, so the shortfall is visible at a glance
+ * without inventing a second hue per seat. */
+.eg-waffle-cell--unbanked { background: transparent; }
+.eg-waffle-cell--untouched {
+  color: rgba(255, 255, 255, 0.14);
+  background: transparent;
+}
+
+.eg-waffle-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 10px;
+  font-size: 10.5px;
+}
+.eg-waffle-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7ch;
+  white-space: nowrap;
+}
+.eg-waffle-swatch {
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+  background: transparent;
+}
+.eg-waffle-swatch--untouched { border-color: rgba(255, 255, 255, 0.22); }
+
+@media (max-width: 680px) {
+  .eg-extract { grid-template-columns: 1fr; }
 }
 
 /* The modal body owns the scroll. Direct children must never be

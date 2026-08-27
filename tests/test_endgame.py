@@ -187,10 +187,13 @@ def test_endgame_summary_shape_for_completed_season() -> None:
         {"tile_at_harvest": int(Tile.RED), "harvested_on_planning_day": 1},
     ]
     # p1 shipped a pure parcel; p2 is left holding a green liability.
+    # ``shipped_day`` is the key OrbitResolver stamps at settlement.
+    # This fixture used to say ``shipped_on_day``, which nothing writes,
+    # so the test passed while every real season charted a flat zero.
     sess.shipped_squares["p1"] = [{
         "tile_at_harvest": int(Tile.RED), "purity_at_harvest": 255,
         "effective_purity": 250, "score_tier": "pure", "score": 750,
-        "shipped_on_day": 2,
+        "shipped_day": 2,
     }]
     sess.cumulative_shipped_score["p1"] = 750.0
     sess.hoard_squares["p2"] = [
@@ -219,13 +222,160 @@ def test_endgame_summary_shape_for_completed_season() -> None:
     assert p1_series == sorted(p1_series)
     assert p1_series[-1] == 2  # two red parcels total for p1
 
-    # Manifest carries the shipped parcel.
-    assert any(r["value"] == 750 and r["owner"] == "p1" for r in summary["manifest"])
+    # Manifest carries the shipped parcel, stamped with the day it
+    # actually shipped rather than a phantom 0.
+    assert any(
+        r["value"] == 750 and r["owner"] == "p1" and r["day"] == 2
+        for r in summary["manifest"]
+    )
+
+    # The cumulative shipped-score series must bank the parcel on the
+    # night it shipped and carry it forward — a flat zero line here is
+    # the regression this pins.
+    assert summary["shipped_by_day"]["p1"] == [0, 750, 750]
 
     # p2's green is a standing -100 liability.
     p2 = next(p for p in players if p["seat"] == "p2")
     assert p2["green_held"] == 1
     assert p2["breakdown"]["green_penalty"] == 100
+
+
+# ── extraction efficiency (v1.20) ────────────────────────────────────
+def _genesis_red(sess: GameSession) -> tuple[int, int]:
+    """``(value, cells)`` of RED as generated, computed independently.
+
+    Deliberately re-derived here rather than imported, so the test fails
+    if ``compute_extraction`` ever quietly changes what it counts.
+    """
+    from sea_of_colours.game.session import RED_QUALITY_MULTIPLIER
+
+    value = cells = 0
+    for entry in sess.ledger.entries.values():
+        if int(entry["tile_at_generation"]) != int(Tile.RED):
+            continue
+        p = int(entry["purity_at_generation"])
+        if p <= 0:
+            continue  # RED terrain at purity 0 is not a prize
+        tier = GameSession._tier_for_purity(p)
+        value += int(round(p * RED_QUALITY_MULTIPLIER[tier]))
+        cells += 1
+    return value, cells
+
+
+def test_extraction_denominator_is_genesis_not_remaining() -> None:
+    """The map's RED value is fixed at generation.
+
+    Harvesting turns RED into synthetic GREEN, so a denominator read off
+    the *live* grid would shrink as the season went on and the
+    percentage could never reach 100. Pin it to the ledger.
+    """
+    sess = GameSession.new(30, 20, seed=99, players=["p1", "p2"], season_day_cap=3)
+    expected_value, expected_cells = _genesis_red(sess)
+
+    before = soc_engine.compute_extraction(sess, [1, 2, 3])
+    assert before["map_red_value"] == expected_value
+    assert before["map_red_cells"] == expected_cells
+    assert before["pct_harvested"] == 0.0
+    assert before["unmined_value"] == expected_value
+
+    # Burn a RED cell off the board the way the engine does.
+    red_xy = next(
+        (x, y)
+        for y in range(sess.height)
+        for x in range(sess.width)
+        if sess.grid[y][x].tile == Tile.RED
+    )
+    from sea_of_colours.generator import Cell
+
+    sess.grid[red_xy[1]][red_xy[0]] = Cell(Tile.GREEN, 255)
+
+    after = soc_engine.compute_extraction(sess, [1, 2, 3])
+    assert after["map_red_value"] == expected_value, (
+        "denominator must not move when the live grid loses a RED cell"
+    )
+
+
+def test_extraction_splits_harvested_from_banked() -> None:
+    """Harvested is what left the map; shipped is what scored.
+
+    The gap is red that died with a harvester or is still in a vault,
+    and the waffle renders the two differently, so they must not be
+    collapsed into one number.
+    """
+    sess = GameSession.new(30, 20, seed=99, players=["p1", "p2"], season_day_cap=3)
+    map_value, _ = _genesis_red(sess)
+
+    # p1 lifts a pure-255 (765) on night 1 and a vein-100 (100) on night
+    # 2, but only ever ships the pure one.
+    sess.harvest_log["p1"] = [
+        {"tile_at_harvest": int(Tile.RED), "purity_at_harvest": 255,
+         "harvested_on_planning_day": 1},
+        {"tile_at_harvest": int(Tile.RED), "purity_at_harvest": 100,
+         "harvested_on_planning_day": 2},
+        # Non-RED harvests must not touch these numbers at all.
+        {"tile_at_harvest": int(Tile.GREEN), "purity_at_harvest": 255,
+         "harvested_on_planning_day": 2},
+        {"tile_at_harvest": int(Tile.BLUE), "purity_at_harvest": 200,
+         "harvested_on_planning_day": 2},
+    ]
+    sess.shipped_squares["p1"] = [{
+        "tile_at_harvest": int(Tile.RED), "purity_at_harvest": 255,
+        "effective_purity": 255, "score_tier": "pure", "shipped_day": 2,
+    }]
+
+    x = soc_engine.compute_extraction(sess, [1, 2, 3])
+    p1 = x["by_seat"]["p1"]
+
+    assert p1["harvested_value"] == 765 + 100
+    assert p1["shipped_value"] == 765
+    assert p1["unbanked_value"] == 100
+    assert p1["cells"] == 2, "green + blue harvests are not RED cells"
+
+    # Cumulative, and banked on the night it was lifted.
+    assert x["harvested_by_day"]["p1"] == [765, 865, 865]
+    assert x["harvested_by_day"]["p2"] == [0, 0, 0]
+
+    # Percentages are of the map's genesis value, tier-weighted.
+    assert x["pct_harvested"] == round(100.0 * 865 / map_value, 1)
+    assert x["pct_shipped"] == round(100.0 * 765 / map_value, 1)
+    assert x["harvested_value"] == 865 and x["shipped_value"] == 765
+
+
+def test_extraction_value_and_cell_shares_differ() -> None:
+    """A tier-weighted share is not a share of the ground.
+
+    Seats mine the good squares, so value% runs well ahead of cell% —
+    the waffle legend has to say "value", and this pins that the two
+    numbers really are computed differently.
+    """
+    sess = GameSession.new(40, 28, seed=1695867309, players=["p1", "p2"],
+                           season_day_cap=3)
+    # One pure cell is a large slice of value and a single cell.
+    sess.harvest_log["p1"] = [
+        {"tile_at_harvest": int(Tile.RED), "purity_at_harvest": 255,
+         "harvested_on_planning_day": 1},
+    ]
+    x = soc_engine.compute_extraction(sess, [1, 2, 3])
+    assert x["cells_mined"] == 1
+    assert x["pct_harvested"] > x["pct_cells"]
+
+
+def test_summary_and_replay_carry_seed_and_extraction() -> None:
+    sess = GameSession.new(30, 20, seed=4242, players=["p1", "p2"],
+                           season_day_cap=2)
+    store = InMemorySocStore()
+    _persist(store, sess)
+
+    summary = soc_engine.get_endgame_summary(store, sess.session_id)
+    assert summary["seed"] == 4242
+    assert summary["extraction"]["map_red_value"] > 0
+
+    replay = soc_engine.get_replay(store, sess.session_id)
+    assert replay["seed"] == 4242
+    assert (
+        replay["extraction"]["map_red_value"]
+        == summary["extraction"]["map_red_value"]
+    ), "replay header and report card must quote the same denominator"
 
 
 # ── HTTP route ───────────────────────────────────────────────────────

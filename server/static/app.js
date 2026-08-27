@@ -107,7 +107,6 @@
   const replayPrev = document.getElementById("replay-prev");
   const replayNext = document.getElementById("replay-next");
   const replayPlay = document.getElementById("replay-play");
-  const replayCaptionEl = document.getElementById("replay-caption");
   const replaySlotEl = document.getElementById("replay-slot");
   const replayScrub = document.getElementById("replay-scrub");
   const replayDayBadge = document.getElementById("replay-day-badge");
@@ -139,8 +138,9 @@
   // last caption). Always visible regardless of which side panel is
   // active.
   const replayStripEl = document.getElementById("replay-strip");
-  const replayNowClockEl = document.getElementById("replay-now-clock");
   const replayNowCaptionEl = document.getElementById("replay-now-caption");
+  /** v1.20 — season length, from /status. Feeds the clock's NOX nn/NN. */
+  let liveSeasonDayCap = 0;
   // v0.7.5 — scoreboard inside the LOG panel (was REPLAY).
   const replayScoreboardEl = document.getElementById("replay-scoreboard");
   // v0.7.5 — AGENT panel (was LOG). Per-seat sub-tabs + filtered
@@ -495,6 +495,14 @@
    *  +red-fire-sale / -green-penalty delta lines in the closing RESOLVE beat.
    *  @type {Record<string, {shipped:number,green_penalty:number,vault_red_loss:number,final:number}>} */
   let settlementBySeat = {};
+  /** v1.20 — the season's extraction figures from /replay: the map's
+   *  genesis RED value (a constant — harvesting turns RED into GREEN and
+   *  nothing regrows) plus per-seat cumulative value lifted per night.
+   *  @type {null | {map_red_value:number, map_red_cells:number,
+   *    harvested_by_day:Record<string, number[]>, by_seat:Object}} */
+  let replayExtraction = null;
+  /** v1.20 — the map's seed, so a replay can say which map it is. */
+  let replaySeed = null;
   /** v1.x — authoritative POST-settlement hoard snapshot per seat
    *  ({seat: {count, sites:[...]}}). Used by ``reconstructVaultAtTick`` at
    *  the terminal RESOLVE tick so the vault reflects the settled state
@@ -603,6 +611,12 @@
   let prefetchPlanKey = "";
   /** @type {Array<{ a: string; x?: number; y?: number }>} ordered queue of moves */
   let soloQueue = [];
+  /** v1.20 — walk-chain summaries the seat has opened, keyed by the
+   *  chain's first slot index. Those indices shift the moment the queue
+   *  changes length, so the set is dropped when it does rather than
+   *  quietly expanding some other chain. */
+  const expandedChains = new Set();
+  let expandedChainsQueueLen = -1;
   /** v0.9.15 — set true once the human has been warned (this submit
    *  attempt) that a queued harvester will be stranded + destroyed at
    *  dawn. The first TRANSMIT click warns and bails; the second submits
@@ -681,6 +695,32 @@
    *  discovery-burst timer clears the id and repaints, so the smear appears
    *  WITH the burst, not a beat before the probe. Cleared on scrub/jump. */
   let _redsignPendingReveal = new Set();
+  /** v1.20 — the cutoffs describe WHICH FRAME the board is showing, so
+   *  every paint path owns them. They used to be set only on the hourly
+   *  tick; the DAWN/DUSK/RESOLVE slot branches return before that line,
+   *  so those frames inherited the previous value — `Infinity` on a
+   *  fresh load. A beacon found on night 5 therefore painted on the
+   *  opening VESPERA frame, vanished at the first hour tick, and
+   *  "arrived" again at its discovery beat. Same three beats the live
+   *  cinematic showed, because the live poll parks them at Infinity too.
+   *
+   *    DUSK    night N is only opening — hour 0, nothing found in N yet
+   *    DAWN    night N resolved — every find that night is public
+   *    RESOLVE terminal settlement — the season's finds all stand
+   */
+  function _setRedsignCutoff(day, hour) {
+    _redsignDayCutoff = Number(day) || 0;
+    _redsignHourCutoff = hour;
+  }
+  /** Board is showing the LIVE state: the player sees every beacon
+   *  discovered so far, so lift the replay cursor's cutoffs. Must run
+   *  ONLY when we actually paint live — while the cinematic holds the
+   *  board it owns the cutoffs, and a status poll resetting them mid-
+   *  animation is what leaked the not-yet-discovered seam. */
+  function _redsignCutoffLive() {
+    _redsignDayCutoff = Infinity;
+    _redsignHourCutoff = Infinity;
+  }
   function _redsignVisibleRegions() {
     const cd = _redsignDayCutoff;
     const ch = _redsignHourCutoff;
@@ -3290,15 +3330,11 @@
     host.appendChild(orbitRow);
 
     // ── ON SURFACE row ────────────────────────────────────────────
-    appendOrdersDivider(host, "on surface");
-    const surfRow = document.createElement("div");
-    surfRow.className = "cc-orders-row";
-    if (surfaceHarv.length === 0 && surfaceProbes.length === 0) {
-      const empty = document.createElement("span");
-      empty.className = "dim cc-orders-row-empty";
-      empty.textContent = "// nothing deployed yet";
-      surfRow.appendChild(empty);
-    } else {
+    const surfEmpty = surfaceHarv.length === 0 && surfaceProbes.length === 0;
+    appendOrdersDivider(host, "on surface", surfEmpty ? "nothing deployed" : "");
+    if (!surfEmpty) {
+      const surfRow = document.createElement("div");
+      surfRow.className = "cc-orders-row";
       for (const row of surfaceHarv) {
         surfRow.appendChild(
           buildOrdersHarvesterChip(row, "on_surface"),
@@ -3309,8 +3345,8 @@
           buildVaultStyleChip(row, "on_surface"),
         );
       }
+      host.appendChild(surfRow);
     }
-    host.appendChild(surfRow);
 
     // ── DESTROYED / EXPIRED row ───────────────────────────────────
     // v0.9.18 — probes that ran out their lifetime (reason
@@ -3338,22 +3374,23 @@
     // the chip row sits the WAIT button so the hour-scheduling
     // utility stays one click away. The bay uses the same divider
     // chrome as IN ORBIT / ON SURFACE.
-    appendOrdersDivider(host, "weapons bay · available");
-    const wepBody = document.createElement("div");
-    wepBody.className = "cc-orders-row cc-orders-row--weapons";
-
     const ws = (lastOrbitView && lastOrbitView.weapon_stock) || {};
     const empStock = Math.max(0, Number(ws.emp || 0));
     const mineStock = Math.max(0, Number(ws.mine || 0));
     const chaffStock = Math.max(0, Number(ws.chaff || 0));
     const totalWeaponStock = empStock + mineStock + chaffStock;
+    appendOrdersDivider(
+      host,
+      "weapons bay",
+      totalWeaponStock === 0 ? "build in ORBIT" : "",
+    );
+    const wepBody = document.createElement("div");
+    wepBody.className = "cc-orders-row cc-orders-row--weapons";
+
     if (totalWeaponStock === 0) {
-      const nudge = document.createElement("span");
-      nudge.className = "dim cc-orders-row-empty";
-      nudge.textContent =
-        "// bay empty · build EMP / MINE / CHAFF in the ORBIT phase";
-      wepBody.appendChild(nudge);
-      // WAIT button — consume one hour slot without acting.
+      // WAIT still belongs here: an empty bay is the common case and
+      // padding the queue to hit a specific hour must stay one click
+      // away, so only the nudge copy folds into the divider.
       const waitBtnEmpty = document.createElement("button");
       waitBtnEmpty.type = "button";
       waitBtnEmpty.className =
@@ -3506,15 +3543,23 @@
    * v0.9.5 — section divider mirroring the VAULT panel's
    * "— — — IN ORBIT — — —" chrome. Centralised so all ORDERS
    * rows render with identical spacing / typography.
+   * v1.20 — an empty section folds its placeholder line into the
+   * divider itself. On a laptop the roster's three sections were
+   * spending six lines to say "nothing here" while the queue below
+   * them scrolled off-panel.
    * @param {HTMLElement} host
    * @param {string} label
+   * @param {string} [emptyNote] rendered inline when the section is bare
    */
-  function appendOrdersDivider(host, label) {
+  function appendOrdersDivider(host, label, emptyNote) {
     const div = document.createElement("div");
     div.className = "cc-assets-divider cc-orders-divider";
+    if (emptyNote) div.classList.add("cc-orders-divider--empty");
     div.setAttribute("role", "separator");
     const inner = document.createElement("span");
-    inner.textContent = `— — — ${label} — — —`;
+    inner.textContent = emptyNote
+      ? `— — ${label} · ${emptyNote} — —`
+      : `— — — ${label} — — —`;
     div.appendChild(inner);
     host.appendChild(div);
   }
@@ -3945,6 +3990,14 @@
     if (ccTabOrdersMeta) {
       ccTabOrdersMeta.textContent = `${String(n)}/${String(MAX_MOVES)}`;
     }
+    // v1.20 — the queue's own X/21 badge sits in the fieldset legend and
+    // scrolls out of sight behind a long queue. The TRANSMIT row is
+    // sticky, so carrying the count there keeps it in view without
+    // standing up a second counter somewhere else on the panel.
+    const slotsEl = document.getElementById("solo-commit-slots");
+    if (slotsEl) {
+      slotsEl.textContent = n ? ` · ${String(n)}/${String(MAX_MOVES)}` : "";
+    }
     if (mobileOrdersCountEl) {
       mobileOrdersCountEl.textContent = String(n);
     }
@@ -4079,7 +4132,19 @@
     strandWarnAcked = false;
     // v0.9.13 — likewise re-arm the full-vault overflow warning.
     vaultFullWarnAcked = false;
+    if (soloQueue.length !== expandedChainsQueueLen) {
+      expandedChains.clear();
+      expandedChainsQueueLen = soloQueue.length;
+    }
     syncQueueCountBadge();
+    // v1.20 — an empty queue has nothing to clear and nothing to
+    // collapse, so the toolbar is two dead buttons on the first screen
+    // a seat sees. It comes back with the first queued move (or stays
+    // put while the show-all view is on, since that is how you leave).
+    const queueToolbar = document.getElementById("solo-queue-toolbar");
+    if (queueToolbar instanceof HTMLElement) {
+      queueToolbar.hidden = !soloQueue.length && !soloQueueShowAll;
+    }
     soloQueueHost.textContent = "";
     // v0.8.0 — keep the ORDERS-tab asset roster's "active" / "invalid"
     // visual state in lockstep with the queue. Cheap to re-render.
@@ -4120,7 +4185,14 @@
       }
     }
 
-    rows.forEach(({ m, ix, placeholder }) => {
+    /**
+     * One composer row. Returns the element; the caller places it.
+     *
+     * v1.20 — was an inline forEach body. Extracted so walk chains can
+     * render their steps as children of a collapsed summary row without
+     * a second copy of the row-building rules.
+     */
+    const buildQueueRow = (m, ix, placeholder) => {
       // v0.9.16 — chaff self-jam rows are real queue slots but locked:
       // inert like a show-all placeholder, just labelled as the flare's
       // carry-over jam so the 3-slot cost is explicit.
@@ -4201,9 +4273,8 @@
         label.textContent = "(wait · idle)";
         row.appendChild(label);
         // Placeholders are inert beyond the drag-drop target. No
-        // controls, no inputs — just append and move on.
-        soloQueueHost.appendChild(row);
-        return;
+        // controls, no inputs — just hand the row back.
+        return row;
       }
       if (jam) {
         // v0.9.16 — locked chaff carry-over slot. Inert: it shows the
@@ -4215,8 +4286,7 @@
           "Your own chaff jams this hour. A flare occupies 3 slots: "
           + "the launch + 2 self-jammed turns.";
         row.appendChild(label);
-        soloQueueHost.appendChild(row);
-        return;
+        return row;
       }
       if (actionNeedsUnit(m.a) && m.unit) {
         label.textContent = `${actionLabel(m.a)} · ${unitShortLabel(m.unit)}`;
@@ -4242,6 +4312,9 @@
             "This unit doesn't exist in your roster — the order will be cancelled.";
         }
       }
+      // v1.20 — the label is clipped rather than allowed to overrun the
+      // coordinate inputs, so anything long has to stay recoverable.
+      if (!label.title) label.title = label.textContent;
       row.appendChild(label);
 
       if (actionNeedsXY(m.a)) {
@@ -4313,10 +4386,123 @@
       controls.appendChild(rm);
 
       row.appendChild(controls);
-      soloQueueHost.appendChild(row);
-    });
+      return row;
+    };
+
+    for (const group of groupQueueRows(rows)) {
+      if (!group.chain || group.rows.length < 2) {
+        for (const r of group.rows) {
+          soloQueueHost.appendChild(buildQueueRow(r.m, r.ix, r.placeholder));
+        }
+        continue;
+      }
+      const startIx = group.rows[0].ix;
+      const open = expandedChains.has(startIx);
+      soloQueueHost.appendChild(buildChainSummaryRow(group, open));
+      if (open) {
+        for (const r of group.rows) {
+          const child = buildQueueRow(r.m, r.ix, r.placeholder);
+          child.classList.add("solo-queue-row--chain-step");
+          soloQueueHost.appendChild(child);
+        }
+      }
+    }
 
     if (soloExpert?.checked) syncExpertJsonFromQueue();
+  }
+
+  /**
+   * Group consecutive same-unit ``step`` rows into one walk chain.
+   *
+   * A five-step walk really is five slots and the engine wants them
+   * spelled out, but rendered as five near-identical rows — each with
+   * its own pair of coordinate inputs and three buttons — it is the
+   * single biggest source of noise in the composer. The grouping is
+   * presentation only: ``soloQueue`` is untouched, so submit, drag
+   * reorder and the expert JSON all see exactly what they saw before.
+   */
+  function groupQueueRows(rows) {
+    const groups = [];
+    for (const row of rows) {
+      const chainable = !row.placeholder
+        && !!row.m
+        && !row.m._chaffJam
+        && row.m.a === "step"
+        && !!row.m.unit;
+      const prev = groups[groups.length - 1];
+      if (
+        chainable && prev && prev.chain
+        && prev.rows[0].m.unit === row.m.unit
+      ) {
+        prev.rows.push(row);
+        continue;
+      }
+      groups.push({ chain: chainable, rows: [row] });
+    }
+    return groups;
+  }
+
+  /**
+   * The collapsed head of a walk chain: where it ends up, in how many
+   * steps, on which hours. Expanding reveals the per-step rows.
+   */
+  function buildChainSummaryRow(group, open) {
+    const first = group.rows[0];
+    const last = group.rows[group.rows.length - 1];
+    const unit = String(first.m.unit);
+    const n = group.rows.length;
+
+    const row = document.createElement("div");
+    row.className = "solo-queue-row solo-queue-row--chain"
+      + (open ? " solo-queue-row--chain-open" : "");
+
+    const twist = document.createElement("button");
+    twist.type = "button";
+    twist.className = "cli-btn solo-queue-twist";
+    twist.textContent = open ? "[-]" : "[+]";
+    twist.title = open ? "Collapse this walk" : "Show every step of this walk";
+    twist.setAttribute("aria-expanded", String(open));
+    twist.addEventListener("click", () => {
+      if (open) expandedChains.delete(first.ix);
+      else expandedChains.add(first.ix);
+      renderSoloQueue();
+    });
+    row.appendChild(twist);
+
+    const num = document.createElement("span");
+    num.className = "dim solo-queue-num";
+    num.textContent = `${String(first.ix + 1).padStart(2, "0")}-`
+      + `${String(last.ix + 1).padStart(2, "0")}`;
+    row.appendChild(num);
+
+    const label = document.createElement("span");
+    label.className = "solo-queue-label";
+    const dest = Number.isFinite(last.m.x) && Number.isFinite(last.m.y)
+      ? ` \u2192 (${last.m.x},${last.m.y})` : "";
+    label.textContent = `walk \u00b7 ${unitShortLabel(unit)}${dest}`;
+    row.appendChild(label);
+
+    const count = document.createElement("span");
+    count.className = "dim solo-queue-chain-count";
+    count.textContent = `${n} steps`;
+    row.appendChild(count);
+
+    const controls = document.createElement("span");
+    controls.className = "solo-queue-controls";
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "cli-btn solo-queue-mini";
+    rm.textContent = "[ x ]";
+    rm.title = `Remove all ${n} steps of this walk`;
+    rm.addEventListener("click", () => {
+      soloQueue.splice(first.ix, n);
+      expandedChains.clear();
+      renderSoloQueue();
+    });
+    controls.appendChild(rm);
+    row.appendChild(controls);
+
+    return row;
   }
 
   function moveQueueRow(from, to) {
@@ -7579,7 +7765,7 @@
     replayScrub.setAttribute("aria-valuenow", String(i));
     replayScrub.setAttribute(
       "aria-valuetext",
-      `${String(i + 1)} / ${String(n)} — ${replayCaptionEl?.textContent || ""}`,
+      `${String(i + 1)} / ${String(n)} — ${replayNowCaptionEl?.textContent || ""}`,
     );
   }
 
@@ -7591,39 +7777,27 @@
     updateNowPlayingStrip();
     renderScoreboard();
     renderAgentFeed();
+    updateExtractStrip();
     // v0.9.11 — replay report auto-pop is now driven entirely by the
     // synthetic pre/post-orbit ticks in ``paintReplayFrameOntoMain``
     // (gated by the "show orbital summaries as pop-ups" setting via
     // ``orbitFlashEnabled``); the old day-crossing auto-pop here is
     // gone so the report doesn't double-fire while scrubbing.
-    if (!replayTicks.length) {
-      if (replayCaptionEl) replayCaptionEl.textContent = "";
-      if (replaySlotEl) replaySlotEl.textContent = "";
-      if (replayDayBadge) {
-        replayDayBadge.textContent = "";
-        replayDayBadge.hidden = true;
-      }
-    } else {
+    if (replayTicks.length) {
       if (replayTickIdx < 0) replayTickIdx = 0;
       if (replayTickIdx >= replayTicks.length)
         replayTickIdx = replayTicks.length - 1;
-      const tick = replayTicks[replayTickIdx];
-      const frame = nightReplayFrames[tick.lastFrameIdx];
-      if (replayCaptionEl)
-        replayCaptionEl.textContent = String(frame?.caption ?? "");
-      if (replaySlotEl)
-        replaySlotEl.textContent = formatReplaySlotLabel(frame);
-      const day = currentReplayDay();
-      const days = uniqueReplayDays();
-      if (replayDayBadge) {
-        if (day) {
-          replayDayBadge.textContent =
-            days.length > 1 ? `D${day} / ${days.length} Nox` : `D${day}`;
-          replayDayBadge.hidden = false;
-        } else {
-          replayDayBadge.textContent = "";
-          replayDayBadge.hidden = true;
-        }
+    }
+    // v1.20 — the clock follows whichever source is driving the board.
+    // This sync runs on every status poll, so writing the cursor's time
+    // from here unconditionally would wipe the live clock a fraction of
+    // a second after refreshStatus set it.
+    if (mainMapSource === "replay") {
+      if (!replayTicks.length) {
+        setClock(null, "");
+      } else {
+        const frame = nightReplayFrames[replayTicks[replayTickIdx].lastFrameIdx];
+        setClock(currentReplayDay(), clockHourFor(frame));
       }
     }
     if (replayDayPrev)
@@ -10292,7 +10466,9 @@
       await new Promise((r) => setTimeout(r, 820));
       if (mainMapSource === "replay" && !replayTicker) {
         mainMapSource = "live";
+        _redsignCutoffLive();
         if (lastLiveMapPayload && mapPlayer) paintPlayerMap(mapPlayer, lastLiveMapPayload);
+        try { paintRedsignOverlay(); } catch (_e) { /* non-fatal */ }
       }
     } finally {
       _liveFxPlaying = false;
@@ -10990,6 +11166,7 @@
   async function _playNightCinematic(startTickIdx) {
     const revealLiveAndReport = async () => {
       mainMapSource = "live";
+      _redsignCutoffLive();
       if (lastLiveMapPayload && mapPlayer) {
         paintPlayerMap(mapPlayer, lastLiveMapPayload);
         if (_heatPhase === "hold") _heatApplyInstant(mapPlayer, 0.52);
@@ -11502,19 +11679,62 @@
    *  counter with the in-game ``Night 3 · praxis hour 07`` that
    *  actually means something to the watcher. Boundary frames
    *  (opening / dawn) get a tag instead of an hour. */
-  function formatReplaySlotLabel(frame) {
+  /**
+   * The hour line of the clock, for a replay frame.
+   *
+   * v1.20 — hours carry their in-world name where they have one:
+   * VESPERA is the dusk that opens the night, AURORA the dawn that
+   * closes it. Everything between is a bare praxis hour.
+   */
+  function clockHourFor(frame) {
     if (!frame) return "";
-    const day = frame.day != null ? Number(frame.day) : null;
     const hour = (typeof frame.hour === "number" && frame.hour > 0)
       ? Number(frame.hour) : null;
-    if (day == null) return "";
-    if (hour != null) {
-      return `Nox ${day} · praxis hour ${String(hour).padStart(2, "0")}`;
+    if (hour != null) return `H${String(hour).padStart(2, "0")}`;
+    if (frame.tag === "dawn") return "AURORA";
+    if (frame.tag === "open") return "VESPERA";
+    return "";
+  }
+
+  /**
+   * The season's length, from whichever source is driving the board.
+   *
+   * Deliberately NOT the number of days the replay happens to hold: a
+   * season abandoned on night 3 of 7 should still read /07.
+   */
+  function clockDayCap() {
+    const cap = mainMapSource === "replay"
+      ? replaySeasonDayCap : liveSeasonDayCap;
+    return Number(cap) || 0;
+  }
+
+  /**
+   * Drive the bottom bar's clock: NOX nn over the hour it is inside.
+   *
+   * Pass a falsy ``day`` to blank it. The denominator comes from
+   * :func:`clockDayCap` — this is the only place the UI says how long
+   * the season runs.
+   */
+  function setClock(day, hour) {
+    if (replayDayBadge) {
+      const n = Number(day);
+      const has = Number.isFinite(n) && n > 0;
+      replayDayBadge.textContent = "";
+      if (has) {
+        const main = document.createElement("span");
+        main.textContent = `NOX ${String(n).padStart(2, "0")}`;
+        replayDayBadge.appendChild(main);
+        const total = clockDayCap();
+        if (total > 1) {
+          const of = document.createElement("span");
+          of.className = "cc-clock-of";
+          of.textContent = `/${String(total).padStart(2, "0")}`;
+          replayDayBadge.appendChild(of);
+        }
+      }
+      replayDayBadge.hidden = !has;
     }
-    // Boundary frames: opening, dawn, swap-collision summary.
-    if (frame.tag === "open") return `Nox ${day} · praxis opens`;
-    if (frame.tag === "dawn") return `Nox ${day} · Aurora`;
-    return `Nox ${day}`;
+    if (replaySlotEl) replaySlotEl.textContent = hour || "";
   }
 
   /** Phases where the engine is still accepting policies (i.e. the
@@ -11598,7 +11818,7 @@
    *  cursor frame in replay mode, or the latest engine caption in
    *  live mode. */
   function updateNowPlayingStrip() {
-    if (!replayNowClockEl || !replayNowCaptionEl) return;
+    if (!replayNowCaptionEl) return;
 
     // Replay mode — drive from the cursor frame.
     if (mainMapSource === "replay" && replayTicks.length) {
@@ -11607,11 +11827,6 @@
       );
       const tick = replayTicks[tickIdx];
       const frame = nightReplayFrames[tick?.lastFrameIdx];
-      const day = frame && frame.day != null ? Number(frame.day) : null;
-      const hour = (typeof frame?.hour === "number" && frame.hour > 0)
-        ? Number(frame.hour) : null;
-      replayNowClockEl.textContent =
-        `D${day ?? "—"} H${hour != null ? String(hour).padStart(2, "0") : "—"}`;
       // Caption: strip duplicate owner prefix so the row reads clean.
       let caption = String(frame?.caption || "");
       if (frame?.owner) {
@@ -11641,7 +11856,6 @@
     // night hasn't resolved yet for the entry the user is reading.
     const liveCap = lastLiveLogLine();
     if (!liveCap) {
-      replayNowClockEl.textContent = "D— H—";
       replayNowCaptionEl.textContent = sessionId
         ? "# waiting for engine…"
         : "# idle — start NEW GAME";
@@ -11649,8 +11863,6 @@
       delete replayNowCaptionEl.dataset.state;
       return;
     }
-    replayNowClockEl.textContent =
-      `D${liveCap.day ?? "—"} H${liveCap.hour != null ? String(liveCap.hour).padStart(2, "0") : "—"}`;
     replayNowCaptionEl.textContent = liveCap.text;
     if (liveCap.seat) replayNowCaptionEl.dataset.seat = liveCap.seat;
     else delete replayNowCaptionEl.dataset.seat;
@@ -11744,6 +11956,93 @@
       return Number(lastLiveInventory.day);
     }
     return 0;
+  }
+
+  /**
+   * v1.20 — the replay header's seed + extraction readout.
+   *
+   * The percentage is cumulative *to the night under the cursor*, not
+   * the season total, so scrubbing tells the story of the map being
+   * stripped. The denominator is the map's value at generation, which
+   * never moves (see ``compute_extraction``) — so the figure only ever
+   * climbs, and 100% would mean the map was mined out.
+   *
+   * Deliberately value-weighted, not cell-weighted: a pure-255 square
+   * is worth 25x a trace-10 one, and seats go for the good squares, so
+   * the two numbers diverge hard. The label says RED ON MAP in points
+   * for that reason.
+   */
+  function updateExtractStrip() {
+    const strip = document.getElementById("cc-extract-strip");
+    if (!strip) return;
+    const x = replayExtraction;
+    const showing = mainMapSource === "replay" && !!x && x.map_red_value > 0;
+    if (!showing) {
+      strip.hidden = true;
+      return;
+    }
+
+    const seedEl = document.getElementById("cc-extract-seed");
+    const seedCell = document.getElementById("cc-extract-seed-cell");
+    if (seedEl && seedCell) {
+      const has = replaySeed != null && replaySeed !== "";
+      seedEl.textContent = has ? String(replaySeed) : "—";
+      seedCell.hidden = !has;
+    }
+
+    const totalEl = document.getElementById("cc-extract-total");
+    if (totalEl) {
+      totalEl.textContent = Number(x.map_red_value).toLocaleString();
+      totalEl.title =
+        `${Number(x.map_red_value).toLocaleString()} points of RED across `
+        + `${x.map_red_cells} cells, valued the way scoring values them `
+        + `(purity x tier multiplier). Fixed at map generation — `
+        + `harvesting a RED cell turns it to GREEN and nothing regrows.`;
+    }
+
+    // Cumulative across every seat, up to the night on screen.
+    const day = currentVisibleDay();
+    const series = x.harvested_by_day || {};
+    let lifted = 0;
+    const perSeat = [];
+    for (const [seat, arr] of Object.entries(series)) {
+      if (!Array.isArray(arr) || !arr.length) continue;
+      const ix = Math.max(0, Math.min(arr.length - 1, Number(day) - 1));
+      const v = Number(arr[ix]) || 0;
+      lifted += v;
+      perSeat.push([seat, v]);
+    }
+    const pct = x.map_red_value
+      ? (100 * lifted / x.map_red_value) : 0;
+
+    const pctEl = document.getElementById("cc-extract-pct");
+    if (pctEl) {
+      pctEl.textContent = `${pct.toFixed(1)}%`;
+      const lines = perSeat
+        .sort((a, b) => b[1] - a[1])
+        .map(([seat, v]) => {
+          const share = x.map_red_value
+            ? (100 * v / x.map_red_value).toFixed(1) : "0.0";
+          return `  ${seatLabelFor(seat)} · ${v.toLocaleString()} (${share}%)`;
+        });
+      pctEl.title =
+        `${lifted.toLocaleString()} of ${Number(x.map_red_value).toLocaleString()}`
+        + ` points lifted off the map by Nox ${day}.\n`
+        + (lines.length ? lines.join("\n") + "\n" : "")
+        + `\nThis is value taken off the ground, not value banked — red `
+        + `lost with a harvester still counts as mined, because the cell `
+        + `is spent either way.`;
+    }
+    strip.hidden = false;
+  }
+
+  /** Seat's display tag for the extraction tooltip, falling back to the
+   *  raw seat id when no profile has loaded yet. */
+  function seatLabelFor(seat) {
+    const meta = __SOC_PLAYER_META__ ? __SOC_PLAYER_META__[seat] : null;
+    if (meta && meta.tag) return String(meta.tag);
+    if (meta && meta.name) return String(meta.name);
+    return String(seat).toUpperCase();
   }
 
   /** When loading a persisted season into replay/watch mode, pull
@@ -12747,6 +13046,7 @@
     if (tick && (tick.slot === "dawn" || tick.slot === "dusk")) {
       const isDawn = tick.slot === "dawn";
       const day = Number(tick.day || 0) || 0;
+      _setRedsignCutoff(day, isDawn ? Infinity : 0);
       const movingForward = replayTickIdx > lastPaintedReplayTickIdx;
       const animate = mode === "forward" && movingForward
         && !reduceMotionMq.matches;
@@ -12805,15 +13105,10 @@
           openReport(kind, day);
         }
       }
-      if (replayCaptionEl) {
-        replayCaptionEl.textContent = isDawn
-          ? `[H22] AURORA · Nox ${day} ends — day breaks`
-          : `[H00] VESPERA · Nox ${day} begins`;
-      }
-      if (replaySlotEl) {
-        replaySlotEl.textContent = isDawn
-          ? `Nox ${day} · AURORA` : `Nox ${day} · VESPERA`;
-      }
+      setClock(day, isDawn ? "AURORA" : "VESPERA");
+      // The board was just repainted, which drops the overlay layer, so
+      // re-stamp the beacons this slot is allowed to show.
+      try { paintRedsignOverlay(); } catch (_e) { /* non-fatal */ }
       syncReplayScrubUi();
       lastPaintedReplayTickIdx = replayTickIdx;
       return;
@@ -12824,6 +13119,7 @@
     // plays the last catapult launch + vault settlement + score fold.
     if (tick && tick.slot === "resolve") {
       const day = Number(tick.day || 0) || 0;
+      _setRedsignCutoff(day, Infinity);
       const movingForward = replayTickIdx > lastPaintedReplayTickIdx;
       const animate = mode === "forward" && movingForward
         && !reduceMotionMq.matches;
@@ -12839,20 +13135,15 @@
           { holdMs: 1600 },
         );
       }
-      if (replayCaptionEl)
-        replayCaptionEl.textContent =
-          "[H00] RESOLVE · final settlement — the season closes";
-      if (replaySlotEl) replaySlotEl.textContent = "SEASON · RESOLVE";
+      setClock(day, "RESOLVE");
+      try { paintRedsignOverlay(); } catch (_e) { /* non-fatal */ }
       syncReplayScrubUi();
       lastPaintedReplayTickIdx = replayTickIdx;
       return;
     }
     const frameIdx = tick.lastFrameIdx;
     const frame = nightReplayFrames[frameIdx];
-    if (replayCaptionEl)
-      replayCaptionEl.textContent = String(frame?.caption ?? "");
-    if (replaySlotEl)
-      replaySlotEl.textContent = formatReplaySlotLabel(frame);
+    setClock(frame?.day, clockHourFor(frame));
 
     // v0.9.9 — N-seat replay view dispatch (OBS combined vision vs a
     // single seat) + mine/EMP-cloud snapshot stash. See _paintReplayBoard.
@@ -12972,13 +13263,13 @@
     // so a beacon pops at the exact discovery frame, then persists. Slot
     // ticks: DAWN = night resolved (show all that night's finds); DUSK =
     // night just beginning (hour 0, hide finds until their hour is reached).
-    _redsignDayCutoff = Number(
-      (tick && tick.day != null) ? tick.day : (lastFrame?.day ?? 0),
-    ) || 0;
     const _rsSlot = tick && tick.slot;
-    if (_rsSlot === "dawn") _redsignHourCutoff = Infinity;
-    else if (_rsSlot === "dusk") _redsignHourCutoff = 0;
-    else _redsignHourCutoff = Number(lastFrame?.hour) || 0;
+    _setRedsignCutoff(
+      (tick && tick.day != null) ? tick.day : (lastFrame?.day ?? 0),
+      _rsSlot === "dawn" ? Infinity
+        : _rsSlot === "dusk" ? 0
+        : (Number(lastFrame?.hour) || 0),
+    );
     // v1.x — DISCOVERY BURST + delayed smear. On forward play, the instant a
     // region's (day, hour) is reached we (a) HOLD its fog smear back and (b)
     // schedule a one-shot red rhombus pulse — both timed to the tick's
@@ -13092,6 +13383,11 @@
       // v1.x — final settlement breakdown ({} until season complete).
       settlementBySeat =
         (payload && payload.settlement) || {};
+      // v1.20 — seed + the season's extraction curve for the header
+      // readout. Cached whole; the strip re-reads it on every scrub so
+      // the percentage tracks the cursor rather than the final total.
+      replayExtraction = (payload && payload.extraction) || null;
+      replaySeed = payload && payload.seed != null ? payload.seed : null;
       // v1.x — authoritative post-settlement hoard ({} until complete).
       finalHoardSnapshot =
         (payload && payload.final_hoard) || {};
@@ -13786,6 +14082,8 @@
         </div>
       </div>`;
 
+    const extractionHtml = buildExtractionBlock(summary);
+
     const manifestHtml = `
       <div class="eg-section-head eg-manifest-head dim">
         <span>// shipping manifest</span>
@@ -13800,7 +14098,8 @@
       <div id="eg-manifest" class="eg-manifest"></div>`;
 
     endgameBodyEl.innerHTML =
-      winnerHtml + runnersHtml + tallyHtml + chartHtml + manifestHtml;
+      winnerHtml + runnersHtml + tallyHtml + chartHtml + extractionHtml
+      + manifestHtml;
 
     const sortSel = document.getElementById("eg-manifest-sort");
     if (sortSel) {
@@ -13811,6 +14110,144 @@
       });
     }
     renderManifest(summary, endgameMeta.manifestSort);
+  }
+
+  /**
+   * v1.20 — extraction efficiency: how much of the map's RED value this
+   * season actually got out of the ground, and who got it.
+   *
+   * A waffle of 100 cells, each worth 1% of the map's genesis RED
+   * VALUE — not one cell of ground. That distinction matters and the
+   * legend says so: seats mine the good squares, so a season can lift
+   * ~39% of the map's value out of ~14% of its RED cells. Weighting by
+   * cell instead would flatter a seat that scraped a lot of trace.
+   *
+   * Each seat gets two shades: solid for value it banked, hollow for
+   * value it lifted but never shipped (died with a harvester, or still
+   * sitting in the vault at settlement). The cell is spent either way —
+   * that is the point of showing the gap.
+   *
+   * Built from block glyphs in a DOM grid rather than SVG, matching the
+   * vault/catapult grids; the two step charts are the only real SVG on
+   * this card and they are line charts, where SVG earns it.
+   */
+  function buildExtractionBlock(summary) {
+    const x = summary && summary.extraction;
+    if (!x || !Number(x.map_red_value)) return "";
+    const total = Number(x.map_red_value);
+    const players = Array.isArray(summary.players) ? summary.players : [];
+
+    // Whole cells only, largest-remainder allocated, so the waffle is
+    // exactly 100 cells and never rounds its way to 101.
+    const parts = [];
+    for (const p of players) {
+      const s = (x.by_seat || {})[p.seat] || {};
+      parts.push({
+        key: `${p.seat}:banked`,
+        seat: p.seat,
+        color: p.color,
+        banked: true,
+        label: `${p.name} · banked`,
+        value: Number(s.shipped_value) || 0,
+      });
+      parts.push({
+        key: `${p.seat}:unbanked`,
+        seat: p.seat,
+        color: p.color,
+        banked: false,
+        label: `${p.name} · mined, never shipped`,
+        value: Number(s.unbanked_value) || 0,
+      });
+    }
+    // The unmined remainder is a participant in the allocation, not
+    // whatever is left over afterwards. Leaving it out made the seats
+    // absorb the entire rounding remainder, which inflated the mined
+    // area (38.7% drew as 40 cells).
+    const alloc = parts.concat([{
+      key: "untouched",
+      untouched: true,
+      label: "still in the ground",
+      value: Math.max(0, total - parts.reduce((a, b) => a + b.value, 0)),
+    }]);
+    const exact = alloc.map((p) => (100 * p.value) / total);
+    const counts = exact.map(Math.floor);
+    let spare = 100 - counts.reduce((a, b) => a + b, 0);
+    const order = exact
+      .map((v, i) => [v - Math.floor(v), i])
+      .sort((a, b) => b[0] - a[0]);
+    for (let k = 0; spare > 0 && k < order.length; k++, spare--) {
+      counts[order[k][1]] += 1;
+    }
+
+    let cells = "";
+    alloc.forEach((p, i) => {
+      for (let n = 0; n < counts[i]; n++) {
+        if (p.untouched) {
+          cells += '<span class="eg-waffle-cell eg-waffle-cell--untouched" '
+            + `title="${egEsc(p.label)}"></span>`;
+          continue;
+        }
+        const cls = p.banked
+          ? "eg-waffle-cell eg-waffle-cell--banked"
+          : "eg-waffle-cell eg-waffle-cell--unbanked";
+        const style = p.banked
+          ? `color:${egEsc(p.color)};background:${egEsc(p.color)}`
+          : `color:${egEsc(p.color)}`;
+        cells += `<span class="${cls}" style="${style}" `
+          + `title="${egEsc(p.label)}"></span>`;
+      }
+    });
+
+    const legend = parts
+      .filter((p) => p.value > 0)
+      .map((p) => {
+        const swatch = p.banked
+          ? `background:${egEsc(p.color)};border-color:${egEsc(p.color)}`
+          : `border-color:${egEsc(p.color)}`;
+        return `<span class="eg-waffle-key">
+            <span class="eg-waffle-swatch" style="${swatch}"></span>
+            ${egEsc(p.label)} · ${p.value.toLocaleString()}
+          </span>`;
+      })
+      .join("")
+      + `<span class="eg-waffle-key">
+           <span class="eg-waffle-swatch eg-waffle-swatch--untouched"></span>
+           never mined · ${Number(x.unmined_value || 0).toLocaleString()}
+         </span>`;
+
+    return `
+      <div class="eg-section-head dim">// extraction efficiency</div>
+      <div class="eg-extract">
+        <div class="eg-extract-figures">
+          <div class="eg-extract-big">
+            <span class="eg-extract-pct">${Number(x.pct_harvested).toFixed(1)}%</span>
+            <span class="eg-extract-cap dim">of the map\u2019s RED value mined</span>
+          </div>
+          <div class="eg-trow">
+            <span>banked (shipped)</span>
+            <span>${Number(x.pct_shipped).toFixed(1)}%</span>
+          </div>
+          <div class="eg-trow">
+            <span>RED value on the map</span>
+            <span>${total.toLocaleString()}</span>
+          </div>
+          <div class="eg-trow">
+            <span>RED cells mined</span>
+            <span>${x.cells_mined}/${x.map_red_cells} · ${Number(x.pct_cells).toFixed(1)}%</span>
+          </div>
+          <p class="eg-extract-note dim">
+            Each square is 1% of the map\u2019s RED <em>value</em> at
+            generation (purity \u00d7 tier), not one cell of ground \u2014 which
+            is why the value and cell shares differ. Solid = banked;
+            outline = mined but never shipped.
+          </p>
+        </div>
+        <div class="eg-waffle" role="img"
+             aria-label="Share of the map's RED value extracted, by player">
+          ${cells}
+        </div>
+      </div>
+      <div class="eg-waffle-legend dim">${legend}</div>`;
   }
 
   /** v1.6 — one kill-feed row: a stat label followed by N slash-separated
@@ -15687,8 +16124,9 @@
       pip.title = isDawn
         ? `Nox ${day} — AURORA${hasContent ? " · pre-orbital recap (click to view)" : ""}`
         : `Nox ${day} — VESPERA${hasContent ? " · post-orbital briefing (click to view)" : ""}`;
+      // v1.20 — no glyph: a lit disc is AURORA, an unlit one VESPERA.
+      // The title and aria-label carry the naming for anyone who needs it.
       pip.setAttribute("aria-label", `Nox ${day} ${isDawn ? "Aurora" : "Vespera"}`);
-      pip.textContent = isDawn ? "\u2600" : "\u263E"; // ☀ / ☾
       pip.addEventListener("click", (ev) => {
         ev.stopPropagation();
         stopReplayPlayback();
@@ -15811,8 +16249,99 @@
     orchLogEl.innerHTML = parts.join("");
   }
 
+  /**
+   * Header identity: name the season, and drop the controls that only
+   * configure the *next* game once one is on.
+   *
+   * NIGHTS sets the length of a game you have not started yet, so it is
+   * pure noise beside a live board (and the New Game modal carries its
+   * own copy anyway). Pass ``null`` for the idle state.
+   */
+  function updateHeaderIdentity(st) {
+    const live = !!(st && sessionId);
+    for (const el of document.querySelectorAll(".cc-newgame-cap")) {
+      el.hidden = live;
+    }
+    liveSeasonDayCap = Number(st?.season_day_cap) || 0;
+    updateBackendBadge(st);
+    const nameEl = document.getElementById("cc-season-name");
+    if (!nameEl) return;
+    const name = st && st.season_name ? String(st.season_name) : "";
+    nameEl.textContent = name;
+    nameEl.hidden = !name;
+  }
+
+  /**
+   * v1.20 — where THIS game is stored, in the header.
+   *
+   * Reads ``status.backend``, which the server resolves per game
+   * (``backend_for_session``). It deliberately does NOT ask
+   * ``/api/meta/backend``: that reports the *process* default, and since
+   * v1.14 one server happily runs a memory game beside a Snowflake
+   * season. Getting this wrong would tell someone their throwaway game
+   * was being persisted, or worse, the reverse.
+   */
+  function updateBackendBadge(st) {
+    const el = document.getElementById("cc-backend-badge");
+    if (!el) return;
+    const backend = String(st?.backend || "").toLowerCase();
+    if (!backend || !sessionId) {
+      el.hidden = true;
+      return;
+    }
+    const snow = backend === "snowflake";
+    const durable = backend !== "memory";
+    el.classList.toggle("cc-backend-badge--snowflake", snow);
+    el.classList.toggle("cc-backend-badge--memory", !snow);
+    el.textContent = snow ? "SNOWFLAKE" : (durable ? "FILE" : "LOCAL MEMORY");
+    el.title = snow
+      ? "SNOWFLAKE — this game is written to your own Snowflake account.\n"
+        + "That is what buys you the LLM agent seats (ASK V12), agent "
+        + "memory that carries across nights, and a replay you can still "
+        + "scrub tomorrow.\n"
+        + "The cost is latency: every move is a round-trip."
+      : durable
+        ? "FILE — this game is written to local JSON on disk.\n"
+          + "It survives a restart and keeps its replay, but there is no "
+          + "Snowflake account behind it, so LLM agent seats are "
+          + "unavailable."
+        : "LOCAL MEMORY — this game lives in the server process and "
+          + "nothing is written down.\n"
+          + "Moves are instant and it works fully offline, but there are "
+          + "no LLM agent seats, no cross-night agent memory, and the "
+          + "season and its replay die when the server stops.";
+    el.setAttribute("aria-label", el.title);
+    el.hidden = false;
+  }
+
+  /**
+   * The beat a live session is sitting in, for the clock's hour line.
+   *
+   * Planning reads VESPERA because that is the dusk you are writing
+   * orders into; the night itself has not run yet.
+   */
+  const LIVE_CLOCK_HOUR = {
+    orbit: "AURORA",
+    planning: "VESPERA",
+    night_resolving: "PRAXIS",
+    season_complete: "RESOLVE",
+  };
+
+  /** Point the clock at the live session, unless the replay cursor owns it. */
+  function updateLiveClock(st) {
+    if (!st) {
+      setClock(null, "");
+      return;
+    }
+    if (mainMapSource === "replay") return;
+    const phase = String(st.phase || "");
+    setClock(st.day, LIVE_CLOCK_HOUR[phase] || phase.toUpperCase());
+  }
+
   async function refreshStatus() {
     if (!sessionId) {
+      updateHeaderIdentity(null);
+      updateLiveClock(null);
       phaseLine.textContent = "# idle — start a session";
       orchLogEl.textContent = "# quiet — start NEW GAME";
       replayWindowCount = 0;
@@ -15862,6 +16391,8 @@
       // v0.9.18 — populate player metadata (names, tags, colors) from status
       // (also pushes colours into the --seat-pN CSS vars for stylesheet rules)
       setPlayerMeta(st.player_profiles);
+      updateHeaderIdentity(st);
+      updateLiveClock(st);
       
       const night =
         st.phase === "planning" ?
@@ -16058,7 +16589,10 @@
         window.__SOC_PLAYERS__ = j.players.slice(0, 4);
         try { renderReplayViewButtons(); } catch (_e) {}
       }
-      if (j.agents) window.__SOC_AGENTS__ = j.agents;
+      if (j.agents) {
+        window.__SOC_AGENTS__ = j.agents;
+        window.__SOC_SEAT_KIND__ = seatKinds(j.agents);
+      }
       if (j.visibility_mode) window.__SOC_VISIBILITY__ = j.visibility_mode;
       paintObserverMap(mapObserver, j);
     } catch (e) {
@@ -16097,7 +16631,10 @@
         // buttons stroked in their owner colour.
         try { renderReplayViewButtons(); } catch (_e) {}
       }
-      if (j.agents) window.__SOC_AGENTS__ = j.agents;
+      if (j.agents) {
+        window.__SOC_AGENTS__ = j.agents;
+        window.__SOC_SEAT_KIND__ = seatKinds(j.agents);
+      }
       if (j.visibility_mode) window.__SOC_VISIBILITY__ = j.visibility_mode;
       // Build the orbital-station skeleton from the live player list so the
       // stations appear on turn 1 (before any night/replay data exists).
@@ -16134,14 +16671,17 @@
       // v1.x — discovery-triggered redsign beacons. Live view shows every
       // beacon discovered so far (cutoff = Infinity).
       lastRedSign = Array.isArray(j.redsign) ? j.redsign : [];
-      _redsignDayCutoff = Infinity;
-      _redsignHourCutoff = Infinity;
       lastLiveMapPayload = {
         width: j.width,
         height: j.height,
         cells: j.cells || [],
       };
       if (mainMapSource === "live" && !_suppressLiveReveal) {
+        // v1.20 — lifting the cutoffs is part of PAINTING live, not of
+        // fetching. Doing it unconditionally let a poll landing during
+        // the night cinematic reset them to "show everything", so a seam
+        // the replay had not reached yet flashed onto the board.
+        _redsignCutoffLive();
         paintPlayerMap(mapPlayer, lastLiveMapPayload);
         if (_heatPhase === "hold") _heatApplyInstant(mapPlayer, 0.52);
         try { paintBlueSignOverlay(lastBlueSign); } catch (_e) {}
@@ -16246,10 +16786,7 @@
       if (!_blob || !orbitBlobHasActivity(_blob)) return;
       if (typeof window.osOnLiveDusk !== "function") return;
       window.osOnLiveDusk(_day);
-      if (replaySlotEl) replaySlotEl.textContent = `Day ${_day} · VESPERA`;
-      if (replayCaptionEl)
-        replayCaptionEl.textContent =
-          `[H00] VESPERA · day ${_day} orbit resolved — plan the Nox`;
+      setClock(_day, "VESPERA");
     } catch (_e) { /* non-fatal cosmetic drive */ }
   }
 
@@ -16308,6 +16845,7 @@
       // the live end-state + any orbit report now (e.g. an orbit settle
       // that didn't add night frames, or reduced-motion / FX-off users).
       mainMapSource = "live";
+      _redsignCutoffLive();
       if (lastLiveMapPayload && mapPlayer) {
         paintPlayerMap(mapPlayer, lastLiveMapPayload);
         if (_heatPhase === "hold") _heatApplyInstant(mapPlayer, 0.52);
@@ -16375,6 +16913,34 @@
     return (_AGENT_ROSTER && _AGENT_ROSTER.length)
       ? _AGENT_ROSTER
       : _AGENT_ROSTER_FALLBACK;
+  }
+
+  /**
+   * Seat → "H" / "B" / "A": human, heuristic bot, or LLM agent.
+   *
+   * v1.20 — the orbital platforms wear this so you can tell at a glance
+   * who is flying each seat. The roster's ``needs_llm`` is the authority
+   * on bot-vs-agent; the name test only covers a seat whose agent isn't
+   * in the roster at all, which happens with an unregistered fork or a
+   * season created before that fork was installed.
+   */
+  function seatKinds(agents) {
+    const byValue = new Map(
+      agentRoster().map((e) => [String(e.value).toLowerCase(), e]),
+    );
+    const out = {};
+    for (const [seat, agent] of Object.entries(agents || {})) {
+      const key = String(agent || "human").toLowerCase();
+      if (key === "human") {
+        out[seat] = "H";
+        continue;
+      }
+      const entry = byValue.get(key);
+      out[seat] = entry
+        ? (entry.needs_llm ? "A" : "B")
+        : (/red_harvest|heuristic|lite/.test(key) ? "B" : "A");
+    }
+    return out;
   }
 
   /** The roster minus anything the chosen backend won't run.
@@ -18936,6 +19502,7 @@
     // Snap scrubber to the rightmost position so the bar reads "at the front".
     replayTickIdx = Math.max(0, replayTicks.length - 1);
     mainMapSource = "live";
+    _redsignCutoffLive();
     // Replay scrubbing can leave _heatPhase='hold' even when the live game is
     // past dawn. Sync to the actual live phase before repainting.
     if (livePhase !== "orbit") _heatClearAll(mapPlayer);
@@ -18975,13 +19542,7 @@
       if (_stageDusk && typeof window.osOnLiveDusk === "function") {
         window.osOnLiveDusk(_liveDay);
         const _done = livePhase === "season_complete";
-        if (replaySlotEl)
-          replaySlotEl.textContent =
-            _done ? "Season · RESOLVE" : `Day ${_liveDay} · VESPERA`;
-        if (replayCaptionEl)
-          replayCaptionEl.textContent = _done
-            ? "[H00] RESOLVE · final settlement — season complete"
-            : `[H00] VESPERA · day ${_liveDay} orbit resolved — plan the Nox`;
+        setClock(_liveDay, _done ? "RESOLVE" : "VESPERA");
       } else if (typeof window.osOnLive === "function") {
         window.osOnLive(_liveDay);
       }

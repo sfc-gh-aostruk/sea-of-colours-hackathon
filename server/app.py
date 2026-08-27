@@ -1329,6 +1329,13 @@ def api_game_status(game_id: str) -> dict[str, Any]:
         _kick_bots(game_id)
     # Surface who's being waited on + the in-flight bot turn for the UI timer.
     status.update(_agent_status_meta(game_id, status))
+    # v1.20 — which store owns THIS game. Backend is a per-game choice
+    # (v1.14), so the header badge must not read the process default:
+    # a memory game and a Snowflake season can be open on one server,
+    # and only one of them keeps its replay tomorrow.
+    backend_name = soc_backend.backend_for_session(game_id)
+    status["backend"] = backend_name
+    status["persists"] = backend_name != "memory"
     return status
 
 
