@@ -231,8 +231,11 @@ Vision is a resource you spend and keep renewing.
 | `pure` | 255 | **×3.0** |
 
 One `pure` parcel scores 765; ten `trace` parcels score 375. Volume
-loses to quality — but pure cores sit deepest inside seams, where you
-can see least.
+loses to quality — and since v1.29 every jackpot sits in a graded
+deposit of `mass` and `vein`, so richer ground genuinely means you are
+getting warmer. Combing outward from a `mass` find is a real way to hunt
+a pure; it is not a guarantee in either direction, but the map is now
+built to reward reading the gradient.
 
 **GREEN is unavoidable and it hurts.** Byproduct of all mining, cannot
 be refused, eats hold space, and every parcel still held at season end

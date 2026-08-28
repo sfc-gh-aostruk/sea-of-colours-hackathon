@@ -50,6 +50,21 @@ the seam edge (`--red-depth-ref` default `3`). That spreads values into **vein**
 and **mass** more than a pure ``t**gamma`` curve; thin traces stay light, thick
 cores still climb toward **pure** when deep enough.
 
+**That is only the natural terrain.** Four later passes then rework the pure
+cells specifically, and they are what a board actually ships with — see
+RULEBOOK §2.2 for the reasoning:
+
+| Pass | Does what |
+|---|---|
+| `ensure_pure_red` | promotes the strongest RED core if the noise made no pure at all |
+| `decluster_pure_red` | thins touching pures to one per cluster |
+| `spread_pure_red` | guarantees the COUNT (a band sized to the seat count) and a minimum **Chebyshev 12** between any two |
+| `grade_pure_red` (v1.29) | lays a graded deposit around each pure — `mass` chunks near it, a `vein` shoulder out to `pure_vein_radius` |
+
+So purity near a jackpot is **not** a function of Manhattan depth: grading
+enriches that ground directly, and roughly doubles the total RED on a board.
+Set `SOC_MAP_HALO=off` to generate pre-v1.29 terrain instead.
+
 ### Blue depth tiers
 
 **Blue is a pocket**, not a seam: a Chebyshev distance transform finds the

@@ -18847,8 +18847,8 @@
       {
         name: "jackpot",
         label: "5 · THE JACKPOT RACE",
-        body:  "**Pure 255 RED is rare.** A season sometimes has **only one pure seam** on the whole map. Whoever gets a harvester on that cell first walks off with a season-defining haul.\n\nWhen a redsign mints, every house sees the smear the same hour it was discovered. The finder knows the exact cell; rivals see 'roughly where'. It's a race — drop everything and pivot every harvester you can toward the brightest zone.",
-        cite:  "§4.11 · rarity + jackpot race",
+        body:  "**Pure 255 RED is scarce and contested.** A board carries only a handful — a random count sized to the number of houses (2 houses: 2–4, 4 houses: 3–6), and never two within 12 cells of each other, so no single probe ever lights two. At a full table there may be fewer jackpots than houses. Whoever gets a harvester onto one first walks off with a season-defining haul.\n\nEach one sits in a **deposit**: a few chunks of `mass` clinging to the pure and a `vein` shoulder thinning outward. So thickening ground is a real clue — comb up the gradient. Not every rich patch hides a jackpot, and that ambiguity is deliberate.\n\nWhen a redsign mints, every house sees the smear the same hour it was discovered. The finder knows the exact cell; rivals see 'roughly where'. It's a race — drop everything and pivot every harvester you can toward the brightest zone.",
+        cite:  "§2.2 · jackpot count, spacing + deposits · §4.11 · the race",
         status: "# stage 5 · the jackpot race",
         run:   stageJackpot,
       },

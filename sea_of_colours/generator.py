@@ -194,6 +194,64 @@ class GenerationParams:
     #: far apart takes the furthest pair available rather than dropping to one.
     min_pure_separation: int = 12
 
+    #: v1.29 — grade the ground around each pure: a ``mass`` core, then a
+    #: ``vein`` shoulder, then back to whatever was there. Measured on the
+    #: v1.28 output, a jackpot was usually an isolated 255 in ordinary
+    #: terrain — the top-up promotes the best *separated* RED, and separated
+    #: mass barely exists (~3 cells a board), so it routinely lifted a cell
+    #: of purity 80-150 straight to pure. That reads as a spike, not a
+    #: deposit, and it breaks the read a player should be able to make:
+    #: richer ground means you are getting warmer.
+    #: See :func:`_grade_pure_red`. Set False for the v1.28 output.
+    grade_pure_red: bool = True
+
+    #: EUCLIDEAN radii of the graded ground, in cells. Euclidean and not
+    #: Chebyshev deliberately — a Chebyshev ring is a literal square, which
+    #: on a square grid renders as a bullseye and announces itself as
+    #: generated. Both sit well inside :attr:`min_pure_separation`, so two
+    #: jackpots' haloes cannot merge into one rich region and undo the
+    #: separation rule's whole purpose.
+    #:
+    #: v1.29.1 — the mass radius is now where mass is *likeliest*, not a
+    #: solid core; the reach is wider so the deposit trails off further.
+    pure_mass_radius: float = 1.5
+    pure_vein_radius: float = 4.2
+
+    #: Chance a graded cell comes out ``mass`` rather than ``vein``, at the
+    #: jackpot's shoulder and out at the fringe respectively. The first cut
+    #: made every cell inside :attr:`pure_mass_radius` mass, which read as a
+    #: solid bright core — too much, and too neat. Making it a probability
+    #: that decays with distance gives a few chunks clinging to the pure and
+    #: a scatter of others further out, which is what an ore body looks
+    #: like. The fringe value never reaches zero, so mass keeps appearing
+    #: right to the edge of the deposit instead of stopping on a line.
+    pure_mass_core_chance: float = 0.32
+    pure_mass_fringe_chance: float = 0.06
+
+    #: Purity bands for the graded ground. The mass ceiling is deliberately
+    #: below 255: grading must never mint a second pure, least of all one
+    #: adjacent to the first, which is the exact shape
+    #: :func:`_decluster_pure_red` exists to remove.
+    pure_mass_min: int = 165
+    pure_mass_max: int = 240
+    pure_vein_min: int = 60
+    pure_vein_max: int = 150
+
+    #: How far the graded radius is allowed to wander with angle, as a
+    #: fraction. A deposit drawn at a constant radius is a circle with a
+    #: radial gradient, and on a square grid that reads instantly as
+    #: generated — the eye finds the centre before the player does. Each
+    #: jackpot gets its own random phase, so no two haloes are the same
+    #: shape.
+    pure_halo_lobe: float = 0.34
+
+    #: How much less willing grading is to claim BARE ground than to enrich
+    #: RED that is already there. Below 1.0 the deposit grows along the seam
+    #: it belongs to and only spills into the void where it has to, which is
+    #: what stops a jackpot in sparse terrain from painting a perfect disc
+    #: onto empty black.
+    pure_halo_bare_bias: float = 0.5
+
 
 #: v1.28 — how many jackpots a board carries, by seat count (RULEBOOK §2.2).
 #: Inclusive ``(low, high)``; the generator draws uniformly between them.
@@ -848,6 +906,173 @@ def _spread_pure_red(grid: Grid, params: GenerationParams) -> None:
         kept.append(best_at)
 
 
+def _grade_pure_red(grid: Grid, params: GenerationParams) -> None:
+    """Surround every pure with a mass core and a vein shoulder.
+
+    RULEBOOK §2.2. :func:`_spread_pure_red` guarantees the *count* and the
+    *spacing* of jackpots but says nothing about the ground they sit in, and
+    measured on the v1.28 output that ground was ordinary: promotion picks the
+    richest cell that clears the separation, separated ``mass`` is vanishingly
+    rare (~3 cells on a 40x28 board, and some boards have none), so the top-up
+    routinely lifted a cell of purity 80-150 straight to 255. The jackpot then
+    reads as a spike with nothing around it.
+
+    That costs the player a read they should be able to trust — that thickening
+    ground means you are getting warmer. A pure with no shoulder is unfindable
+    except by landing on it, which turns the search into a lottery instead of
+    prospecting.
+
+    Two graded bands per pure, by EUCLIDEAN distance:
+
+    * within :attr:`~GenerationParams.pure_mass_radius` — the ``mass`` core;
+    * out to :attr:`~GenerationParams.pure_vein_radius` — a ``vein`` shoulder
+      whose target purity falls off with distance, so the deposit thins
+      outward instead of ending on a step.
+
+    Three rules keep the pass from doing damage:
+
+    1. **It only ever raises.** A cell already richer than its target is left
+       alone, so grading cannot flatten terrain that was interesting already.
+    2. **It never touches GREEN or BLUE.** Bare ground is promoted to RED
+       (that is just growing the seam), but another colour is a deliberate
+       feature of the board and is not ours to overwrite. Their cell counts
+       come out of this pass exactly as they went in.
+    3. **It never reaches 255.** The mass ceiling is below pure, so grading
+       cannot mint a jackpot — which would break both the separation
+       guarantee above and the no-touching rule of
+       :func:`_decluster_pure_red`.
+
+    Three things keep it from looking generated, which is the whole
+    difficulty — a correct halo that reads as a bullseye is worse than no
+    halo, because it tells the player where the jackpot is from across the
+    board:
+
+    * the radius **wanders with angle** (two harmonics, per-jackpot random
+      phase), so each deposit is a different lopsided blob rather than a
+      circle;
+    * edges are **ragged** — a cell inside a band is skipped with a
+      probability that grows with distance, so the outline is broken;
+    * grading **prefers ground that is already RED**
+      (:attr:`~GenerationParams.pure_halo_bare_bias`), so the deposit grows
+      along the seam it belongs to instead of stamping a disc across
+      whatever happens to be underneath.
+
+    The pure list is taken ONCE, before any write, so a graded cell can never
+    seed a halo of its own.
+
+    RNG comes off a FRESH ``random.Random(seed + 7_000)`` (RED 1_000, GREEN
+    2_000, BLUE 3_000, decluster 4_000, spread 5_000, count draw 6_000) so no
+    existing layer's stream moves and old seeds keep their terrain.
+    """
+    width, height = params.width, params.height
+    r_mass = max(0.0, float(params.pure_mass_radius))
+    r_vein = max(r_mass, float(params.pure_vein_radius))
+    if r_vein <= 0:
+        return
+
+    m_lo, m_hi = int(params.pure_mass_min), int(params.pure_mass_max)
+    v_lo, v_hi = int(params.pure_vein_min), int(params.pure_vein_max)
+    m_lo, m_hi = max(1, min(254, m_lo)), max(1, min(254, m_hi))
+    v_lo, v_hi = max(1, min(254, v_lo)), max(1, min(254, v_hi))
+    if m_hi < m_lo:
+        m_lo, m_hi = m_hi, m_lo
+    if v_hi < v_lo:
+        v_lo, v_hi = v_hi, v_lo
+
+    rng = random.Random(params.seed + 7_000)
+
+    pures = [
+        (x, y)
+        for y in range(height)
+        for x in range(width)
+        if grid[y][x].tile == Tile.RED and grid[y][x].purity >= 255
+    ]
+    if not pures:
+        return
+
+    lobe = max(0.0, min(0.9, float(params.pure_halo_lobe)))
+    bare_bias = max(0.0, min(1.0, float(params.pure_halo_bare_bias)))
+    core = max(0.0, min(1.0, float(params.pure_mass_core_chance)))
+    fringe = max(0.0, min(core, float(params.pure_mass_fringe_chance)))
+
+    # Widen the scan by the most the lobe can push the radius out, or a
+    # deposit's fattest side would be clipped to the circular reach.
+    reach = int(math.ceil(r_vein * (1.0 + lobe)))
+    for (px, py) in pures:
+        # Per-jackpot phases, so no two deposits share a silhouette.
+        ph2 = rng.uniform(0.0, math.tau)
+        ph3 = rng.uniform(0.0, math.tau)
+        for dy in range(-reach, reach + 1):
+            for dx in range(-reach, reach + 1):
+                x, y = px + dx, py + dy
+                if not (0 <= x < width and 0 <= y < height):
+                    continue
+                if dx == 0 and dy == 0:
+                    continue
+                dist = math.hypot(dx, dy)
+
+                # Two harmonics: the 2-lobe term elongates the deposit along
+                # some axis, the weaker 3-lobe term stops that reading as a
+                # tidy ellipse.
+                theta = math.atan2(dy, dx)
+                warp = 1.0 + lobe * (
+                    0.62 * math.sin(2.0 * theta + ph2)
+                    + 0.38 * math.sin(3.0 * theta + ph3)
+                )
+                rm, rv = r_mass * warp, r_vein * warp
+                if dist > rv:
+                    continue
+
+                cell = grid[y][x]
+                if cell.tile in (Tile.GREEN, Tile.BLUE):
+                    continue  # rule 2 — not ours to overwrite
+
+                # How much ground gets touched at all, thinning outward.
+                if dist <= rm:
+                    keep = 0.92
+                else:
+                    t = (dist - rm) / max(1e-6, rv - rm)
+                    keep = 0.86 - 0.52 * t
+                if cell.tile != Tile.RED:
+                    keep *= bare_bias  # follow the seam, don't flood the void
+
+                # Whether a touched cell is mass or vein decays with distance
+                # to a floor, so mass clusters at the jackpot and then
+                # scatters outward rather than stopping at a boundary. The
+                # gaussian is on (dist - 1) so the ring actually touching the
+                # pure sits at the full core chance.
+                spread = math.exp(-(((max(0.0, dist - 1.0)) / 1.7) ** 2))
+                p_mass = fringe + (core - fringe) * spread
+
+                # Draw all three unconditionally, THEN decide — so the stream
+                # advances the same way whatever terrain a halo falls on, and
+                # a skipped cell cannot shift the cells after it.
+                roll = rng.random()
+                tier_roll = rng.random()
+                shade = rng.random()
+
+                if roll > keep:
+                    continue
+
+                if tier_roll < p_mass:
+                    lo, hi = m_lo, m_hi
+                else:
+                    # Vein, thinning outward, so the deposit trails off
+                    # instead of ending on a step.
+                    t = min(1.0, dist / max(1e-6, rv))
+                    mid = v_hi + (v_lo - v_hi) * t
+                    lo = max(v_lo, int(mid) - 18)
+                    hi = min(v_hi, int(mid) + 18)
+                    if hi < lo:
+                        lo = hi = max(v_lo, min(v_hi, int(mid)))
+
+                target = lo + int(shade * (hi - lo + 1))
+                target = max(lo, min(hi, target))
+                if cell.tile == Tile.RED and cell.purity >= target:
+                    continue  # rule 1 — only ever raise
+                grid[y][x] = Cell(Tile.RED, target)
+
+
 def _ensure_pure_red(grid: Grid, params: GenerationParams) -> None:
     """Guarantee at least one pure (255) RED cell on the board.
 
@@ -910,4 +1135,8 @@ def generate_grid(params: GenerationParams) -> Grid:
     # that runs after both can enforce the separation over the whole board.
     if params.spread_pure_red:
         _spread_pure_red(grid, params)
+    # v1.29 — after the pure set is FINAL, so every jackpot gets a shoulder
+    # and none is graded around a cell that is about to be demoted.
+    if params.grade_pure_red:
+        _grade_pure_red(grid, params)
     return grid

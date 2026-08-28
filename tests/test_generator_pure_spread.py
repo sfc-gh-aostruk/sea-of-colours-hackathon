@@ -63,6 +63,19 @@ def _closest_pair(cells):
 
 
 def _params(seed, **kw):
+    """Params for the spread rule, with v1.29 GRADING off by default.
+
+    Grading (§2.2, :func:`_grade_pure_red`) runs immediately after this rule
+    and enriches the ground around each pure, promoting bare cells to RED.
+    That is intended behaviour, but it is a *different* layer: leaving it on
+    would break the "spread moved nothing but purities" tests below on a
+    change those tests are not measuring. Grading has its own module,
+    ``test_generator_pure_halo.py``.
+
+    It does not touch the pure set itself — grading can never write 255 —
+    so the count and separation tests here read the same either way.
+    """
+    kw.setdefault("grade_pure_red", False)
     return GenerationParams(width=_W, height=_H, seed=seed, **kw)
 
 
@@ -234,14 +247,22 @@ def test_no_red_at_all_is_a_no_op():
     assert _pure_cells(grid) == []
 
 
-# ── v1.28: one jackpot per House ────────────────────────────────────
+# ── v1.28: the count is a band, sized by the table ──────────────────
 #
-# The floor above is the GENERATOR's default of 2. v1.28 scales the real
-# floor with the seat count at the call site in ``GameSession.new``, so
-# these go through a whole session rather than ``generate_grid`` — the
-# plumbing is the thing under test, and a generator-level test cannot see
-# it. The dataclass default stays 2 on purpose, so every test above keeps
-# its meaning.
+# The floor above is the GENERATOR's default of 2 with no draw. v1.28
+# sizes the real count at the call site in ``GameSession.new``, which
+# passes a ``(low, high)`` band from ``pure_count_range`` and lets the
+# generator draw uniformly inside it. So these go through a whole session
+# rather than ``generate_grid`` — the plumbing is the thing under test,
+# and a generator-level test cannot see it. The dataclass default stays a
+# plain floor of 2, so every test above keeps its meaning.
+#
+# NOTE FOR ANYONE TIGHTENING THESE. The count is deliberately NOT a
+# function of the seat count, so `len(pures) >= len(seats)` is the wrong
+# assertion however natural it looks: at four Houses the band is 3-6 and
+# a board with 3 is correct and intended — a House is allowed to find
+# itself with no jackpot to reach. An earlier cut of this file asserted
+# `>= n` and passed only because seed 7 happened to draw high.
 
 
 def _session_pures(seats, seed=7):
@@ -251,40 +272,88 @@ def _session_pures(seats, seed=7):
     return sess, _pure_cells(sess.grid)
 
 
-def test_the_pure_floor_scales_with_the_seat_count():
-    """Four Houses, four jackpots — and still no pair within one probe disk.
+def test_the_pure_count_lands_inside_the_band_for_the_seat_count():
+    """Every seat count gets a board inside its own band, still spread out."""
+    from sea_of_colours.generator import pure_count_range
 
-    A flat floor of 2 on a 4-seat board hands two seats a jackpot each and
-    two seats none, which is the same flattened opening §2.2 exists to
-    prevent, only now distributed unfairly.
-    """
-    for n in (2, 3, 4):
+    for n in (1, 2, 3, 4):
+        lo, hi = pure_count_range(n)
         seats = [f"p{i}" for i in range(1, n + 1)]
-        sess, pures = _session_pures(seats)
-        assert len(sess.players) == n, "fixture built the wrong seat count"
-        assert len(pures) >= n, (
-            f"{n} seats got {len(pures)} pure cell(s) — every House must be "
-            f"able to contest a jackpot"
-        )
-        gap = _closest_pair(pures)
-        assert gap is not None and gap >= _MIN_SEP, (
-            f"{n} seats: closest pure pair is {gap} apart, under the "
-            f"{_MIN_SEP} separation — one probe disk lights both, so raising "
-            f"the count just re-created the cluster it replaced"
-        )
+        for seed in range(25):
+            sess, pures = _session_pures(seats, seed=seed)
+            assert len(sess.players) == n, "fixture built the wrong seat count"
+            assert len(pures) >= lo, (
+                f"{n} seats, seed {seed}: {len(pures)} pure(s), under the "
+                f"band floor of {lo} — the floor is the hard guarantee"
+            )
+            assert len(pures) <= hi, (
+                f"{n} seats, seed {seed}: {len(pures)} pure(s), over the band "
+                f"ceiling of {hi}. The draw cannot exceed it, so this means "
+                f"the terrain itself carried more separated pures than the "
+                f"band allows for — the top-up is a floor, it never demotes"
+            )
+            gap = _closest_pair(pures)
+            assert gap is not None and gap >= _MIN_SEP, (
+                f"{n} seats, seed {seed}: closest pure pair is {gap} apart, "
+                f"under the {_MIN_SEP} separation — one probe disk lights "
+                f"both, so raising the count re-created the cluster §2.2 "
+                f"exists to remove"
+            )
 
 
-def test_the_floor_never_drops_below_two():
+def test_the_count_actually_varies():
+    """It is a RANDOM band, not a floor wearing a band's clothes.
+
+    Without this, a draw that always returned ``low`` would satisfy every
+    other test in this file — and the whole point of the band is that the
+    number of jackpots must not be a tell for the number of seats.
+    """
+    seats = ["p1", "p2", "p3", "p4"]
+    counts = {len(_session_pures(seats, seed=s)[1]) for s in range(40)}
+    assert len(counts) > 1, (
+        f"40 seeds all produced {counts} jackpots — the count is constant, "
+        f"so finding one jackpot still tells a seat how many others exist"
+    )
+
+
+def test_the_draw_is_deterministic_for_a_seed():
+    """Same seed, same seats, same board — the draw must not be ambient.
+
+    A bare ``random.randint`` here would reroll the map on every reload of
+    a persisted season, which is the one thing a seed exists to prevent.
+    """
+    seats = ["p1", "p2", "p3"]
+    first = _session_pures(seats, seed=11)[1]
+    second = _session_pures(seats, seed=11)[1]
+    assert first == second
+
+
+def test_the_band_never_drops_below_two():
     """A solo season still gets a choice to make.
 
-    ``max(2, seats)``, not ``seats`` — one jackpot is the original
-    no-decision board, and a single-seat game is the one place where a
-    naive count would produce it.
+    One jackpot is the original no-decision board, and a single-seat game
+    is the one place a naive seat-sized band would produce it.
     """
-    _, pures = _session_pures(["p1"])
-    assert len(pures) >= 2, (
-        "a 1-seat season fell to a single jackpot — the floor is max(2, n)"
-    )
+    from sea_of_colours.generator import pure_count_range
+
+    assert pure_count_range(1)[0] >= 2
+    for seed in range(10):
+        _, pures = _session_pures(["p1"], seed=seed)
+        assert len(pures) >= 2, (
+            f"seed {seed}: a 1-seat season fell to a single jackpot"
+        )
+
+
+def test_four_houses_may_be_short_of_one_jackpot_each():
+    """Deliberate, and the reason the band is not ``(seats, seats + 2)``.
+
+    Pinned because it looks like an off-by-one and WILL be "corrected" by
+    someone reading the table cold. Scarcity at a full table is the point:
+    four Houses can be made to fight over three jackpots.
+    """
+    from sea_of_colours.generator import pure_count_range
+
+    assert pure_count_range(4)[0] == 3
 
 
 def test_duplicate_seats_do_not_inflate_the_floor():
@@ -315,39 +384,71 @@ def test_the_default_seat_list_still_gets_the_v124_board():
     assert implicit == explicit
 
 
-def test_more_seats_is_a_superset_not_a_reshuffle():
-    """Raising the floor may only ADD jackpots, never move the existing ones.
+# The two below drive ``generate_grid`` with an explicit count rather than
+# a seat list, deliberately. Comparing a 2-seat board against a 4-seat one
+# stopped being a valid way to isolate the count the moment the count
+# became a random draw — the two boards can differ because they drew
+# differently, which proves nothing about the top-up. Setting
+# ``min_pure_count`` with no ``max_pure_count`` disables the draw, so the
+# count is the only variable.
 
-    ``_spread_pure_red`` tops up by promotion, so a 4-seat board must be the
-    2-seat board plus two more. If this fails the count is being met by
-    re-running the thinning pass with different survivors, which would mean
-    the seat count silently re-rolls terrain the seed is supposed to fix.
+
+def test_raising_the_count_only_adds_jackpots():
+    """The top-up may only ADD pures, never move the ones already there.
+
+    ``_spread_pure_red`` tops up by promotion, so the N+2 board must be the
+    N board plus two. If this fails the count is being met by re-running
+    the thinning pass with different survivors, which would mean the seat
+    count silently re-rolls terrain the seed is supposed to fix.
     """
-    _, two = _session_pures(["p1", "p2"])
-    _, four = _session_pures(["p1", "p2", "p3", "p4"])
-    assert set(two) <= set(four), (
-        f"the 2-seat jackpots {sorted(set(two) - set(four))} vanished when a "
-        f"third and fourth House joined the same seed"
-    )
+    for seed in range(15):
+        two = _pure_cells(generate_grid(_params(seed, min_pure_count=2)))
+        four = _pure_cells(generate_grid(_params(seed, min_pure_count=4)))
+        assert set(two) <= set(four), (
+            f"seed {seed}: jackpots {sorted(set(two) - set(four))} vanished "
+            f"when the count was raised from 2 to 4"
+        )
 
 
-def test_only_the_pures_move_when_seats_are_added():
+def test_raising_the_count_moves_nothing_but_the_pures():
     """Everything else on the board is identical.
 
-    The seat count feeds exactly one dial. Any tile change, or a purity
-    change on a cell that is not a promoted pure, means it reached a shared
+    The count feeds exactly one dial. Any tile change, or a purity change
+    on a cell that is not a newly promoted pure, means it reached a shared
     RNG stream — the same failure ``test_the_tile_layout_is_unchanged``
     guards at the generator level.
     """
-    two_sess, two = _session_pures(["p1", "p2"])
-    four_sess, four = _session_pures(["p1", "p2", "p3", "p4"])
-    added = set(four) - set(two)
+    a_grid = generate_grid(_params(7, min_pure_count=2))
+    b_grid = generate_grid(_params(7, min_pure_count=4))
+    added = set(_pure_cells(b_grid)) - set(_pure_cells(a_grid))
     for y in range(_H):
         for x in range(_W):
-            a, b = two_sess.grid[y][x], four_sess.grid[y][x]
+            a, b = a_grid[y][x], b_grid[y][x]
             assert a.tile == b.tile, f"tile moved at ({x},{y}) — shared RNG"
             if a.purity != b.purity:
                 assert (x, y) in added, (
                     f"purity moved at ({x},{y}) ({a.purity} -> {b.purity}) on "
                     f"a cell that is not one of the added jackpots"
                 )
+
+
+def test_the_band_draw_does_not_disturb_the_terrain():
+    """A drawn count of N must give the same board as a flat floor of N.
+
+    The draw runs on its own RNG stream (``seed + 6_000``) precisely so
+    that it cannot perturb the demote/promote passes. If someone folds it
+    into the shared stream to save a line, this catches it: the board
+    would still be legal, just silently different from every board the
+    same seed produced before.
+    """
+    for seed in range(12):
+        drawn_grid = generate_grid(
+            _params(seed, min_pure_count=2, max_pure_count=6)
+        )
+        n = len(_pure_cells(drawn_grid))
+        flat_grid = generate_grid(_params(seed, min_pure_count=n))
+        assert drawn_grid == flat_grid, (
+            f"seed {seed}: a drawn count of {n} produced a different board "
+            f"from a flat floor of {n} — the draw is perturbing a shared "
+            f"RNG stream"
+        )

@@ -54,6 +54,10 @@ def _params(seed, **kw):
     itself live in ``test_generator_pure_spread.py`` and opt back in.
     """
     kw.setdefault("spread_pure_red", False)
+    # v1.29 — grading off for the same reason, and it matters more here:
+    # it promotes bare cells to RED, so the "no other feature of the terrain
+    # moved" tests below would fail on a change that is working as intended.
+    kw.setdefault("grade_pure_red", False)
     return GenerationParams(width=_W, height=_H, seed=seed, **kw)
 
 

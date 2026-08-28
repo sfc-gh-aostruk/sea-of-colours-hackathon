@@ -29,6 +29,10 @@ _W, _H = 40, 28
 def _params(seed, **kw):
     """Params with the v1.24 spread rule off — see the module docstring."""
     kw.setdefault("spread_pure_red", False)
+    # v1.29 — grading likewise, and for the same reason: it enriches the
+    # ground around a pure and promotes bare cells to RED, so a board built
+    # with it on is not the raw output these tests measure against.
+    kw.setdefault("grade_pure_red", False)
     return GenerationParams(width=_W, height=_H, seed=seed, **kw)
 
 

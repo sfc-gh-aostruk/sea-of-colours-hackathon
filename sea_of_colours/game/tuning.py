@@ -64,3 +64,37 @@ def probe_lifetime_nights() -> Optional[int]:
     """Nights a probe survives before dawn expiry (canonical: 3)."""
     k = _int_env("SOC_PROBE_LIFETIME_NIGHTS", 3)
     return k if k > 0 else None
+
+
+def map_halo_density(default: float = 1.0) -> float:
+    """``SOC_MAP_HALO`` — density of the v1.29 jackpot deposit (§2.2).
+
+    Grading roughly doubled the RED on a board, which is a real balance
+    change and the kind that is only properly judged after people have
+    played on it. This is the escape hatch, so backing it out is a server
+    restart rather than a code change:
+
+    * ``0`` / ``off`` / ``none`` — grading off. Boards come out
+      **byte-identical to v1.28**, because the pass runs last and draws on
+      its own RNG stream, so nothing earlier moves.
+    * ``0.5`` — half as much ``mass`` in each deposit; the shoulder and the
+      reach are unchanged.
+    * unset or ``1`` — as shipped.
+
+    Reverting is safe for games already running: a session stores its
+    **grid**, not just its seed (``GameSession.to_dict``), so changing this
+    cannot re-terraform a season in progress. It applies to boards generated
+    after the restart.
+
+    Read at call time, like every knob here, so a sweep can flip it
+    in-process.
+    """
+    raw = (os.environ.get("SOC_MAP_HALO") or "").strip().lower()
+    if not raw:
+        return max(0.0, float(default))
+    if raw in ("off", "none", "no", "false"):
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return max(0.0, float(default))
