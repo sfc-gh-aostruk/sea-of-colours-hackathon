@@ -1827,6 +1827,14 @@ def plan_orbit_actions(
     # v1.13 — on the terminal settlement orbit the season ends the moment
     # this resolves, so anything bought here is never used. Bank it and
     # let the automatic settlement do the work.
+    #
+    # v1.30 — LEGACY PATH, KEPT ON PURPOSE. A new season never reaches
+    # here: the simulator now settles the terminal orbit itself rather
+    # than asking, precisely BECAUSE this branch's answer ("nothing worth
+    # buying") was the only answer anyone ever had. It still fires for a
+    # season persisted mid-final-orbit by a pre-v1.30 build, which resumes
+    # through the normal submit path. Delete it only once no such save can
+    # exist.
     if bool(orbit.get("final_orbit")):
         return [], (
             "final settlement orbit: RED ships and GREEN clears "

@@ -107,6 +107,102 @@ def test_full_season_runs_final_orbit_then_completes() -> None:
     assert sess.is_season_complete()
 
 
+# ── v1.30: the terminal orbit settles itself ─────────────────────────
+#
+# READ THIS BEFORE TRUSTING A GREEN RUN HERE. `tests/conftest.py`
+# monkey-patches `NightSimulator.run` to auto-resolve any ORBIT the night
+# leaves behind, which is what keeps the pre-v0.8.0 suite green — and it
+# means almost NO test in this repo can see the terminal-orbit gate at
+# all. The retirement of that gate passed the entire suite before it was
+# written, which is exactly the kind of "green proves nothing" that these
+# two tests exist to close. Both deliberately restore the real
+# `NightSimulator.run` first.
+
+
+def _unpatched_night_run(monkeypatch):
+    """The real `NightSimulator.run`, with conftest's orbit auto-skip off.
+
+    Do NOT get this by importing conftest. Importing it re-executes the
+    module, which re-captures `_orig_night_run` from an already-patched
+    class and then patches it AGAIN — so the "original" you get back is
+    the wrapper, and every later test in the run inherits a double
+    auto-skip. (conftest guards `try_drop_unit` against exactly this and
+    says so in a comment; the night hook has no such guard.)
+
+    Instead, walk the wrapper chain that is already installed. Each
+    wrapper closes over the function it replaced, so following
+    `_orig_night_run` through its globals lands on the genuine method.
+    """
+    from sea_of_colours.game.simulator import NightSimulator
+
+    fn = NightSimulator.run
+    seen = 0
+    while getattr(fn, "__name__", "") == "_patched_night_run" and seen < 10:
+        fn = fn.__globals__["_orig_night_run"]
+        seen += 1
+    assert getattr(fn, "__name__", "") == "run", (
+        f"could not find the real NightSimulator.run (stopped at {fn!r})"
+    )
+    monkeypatch.setattr(NightSimulator, "run", fn)
+    return NightSimulator
+
+
+def test_the_last_night_settles_itself_with_nobody_submitting(monkeypatch) -> None:
+    """The season must END on the last night, not ask one more question.
+
+    Since v1.13 the terminal orbit has had nothing to decide — RED ships
+    and GREEN clears automatically, and any hardware bought there is
+    never used. It still made every seat submit an empty orbit before
+    anyone could be told who won, which in a 4-player game is three
+    people waiting on a fourth to click through an empty screen.
+    """
+    sim = _unpatched_night_run(monkeypatch)
+    sess = GameSession.new(20, 14, seed=13, season_day_cap=2, players=["p1", "p2"])
+
+    sim().run(sess, {p: [] for p in sess.players})     # night 1 of 2
+    assert sess.phase == Phase.ORBIT, "a mid-season night still opens orbit"
+    OrbitResolver().run(sess, {p: [] for p in sess.players})
+
+    sim().run(sess, {p: [] for p in sess.players})     # the LAST night
+    assert sess.final_orbit is True
+    assert sess.phase == Phase.SEASON_COMPLETE, (
+        "the last night parked in ORBIT waiting for a submission nobody "
+        "has a reason to make"
+    )
+    assert sess.is_season_complete()
+    # Nothing is owed by anyone — the gate is gone, not merely pre-filled.
+    assert all(v is None for v in sess.pending_orbit_actions.values())
+
+
+def test_the_automatic_settlement_actually_settles(monkeypatch) -> None:
+    """Retiring the gate must not skip the settlement it was gating.
+
+    The failure this guards against is subtle and expensive: end the
+    season without running the resolver and the last night's haul is
+    never shipped, so every seat's final score silently loses its best
+    day. Assert on the CARGO, not just the phase.
+    """
+    sim = _unpatched_night_run(monkeypatch)
+    sess = GameSession.new(20, 14, seed=21, season_day_cap=1, players=["p1", "p2"])
+
+    # Put known cargo in the vault: one RED parcel to be shipped, one
+    # GREEN to be disposed of.
+    sess.hoard_squares["p1"] = [
+        {"tile_at_harvest": int(Tile.RED), "purity_at_harvest": 200},
+        {"tile_at_harvest": int(Tile.GREEN), "purity_at_harvest": 0},
+    ]
+
+    sim().run(sess, {p: [] for p in sess.players})
+
+    assert sess.phase == Phase.SEASON_COMPLETE
+    assert not sess.hoard_squares.get("p1"), (
+        "the vault still holds cargo — the terminal settlement did not run"
+    )
+    assert sess.score_for("p1") > 0, "the last night's RED was never shipped"
+    assert sess.catapult_history, "no settlement was recorded for the final day"
+    assert sess.catapult_history[-1]["day"] == sess.day
+
+
 # ── Vault-RED sold at a loss ─────────────────────────────────────────
 def test_vault_red_loss_value_and_score() -> None:
     sess = GameSession.new(20, 14, seed=14)

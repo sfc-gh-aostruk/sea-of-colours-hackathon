@@ -15550,6 +15550,9 @@
     liveAutoShown: false,
     /** Tracks the live completion edge so we only fade in on transition. */
     liveWasComplete: false,
+    /** v1.30 — when we first held the finale back waiting on the last
+     *  night's cinematic, so the hold can time out rather than hang. */
+    finaleHeldSince: 0,
     /** True once the replay scrub has auto-popped at its end. */
     replayAutoShown: false,
     /** True once the winner celebration + results have fired for this
@@ -16043,7 +16046,15 @@
    *  so there is nothing left to protect the player from except wasting
    *  their own credits — which the banner warns about and the engine
    *  now permits. The buttons stay live; we only clear any lock a
-   *  previous version of this code may have left on them. */
+   *  previous version of this code may have left on them.
+   *
+   *  v1.30 — LEGACY PATH, KEPT ON PURPOSE. A new season never shows this
+   *  banner: the engine settles the terminal orbit itself rather than
+   *  opening one, so the flag is only ever seen alongside
+   *  ``is_season_complete`` (and the caller passes ``isFinal && !complete``,
+   *  which is then false). It still renders for a season persisted
+   *  mid-final-orbit by a pre-v1.30 build. Delete it only once no such
+   *  save can exist. */
   function updateFinalOrbitUi(isFinal) {
     const banner = document.getElementById("final-orbit-banner");
     if (banner) banner.hidden = !isFinal;
@@ -16145,6 +16156,32 @@
     if (mainMapSource !== "live") return;
     if (complete) {
       updateEndgameReopen(true);
+      // v1.30 — HOLD THE FINALE UNTIL THE LAST NIGHT HAS BEEN ANIMATED.
+      //
+      // Retiring the terminal settlement orbit removed an accidental
+      // barrier. The season used to complete only once every seat had
+      // submitted one more (empty) orbit, which took long enough that the
+      // final night's cinematic had always finished by then. It now
+      // completes on the last night itself, in the same status pull that
+      // first reports the night — so without this the score card can fly
+      // in over a board that is still animating the night it is scoring.
+      //
+      // ``mainMapSource !== "live"`` above catches a cinematic already
+      // RUNNING; this catches the gap before one STARTS, which is the new
+      // race. ``_nightAwaitingCinematic`` returns false when a cinematic
+      // could never play (FX off, reduced motion), so those seats fall
+      // straight through as before.
+      //
+      // Bounded by wall-clock rather than a poll count: the deferral is
+      // waiting on an animation, and if anything upstream stalls, showing
+      // the winner late is bad but never showing them is worse.
+      // NB: return WITHOUT touching ``liveWasComplete``. The trigger below
+      // fires on the false->true transition, so recording completion here
+      // would consume that transition and the finale would never play.
+      if (_nightAwaitingCinematic() || _liveFxPlaying) {
+        endgameMeta.finaleHeldSince = endgameMeta.finaleHeldSince || Date.now();
+        if (Date.now() - endgameMeta.finaleHeldSince < 90000) return;
+      }
       if (!endgameMeta.liveWasComplete && !endgameMeta.liveAutoShown) {
         endgameMeta.liveAutoShown = true;
         // #4 — play the FINAL settlement resolve beat (catapult launch + score
@@ -18071,6 +18108,7 @@
       endgameMeta.summaryFor = null;
       endgameMeta.liveAutoShown = false;
       endgameMeta.liveWasComplete = false;
+      endgameMeta.finaleHeldSince = 0;
       endgameMeta.replayAutoShown = false;
       endgameMeta.replayComplete = false;
       mainMapSource = "live";
