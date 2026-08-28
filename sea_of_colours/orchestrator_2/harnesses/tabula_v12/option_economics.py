@@ -30,6 +30,7 @@ so the disk math matches the engine exactly.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7.probe_hints import (
@@ -446,8 +447,66 @@ def _redsign_smear_regions(
 # 6-cell blind comb at +1641, which beat every real option on the card — swapping
 # "the attack always loses" for "the attack always wins" is the same defect
 # pointing the other way.
-_ASSUMED_HALO_PURITY = 55
-_ASSUMED_RED_DENSITY = 0.85
+#
+# MEASURED v1.29, over 28 offline seasons (14 graded / 14 not, same seeds),
+# sampling every real smear a seat could see — `scripts/_v12_halo_trace.py`.
+# Three things came out of it, and the first is the one that matters:
+#
+#  1. THIS CONSTANT IS ALMOST NEVER REACHED — 1.0% of priced seams on graded
+#     boards, 2.1% ungraded. `blind_estimate` measures each seam it can see
+#     and pools across seams first, and that path reads the new terrain by
+#     itself. So the terrain change did NOT quietly break redsign pricing.
+#
+#  2. 55 was never the right number. Real smears measure a median non-pure
+#     purity of 30 on UNGRADED boards and 107 on graded ones (n=1095/1525).
+#     The original 53/54/63 came from three hand-picked snapshots that were
+#     richer than a typical board, so the constant ran ~1.8x HIGH before
+#     v1.29 and now runs ~1.9x LOW. It has simply always been off.
+#
+#  3. The `mass` cliff is not in play. The multiplier steps 1.0 -> 1.5 at
+#     151, which is what made an early guess of 180 beat every option on
+#     the card (a 6-cell comb prices 281 at purity 55, 602 at 107, 1377 at
+#     180). Across 1525 graded samples the measured mean never exceeded
+#     **146** — real halos stay in `vein`. A value near 107 is therefore
+#     safe in a way 180 never was.
+#
+# Set from that measurement: 105 is the graded median (107) rounded down, and
+# 0.95 sits just under the measured 0.98 — both deliberately a shade
+# conservative, since the failure mode this constant has actually produced in
+# the past is over-valuing a blind attack, never under-valuing one.
+#
+# Re-run `scripts/_v12_halo_trace.py` before moving these again, and derive
+# from real smears rather than a proxy ring on the pure — the two disagree.
+# If the terrain is ever reverted (SOC_MAP_HALO=off) the honest value drops
+# back to ~30, though at a 1% reach it is not worth chasing.
+_ASSUMED_HALO_PURITY = 105
+_ASSUMED_RED_DENSITY = 0.95
+
+# ── halo telemetry (opt-in, off in play) ─────────────────────────────
+#
+# Exists to answer the question the constant above cannot answer from a
+# desk: HOW OFTEN is it actually reached? `blind_estimate` measures the
+# board and pools across seams before falling back, so the constant only
+# bites when a seam shows no non-pure RED — and whether that is one night
+# in three or one in three hundred decides whether it is worth retuning at
+# all. Collected over real seasons by `scripts/_v12_halo_trace.py`.
+#
+# Costs nothing unless SOC_V12_HALO_TRACE is set, and never changes what
+# blind_estimate returns.
+_HALO_TRACE: List[Dict[str, Any]] = []
+
+
+def halo_trace_enabled() -> bool:
+    return bool(os.environ.get("SOC_V12_HALO_TRACE"))
+
+
+def halo_trace() -> List[Dict[str, Any]]:
+    """Records collected since the last reset. See `_HALO_TRACE`."""
+    return _HALO_TRACE
+
+
+def reset_halo_trace() -> None:
+    _HALO_TRACE.clear()
 
 
 def _redsign_smear_meta(agent_view: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -526,15 +585,18 @@ def blind_estimate(
     stats: List[Optional[Tuple[float, int]]] = []
     pool_purity: List[int] = []
     pool_density: List[float] = []
+    sources: List[str] = []       # telemetry only — see _HALO_TRACE
     for weights in regions:
         seen = [(c, idx[c]) for c in weights if c in idx]
         if not seen:
             stats.append(None)
+            sources.append("blind")       # will take the pooled/constant fallback
             continue
         red = [p for _, (t, p) in seen if t == "RED"]
         nonpure = [p for p in red if p < 255]
         density = len(red) / len(seen)
         purity = int(sum(nonpure) / len(nonpure)) if nonpure else _ASSUMED_HALO_PURITY
+        sources.append("measured" if nonpure else "constant_purity")
         stats.append((density, purity))
         pool_density.append(density)
         pool_purity.append(purity)
@@ -581,6 +643,29 @@ def blind_estimate(
 
     if not total_cells:
         return None
+
+    if halo_trace_enabled():
+        # Resolve "blind" seams to what they ACTUALLY used, which is the
+        # distinction the constant's fate turns on: borrowing measured stats
+        # from another seam on the same board is self-correcting on graded
+        # terrain, whereas reaching the constant is not.
+        pooled = bool(pool_density)
+        _HALO_TRACE.append({
+            "day": view_day(agent_view),
+            "regions": len(regions),
+            "sources": [
+                ("pooled" if pooled else "constant_both") if s == "blind" else s
+                for s in sources
+            ],
+            "measured_purities": list(pool_purity),
+            "measured_densities": [round(d, 3) for d in pool_density],
+            "reported_purity": reported[1],
+            "reported_density": round(reported[0], 3),
+            "reported_measured": reported_measured,
+            "fog_cells": total_cells,
+            "expected_pts": int(round(expected)),
+        })
+
     return {
         "expected_pts": int(round(expected)),
         "cells": total_cells,
@@ -1144,6 +1229,19 @@ def collision_risk(
                 "blind and cannot see the hour you land"
             )
 
+        # v1.29 — the two fog branches used to conclude the halo was THIN or
+        # UNKNOWN. Both were fair readings of a v1.28 board, where a jackpot
+        # was usually an isolated 255 in trace (median 2 mass squares on the
+        # whole map). They are wrong now: RULEBOOK §2.2 grades a deposit
+        # around every pure, so a jackpot carries a median of 2 mass cells
+        # within 1.5 and 5 within 4.5, and "I cannot see mass" no longer
+        # licenses "there is no mass".
+        #
+        # Note what has NOT changed: this still reports fog as fog. OBS-38
+        # was asserting MASS-RICH as measured fact having checked nothing,
+        # and the fix below is not a return to that — it names the
+        # GENERATION PRIOR, explicitly as a prior, and keeps the measured
+        # branch above as the only one that claims to have seen anything.
         halo = _seam_halo(agent_view, cell)
         if halo["pure"] or halo["mass"]:
             rich_s = (
@@ -1153,12 +1251,15 @@ def collision_risk(
         elif halo["seen"]:
             rich_s = (
                 f"what you can SEE of this seam is {halo['seen']} cell(s) of "
-                "trace/vein only — the pure is the prize, the halo is thin"
+                "trace/vein — but every jackpot is generated inside a deposit, "
+                "so the mass is most likely in the cells you CANNOT see rather "
+                "than absent"
             )
         else:
             rich_s = (
-                "you can see NONE of this seam, so its halo is unconfirmed — the "
-                "broadcast promises a pure and says nothing about what surrounds it"
+                "you can see NONE of this seam — but every jackpot is generated "
+                "inside a deposit, so the broadcast implies mass around it too, "
+                "you just cannot confirm which cells"
             )
 
         reason = (

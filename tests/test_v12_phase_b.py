@@ -218,11 +218,28 @@ def test_the_risk_line_reports_the_halo_it_can_actually_count():
     assert "you can SEE 1 pure + 1 mass on this seam" in reason
 
 
-def test_a_thin_halo_is_named_as_thin_rather_than_talked_up():
+def test_a_trace_only_sighting_is_reported_without_concluding_the_halo_is_empty():
+    """v1.29 rewrote this line, and the reason matters.
+
+    It used to end "the halo is thin", which was a fair reading of a v1.28
+    board — a jackpot was usually an isolated 255 with a median of 2 mass
+    squares on the WHOLE map. RULEBOOK §2.2 now grades a deposit around
+    every pure, so seeing only trace no longer licenses concluding there is
+    no mass; the mass is most likely in the fog.
+
+    What must still hold is the OBS-38 discipline: report what was SEEN as
+    seen. The line still names the trace/vein sighting and still does not
+    claim to have counted mass it cannot see.
+    """
     view = _two_seam_view()
     view["world"]["live"] = [{"x": 33, "y": 17, "tile": "RED", "purity": 40}]
     _level, reason = oe.collision_risk([(33, 17)], view)
-    assert "trace/vein only" in reason and "the halo is thin" in reason
+    assert "trace/vein" in reason
+    assert "cannot see" in reason.lower()
+    assert "the halo is thin" not in reason, (
+        "the v1.28 conclusion is back — a graded board does not support it"
+    )
+    assert "MASS-RICH" not in reason, "OBS-38: never assert mass it has not counted"
 
 
 def test_every_redsign_line_says_the_rivals_are_coming():
