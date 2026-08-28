@@ -10,6 +10,12 @@ dist/
 venv/
 env/
 
+# Generated tutorial films. The GENERATOR is the deliverable
+# (scripts/_film_drop.py, later scripts/make_tutorial_films.py); the
+# .webm/.mp4 and extracted frames are build output and are re-shot by
+# re-running it. See docs/TUTORIAL_PLAN.md §4.1.
+reports/films/
+
 # Test / tooling caches
 .pytest_cache/
 .mypy_cache/
