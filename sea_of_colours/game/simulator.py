@@ -42,7 +42,6 @@ from sea_of_colours.game.policy import (
     EmpLaunchMove,
     MAX_MOVES,
     Move,
-    MineLayMove,
     PickupMove,
     ProbeMove,
     StepMove,
@@ -97,8 +96,6 @@ def _describe_move(move: Move) -> str:
     if isinstance(move, EmpLaunchMove):
         cells = ",".join(f"({tx},{ty})" for tx, ty in move.ats)
         return f"emp_launch @{cells}"
-    if isinstance(move, MineLayMove):
-        return f"mine_lay @({move.at[0]},{move.at[1]})"
     if isinstance(move, ChaffFlareMove):
         return "chaff_flare"
     if isinstance(move, WasteMove):
@@ -528,28 +525,41 @@ class NightSimulator:
         # demos and 7-night tournament runs share one schema.
         cap = int(getattr(sess, "season_day_cap", None) or 7)
         if sess.day > cap:
-            # v1.0 — the final night opens a restricted SETTLEMENT ORBIT
-            # (refine / ship / green-flush only) rather than ending the
-            # season outright. The OrbitResolver flips the session to
-            # SEASON_COMPLETE once this last orbit settles, so the
-            # end-of-game screen has a final shipping window behind it.
+            # v1.0 — the final night opened a restricted SETTLEMENT ORBIT
+            # rather than ending the season outright, so there was a last
+            # shipping window behind the end-of-game screen.
+            #
+            # v1.30 — that window no longer decides anything, so it no
+            # longer asks. Since v1.13 the only orbit actions left spend
+            # credits on hardware, RED ships automatically and GREEN
+            # clears automatically; on the terminal orbit the hardware is
+            # never used, which is why the heuristic answers "nothing
+            # worth buying" and why a human sees an empty panel. Every
+            # seat still had to SUBMIT that nothing before anyone could be
+            # told who won — in a 4-player game, three people waiting on a
+            # fourth to click through a screen with no decision on it.
+            #
+            # So settle it here instead. This is the same OrbitResolver
+            # call the submit path would have made, with the empty queues
+            # it would have carried; `final_orbit` still gates the
+            # resolver's SEASON_COMPLETE branch, and the flag is still
+            # persisted, so a season saved mid-final-orbit by an older
+            # build resolves exactly as before when its seats submit.
             sess.final_orbit = True
             sess.phase = Phase.ORBIT
-            # v1.1 — award the day's stipend at Orbit ENTRY so the credit
-            # readout (and the planning-phase budget projection) reflect
-            # spendable funds. Idempotent: the OrbitResolver backstop is
-            # a no-op once this fires.
-            sess.award_orbit_credits()
             sess.pending_policies = {p: None for p in seats}
             sess.pending_orbit_actions = {p: None for p in seats}
             for p in seats:
                 sess._remember_entire_visibility(cast_player(p, allowed=seats))
             sess.log_info(
                 f"[finalOrbit] {sess.season_name or sess.session_id} — "
-                f"final day {cap} resolved; settlement orbit opens "
-                f"(refine & ship only). Season ends once it settles."
+                f"final day {cap} resolved; settling automatically."
             )
+            # Before the resolver, so the settlement's own log lines land
+            # after the night they settle — the order a reader expects.
             sess.last_night_replay = replay
+            from sea_of_colours.game.orbit_resolver import OrbitResolver
+            OrbitResolver().run(sess, {p: [] for p in seats})
             return
         # v0.8.0 — dawn now opens the ORBIT phase, not PLANNING.
         # Each new game-day starts with the daytime strategic step:
@@ -764,11 +774,6 @@ class NightSimulator:
         sess.pending_collision_events = []
         crushed_probes = sess.pending_probe_crush_events
         sess.pending_probe_crush_events = []
-        # v0.9 — drain mine events (detonations + lays surfaced
-        # via the apply path) so the watcher can render the
-        # rhombus minelayer + caltrop pixels animation.
-        mine_events = sess.pending_mine_events
-        sess.pending_mine_events = []
         sess.replay_push_scene(
             replay,
             caption,
@@ -776,7 +781,6 @@ class NightSimulator:
             tag=tag,
             collisions=collisions or None,
             crushed_probes=crushed_probes or None,
-            mine=mine_events or None,
             attempted=attempted,
             outcome="ok",
             hour=hour,
@@ -1478,24 +1482,11 @@ class NightSimulator:
         if isinstance(move, WaitMove):
             return f"{owner} waited at this hour", "wait", side
 
-        # v0.9 — MineLayMove. EMP launches and chaffs are normally
-        # pre-empted by :meth:`_pre_hour_phase`; they only reach this
-        # path if the pre-empt skipped them because their cost check
-        # failed, in which case we surface the failure as a waste so
-        # the seat retries with the next queue entry.
-        if isinstance(move, MineLayMove):
-            # The hour stamp the engine applies to the log line is
-            # already there via :meth:`_stamp_hour`; we just need the
-            # current night-clock hour for the lay record. The
-            # simulator passes hour metadata onto the caller after
-            # apply, but ``apply_mine_lay`` records its own
-            # ``laid_at_hour``. Use the session day clock as a stable
-            # proxy — the actual hour is captured by the wrapping
-            # replay frame.
-            ok, msg = sess.apply_mine_lay(owner, move.at[0], move.at[1], hour=0)
-            if not ok:
-                return msg, "waste", side
-            return msg, "mine_lay", side
+        # v1.31 — the caltrop MINE was retired and its dispatch branch
+        # went with it. A stale ``mine_lay`` no longer reaches here at
+        # all: `parse_moves` turns it into a WasteMove carrying the
+        # retirement reason (`_RETIRED_MOVE_TAGS`), which the branch
+        # below reports. See docs/ADDING_A_WEAPON.md before reinstating.
 
         if isinstance(move, EmpLaunchMove):
             # Reached here only if pre-empt was skipped (insufficient

@@ -1623,21 +1623,28 @@ def test_damaged_unit_remaining_steps_consolidated() -> None:
     out every consecutive non-pickup action queued for that same unit
     in ONE consolidated ``tag="damaged"`` replay frame. Slot economy:
     only ONE hour is consumed for the run, so a long, futile chain
-    (5 steps + pickup queued behind a caltrop) no longer drowns the
-    timeline in five identical "X damaged — awaiting pickup" rows."""
+    (5 steps + pickup queued behind the hit) no longer drowns the
+    timeline in five identical "X damaged — awaiting pickup" rows.
+
+    v1.31 — the hit used to be a caltrop. Mines were retired, so this
+    now uses the mutual-damage collision (§3.6), which damages the
+    stepper and cancels the step the same way. What is under test is
+    the CONSOLIDATION, not the damage source."""
     from sea_of_colours.game.session import GameSession, Phase
 
     sess = GameSession.new(28, 18, seed=803, players=("p1", "p2", "p3", "p4"))
     h3 = sess.entities["harvester_p3"]
     h3.x, h3.y = 20, 14
-    sess.mines["19:14"] = {
-        "x": 19, "y": 14, "owner": "p1", "laid_day": 0, "laid_at_hour": 0,
-    }
+    # A healthy rival harvester parked on the target cell: stepping into
+    # it cancels the move and damages both.
+    h1 = sess.entities["harvester_p1"]
+    h1.x, h1.y = 19, 14
+    h1.damaged = False
     sess.phase = Phase.PLANNING
     sess.stash_policy("p1", [])
     sess.stash_policy("p2", [])
     sess.stash_policy("p3", [
-        {"a": "step", "unit": "harvester_p3", "to": [19, 14]},  # mine → damaged
+        {"a": "step", "unit": "harvester_p3", "to": [19, 14]},  # collision → damaged
         {"a": "step", "unit": "harvester_p3", "to": [19, 13]},  # struck
         {"a": "step", "unit": "harvester_p3", "to": [18, 13]},  # struck
         {"a": "step", "unit": "harvester_p3", "to": [18, 12]},  # struck

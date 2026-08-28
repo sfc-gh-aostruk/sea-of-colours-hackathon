@@ -22,8 +22,8 @@ from __future__ import annotations
 # THREE simultaneous missiles (EMP_MISSILES_PER_LAUNCH); each forms
 # its own Manhattan radius-2 cloud at its target cell at the launch
 # hour. Every harvester sitting in any cloud is disabled for the
-# next 8 hours of the same night, and any MINE / PROBE caught in a
-# cloud is destroyed. Friendly fire IS in scope — the launcher's own
+# next 8 hours of the same night, and any PROBE caught in a cloud is
+# destroyed. Friendly fire IS in scope — the launcher's own
 # units are not immune. Open action: all seats see the launch frame
 # + cloud cells.
 EMP_COST_BLUE_PURITY: int = 200
@@ -40,28 +40,17 @@ EMP_VISIBILITY: str = "open"
 in v0.9.0; the field is here so a future stealth EMP is a flip."""
 
 
-# ── Caltrop mines ────────────────────────────────────────────────
-# Launch-cost: 100 blue-purity + 100 credits. A minelayer flies to
-# the target tile and arms a single caltrop. Any harvester
-# (including the layer's own) stepping into the tile has its move
-# cancelled, becomes damaged, and the mine is consumed. The target
-# tile is NOT harvested even if it carried RED/GREEN/BLUE. Hidden
-# action: only the owner sees the mine; other seats only learn of
-# it if a probe witnessed the lay (recorded into ``probe_intel``).
-MINE_COST_BLUE_PURITY: int = 100
-MINE_COST_CREDITS: int = 100
-MINES_PER_BUY: int = 1
-"""How many mines a single MineLayMove places. Raise to 3 later
-for batch mines; the engine consults ``MINE_BATCH_SHAPE`` to
-expand the single target into the chosen pattern."""
-MINE_BATCH_SHAPE: str = "plus"
-"""``"single"`` | ``"plus"`` (center + N/E/S/W = 5 cells) |
-``"cross3x3"`` (9 cells) | ``"line3"`` | ``"L3"`` | ``"scatter_r1"``.
-One ``mine_lay`` expands its target cell into this pattern, arming a
-hidden mine on each in-bounds cell."""
-MINE_VISIBILITY: str = "hidden"
-"""``"hidden"`` (owner-only + probe-echo) | ``"open"`` — only
-``"hidden"`` is wired in v0.9.0."""
+# ── Caltrop mines — RETIRED v1.31 ────────────────────────────────
+# The third weapon slot is deliberately empty. Mines were retired to
+# free it for a replacement, not because the slot was a mistake, so
+# the machinery around it (schema columns, replay frames, the FX
+# path) was left standing on purpose — archived seasons still play
+# back, and a new weapon plugs into the same holes.
+#
+# Everything a third weapon has to touch is mapped in
+# docs/ADDING_A_WEAPON.md, with the caltrop as the worked example.
+# Its dials lived here: cost in blue purity and credits, how many
+# tiles one order armed, the batch shape, and visibility.
 
 
 # ── Orbital chaff flare ──────────────────────────────────────────
@@ -92,11 +81,6 @@ __all__ = [
     "EMP_MISSILES_PER_LAUNCH",
     "EMP_CLOUD_HOURS",
     "EMP_VISIBILITY",
-    "MINE_COST_BLUE_PURITY",
-    "MINE_COST_CREDITS",
-    "MINES_PER_BUY",
-    "MINE_BATCH_SHAPE",
-    "MINE_VISIBILITY",
     "CHAFF_COST_BLUE_PURITY",
     "CHAFF_COST_CREDITS",
     "CHAFF_DURATION_HOURS",

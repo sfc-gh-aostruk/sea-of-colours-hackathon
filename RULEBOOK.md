@@ -1,6 +1,6 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.28
+Version: 1.30
 Last updated: 2026-08-28
 
 This is the single source of truth for the world, the fiction, and how
@@ -28,8 +28,14 @@ The following settings define the **canonical competitive ruleset** as of v0.9.1
 | `decluster_pure_red` | `True` | No two `pure` (255) cells may be 8-adjacent. Extras in a touching group are demoted to high `mass`, so a jackpot is always a single contested cell (§2.2). |
 | Pure demotion band | `220 – 254` | Where a demoted pure lands — top of `mass`, still worth combing (§2.2). |
 | `spread_pure_red` | `True` | v1.24 — every board carries ≥ `min_pure_count` pures, none closer than `min_pure_separation` (§2.2). |
-| `min_pure_count` | `max(2, seats)` | Hard floor, one jackpot per House (v1.28). One jackpot gives the opening nothing to choose between; a flat 2 on a 4-seat board leaves two Houses with nothing to contest (§2.2). The `GenerationParams` default stays `2`; `GameSession.new` raises it to the seat count. |
+| `min_pure_count` / `max_pure_count` | band by seat count: 1→`2-3`, 2→`2-4`, 3→`3-5`, 4→`3-6` | Hard floor, random ceiling (v1.28, `pure_count_range`). One jackpot gives the opening nothing to choose between; a flat 2 on a 4-seat board leaves two Houses with nothing to contest; a count pinned to the seat count is a constant, and a constant tells every seat how many jackpots exist (§2.2). The `GenerationParams` defaults stay `2` / `None` (no draw); `GameSession.new` supplies the band. |
 | `min_pure_separation` | `12` | **Chebyshev** cells between any two pures — three probe radii, so no single probe sees both (§2.2). Best-effort on a degenerate board; the count is the guarantee. |
+| `grade_pure_red` | `True` | v1.29 — every jackpot sits in a graded deposit: `mass` chunks near the pure, scattering outward through a `vein` shoulder into ordinary ground. Without it a pure was a spike in trace (median 2 `mass` squares a board), and "richer ground means warmer" was not a read the map supported (§2.2). |
+| `pure_mass_radius` / `pure_vein_radius` | `1.5` / `4.2` | **Euclidean**, in cells: where `mass` is likeliest, and how far the deposit reaches. Both well inside `min_pure_separation`, so two deposits can never merge into one rich region (§2.2). |
+| `pure_mass_core_chance` / `pure_mass_fringe_chance` | `0.32` / `0.06` | Chance a graded cell is `mass` rather than `vein`, beside the jackpot and out at the fringe. A probability rather than a solid core, so mass reads as chunks and scatter — a filled core is a bright disc that reads as a target reticle (§2.2). |
+| Halo purity bands | `mass 165–240`, `vein 60–150` | The `mass` ceiling is deliberately **below 255**: grading must never mint a pure adjacent to the one it is decorating (§2.2). |
+| `pure_halo_lobe` / `pure_halo_bare_bias` | `0.34` / `0.5` | How far the deposit radius wanders with angle, and how much less readily grading claims bare void than existing RED. Both exist so the halo does not read as a generated bullseye, which would advertise the jackpot from across the board (§2.2). |
+| `SOC_MAP_HALO` | unset (= `1`) | **Escape hatch on the above.** `off`/`0` restores byte-identical v1.28 terrain; a fraction thins the `mass` without moving the jackpots or changing the deposit's reach. No code edit, and safe to flip mid-season — sessions persist their grid, not just their seed (§2.2). |
 
 These settings balance exploration, competition, and risk management — probes decay, drops require live intel, and damaged units cost credits to restore. Since v1.13 the strategic weight sits almost entirely in the **Nox phase**: the Orbit is where you spend, the night is where you play.
 
@@ -203,8 +209,14 @@ pocket lands on either, the pocket wins.
 | ----- | ----- | ------------ | ------------------ | ---------------------------------------- |
 | 1     | trace | 0 – 50       | up to 50           | seam edges — 1–2 cells from non-RED      |
 | 2     | vein  | 51 – 150     | up to 150          | shallow interior                         |
-| 3     | mass  | 151 – 254    | up to 254          | deep interior, just shy of the core      |
-| 4     | pure  | **255** only | **255**            | seam core — Manhattan depth ≥ 3          |
+| 3     | mass  | 151 – 254    | up to 254          | deep interior — and, since v1.29, the graded deposit around every pure |
+| 4     | pure  | **255** only | **255**            | seam core (Manhattan depth ≥ 3), or promoted by the count guarantee    |
+
+> "Lives where" describes the **natural** ridge terrain. Four later passes
+> rework the pure cells specifically — the count band, the Chebyshev-12
+> spacing, and the graded deposit that puts `mass` and `vein` around each
+> jackpot regardless of seam depth. See §2.2; the deposit in particular
+> means `mass` adjacency is now common near a pure rather than incidental.
 
 #### Pure cells never touch (v1.21)
 
@@ -249,10 +261,10 @@ opening:
 - **Two jackpots four cells apart.** A single probe disk lights both, so
   finding either hands you the pair. The same non-decision, dressed up.
 
-So every board now carries **at least one pure per House, and never fewer
-than two** (v1.28 — see below; v1.24 shipped this as a flat 2), and **no two
-pures stand closer than 12 cells** measured in **Chebyshev** (king-move)
-distance.
+So every board now carries **at least two pures** — and, from v1.28, a
+random number of them drawn from a band sized to the seat count (see
+below) — with **no two pures standing closer than 12 cells** measured in
+**Chebyshev** (king-move) distance.
 Chebyshev because the question the metric exists to answer is *can one probe
 see both*, and probe vision is a disk in king moves; 12 is three probe radii
 at the default `r4`, so no single probe — and no plausible pair — covers
@@ -273,33 +285,193 @@ touching rule (distance 1 is far below 12), it does not weaken v1.21.
 > over 200 seeds at 40×28 the fallback never fires: every board gets 2–3
 > pures, all pairs at least 12 apart.
 
-##### One jackpot per House (v1.28)
+##### How many jackpots, and why it is random (v1.28)
 
-The floor is `max(2, seats)`, not a flat 2. A four-House season on the old
-rule could be handed two jackpots for four seats, so two Houses contest a
-find and two have nothing to contest — the same flattened opening this
-section exists to prevent, only now distributed unfairly.
+A flat 2 was right for a duel and wrong for a full table: four Houses
+sharing two jackpots means two of them have nothing to contest — the same
+flattened opening this section exists to prevent, only now distributed
+unfairly rather than suffered by everyone.
 
-The seat count is applied at the **call site** (`GameSession.new`), not baked
-into the generator: `GenerationParams` has no notion of seats, and a
-seat-shaped default would change the meaning of every standalone generator
-call. The parameter default stays `2`. It counts the *normalised* seat list,
-after the v0.9.6 dedupe and `MAX_SEATS` clamp, so a caller that posts
-`["p1", "p1", "p2"]` asks for two jackpots and not three.
+The obvious repair is one jackpot per House, and it is a trap. Pin the
+count to the seat count and the count becomes a **constant**, and a
+constant is a tell: every seat can then infer "one each, so N−1 more are
+out there" the moment they find their first, which turns the opening
+question — how much of this board is worth fighting for — into
+arithmetic. So the count is a **band**, drawn uniformly per seed:
 
-The separation does **not** scale down to pay for the extra pures, because it
-does not need to. Measured over 200 seeds at 40×28 with separation held at
-12: floors of 2, 3 and 4 are met on 100% of seeds with no pair closer than
-12 (closest-pair medians 18, 14 and 13 respectively). Only a floor of **5**
-strains the board — 2% of seeds land a pair at 10–11 — and `MAX_SEATS` is 4,
-so that case is unreachable. Re-run `scripts/_mapgen_pure_census.py` if
-either the board size or the separation moves.
+| Houses | Pures | Notes |
+|---|---|---|
+| 1 | 2–3 | never one; a solo board still needs a choice |
+| 2 | 2–4 | |
+| 3 | 3–5 | |
+| 4 | 3–6 | the low end is **deliberate** — see below |
+
+**Four Houses may be short.** The four-seat band starts at 3, not 4, so
+roughly one board in five leaves a House with no jackpot of its own to
+reach. That is not a rounding error; it is the scarcity the band exists
+to create, and it is the case a future reader is most likely to "fix".
+Measured over 120 seeds: 3 pures on 23 boards, 4 on 40, 5 on 31, 6 on 26.
+
+The band is applied at the **call site** (`GameSession.new` via
+`pure_count_range`), not baked into the generator: `GenerationParams` has
+no notion of seats, and a seat-shaped default would change the meaning of
+every standalone generator call. The parameter default stays a flat floor
+of `2` with no draw. It reads the *normalised* seat list, after the v0.9.6
+dedupe and `MAX_SEATS` clamp, so `["p1", "p1", "p2"]` gets a duel's board.
+
+**The draw is a floor, not a cap.** A board whose terrain naturally
+carries more separated pures than the draw keeps them — demoting a
+legitimate jackpot to hit a target would be destroying real terrain to
+satisfy a statistic. In practice the natural count tops out at 3, so the
+ceiling is never the binding constraint. The draw also runs on its own
+RNG stream (`seed + 6_000`), so a board that lands on N is byte-identical
+to one generated with a flat floor of N.
+
+**The separation does not scale down to pay for the extra pures.**
+Measured over 200 seeds at 40×28 with separation held at 12: counts of 2,
+3 and 4 are met on 100% of seeds with no pair closer than 12
+(closest-pair medians 18, 14, 13). At 5 and 6 the count is still always
+met but the separation softens on 2% and 15% of boards. Nothing in range
+ever drops below **9**, and an r4 probe spans 8 — so "no single probe
+lights two jackpots", the property the 12 protects, holds across the
+whole table. Only at 7 does the closest pair reach 8 and that stop being
+true, which is why `pure_count_range` clamps its ceiling to 6. Re-run
+`scripts/_mapgen_pure_census.py` if the board size or the separation
+moves.
 
 **Planner consequence.** A visible pure no longer implies more pure next
 door — the neighbours of a pure are now, if anything, *likelier* to be high
 `mass` than pure. Agents must not treat a found pure as evidence of a pure
 cluster. Note also that the number of jackpots on the board is a function of
 the seat count, so an agent must not infer map richness from it.
+
+##### The ground around a jackpot (v1.29)
+
+The count and the spacing were right; the *terrain* was not. Everything
+above decides **where** the jackpots go and says nothing about what sits
+around them — and measured on the v1.28 output, what sat around them was
+ordinary ground.
+
+The cause is in the top-up. It promotes the richest RED cell that clears the
+separation, and separated `mass` barely exists: over 200 seeds at 40×28 the
+median board carried **2** `mass` squares out of 1120, and some boards had
+none at all. So the promotion routinely lifted a cell of purity 80–150
+straight to 255. On the five sample seeds, the extra jackpots minted for a
+third House came from cells of purity 115, 149, 183, 80 and 85.
+
+A jackpot with nothing around it is a **spike**, and it costs the player the
+one read prospecting is supposed to give them: *thickening ground means you
+are getting warmer*. A pure surrounded by trace is unfindable except by
+landing on it, which makes the search a lottery rather than a deduction.
+
+So `grade_pure_red` lays a deposit around every pure, out to
+`pure_vein_radius` (**Euclidean**, matching the probe disk), whose target
+purity falls off with distance so the ore thins outward instead of ending on
+a step.
+
+Within that deposit, whether a cell comes out `mass` or `vein` is a
+**probability that decays with distance** — `pure_mass_core_chance` beside
+the jackpot, decaying to a `pure_mass_fringe_chance` floor that never
+reaches zero. That gives *a few chunks of mass clinging to the pure and a
+scatter of others further out*, which is what an ore body looks like. The
+first cut made every cell inside the mass radius solid `mass`, and it was
+both too much and too neat: a bright disc that read as a target reticle.
+Measured over 200 seeds, a jackpot now carries a median of **2** `mass`
+cells within 1.5 cells and **5** across the whole deposit.
+
+Three rules keep it from doing damage:
+
+1. **It only ever raises.** A cell already richer than its target is left
+   alone, so grading can never flatten terrain that was interesting already.
+2. **It never touches GREEN or BLUE.** Bare ground is promoted to RED — that
+   is just growing the seam — but another colour is a deliberate feature of
+   the board. GREEN and BLUE come out of the pass cell-for-cell identical.
+3. **It never reaches 255.** The `mass` ceiling is below pure, so grading
+   cannot mint a jackpot. A halo cell reaching 255 would sit *adjacent* to
+   the pure it came from, which is the exact shape `decluster_pure_red`
+   exists to remove, and it would break the separation guarantee too.
+
+> **A correct halo that reads as a bullseye is worse than no halo**, because
+> it advertises the jackpot from across the board — the opposite of what fog
+> is for. Three devices prevent it: the radius **wanders with angle** (two
+> harmonics, per-jackpot random phase), so every deposit is a different
+> lopsided blob; edges are **ragged**, skipped with a probability that grows
+> outward; and grading **prefers ground that is already RED**
+> (`pure_halo_bare_bias`), so a deposit grows along the seam it belongs to
+> rather than stamping a disc onto whatever is underneath. The generated and
+> the natural rich patches are meant to be hard to tell apart — not every
+> bright blob is a jackpot.
+
+Measured over 200 seeds at 40×28, `mass` squares per board (median, and the
+range across seeds):
+
+| Houses | v1.28 | v1.29 |
+|---|---|---|
+| 2 | 2 (0–17) | 15 (3–38) |
+| 3 | 1 (0–17) | 19 (7–39) |
+| 4 | 1 (0–17) | 20 (7–47) |
+
+**This roughly doubles the RED on the board**, and that is accepted, not
+overlooked: median map RED value goes 8,844 → 15,394 at two Houses and
+9,058 → 18,458 at four. Seasons therefore score higher than they did before
+v1.29, the `EXTRACTED %` denominator moves with it, and landing near a
+jackpot pays considerably better. Do not compare a score across this
+version boundary.
+
+Note the value roughly doubles while `mass` goes up ~8×. Most of the added
+value is the `vein` shoulder, not the `mass` chunks — there is simply far
+more shoulder than core.
+
+The pass runs **last**, after the pure set is final, so no deposit is built
+around a cell that is about to be demoted. It draws from its own RNG stream
+(`seed + 7_000`), so no earlier layer moves and GREEN/BLUE placement is
+untouched for every seed ever generated.
+
+**Not every jackpot gets a deposit.** About 1 in 100 gets no `mass` at all,
+and roughly 1 in 12 gets none in the ring actually touching it — a pure hard
+against the board edge, or ringed by GREEN and BLUE that rule 2 forbids
+overwriting. That is correct behaviour, not a shortfall to chase, and the
+tests assert it as a *rate* rather than a universal for exactly that reason.
+
+The sharpest measure of what this fixed: before grading, **79% of jackpots
+had no `mass` anywhere within 4.5 cells**. After, 1.4%. Reproduce the whole
+table — both sides, same seeds — with:
+
+```bash
+python scripts/_mapgen_pure_census.py 200 40 28 2
+```
+
+> **Backing it out is cheap, and deliberately so.** Doubling the RED on the
+> board is the kind of change only play can really judge, so there is an
+> escape hatch that needs no code edit: **`SOC_MAP_HALO=off`** (or `0`) on
+> the server restores **byte-identical v1.28 terrain**, and a fraction —
+> `SOC_MAP_HALO=0.5` — thins the `mass` without changing the deposit's
+> reach or the jackpot positions. Byte-identical is a real claim, not a
+> hope: grading runs *last* and draws on its own RNG stream, so switching it
+> off cannot perturb any earlier layer, and
+> `test_soc_map_halo_off_restores_the_v128_board_exactly` checks whole
+> boards against a pre-v1.29 generation.
+>
+> **It is safe to flip mid-season.** A session persists its **grid**, not
+> just its seed, so changing this can never re-terraform a game already in
+> progress — it applies to boards generated after the restart. What a
+> revert does *not* undo is scores already banked on graded boards; see the
+> comparability warning in the v1.29 changelog.
+>
+> A permanent removal is small too: `grade_pure_red` defaults to `False`,
+> or delete `_grade_pure_red`, its one call in `generate_grid`, its
+> `GenerationParams` block and `tests/test_generator_pure_halo.py`. The
+> `grade_pure_red=False` opt-outs in the three older generator test modules
+> would become redundant but stay harmless.
+
+**Planner consequence (v1.29).** Rich ground near a pure is now the norm
+rather than the exception, so `mass` adjacency is genuinely informative:
+combing outward from a `mass` find is a reasonable way to hunt a jackpot.
+It is not a guarantee in either direction — natural rich patches exist with
+no pure in them, and the exceptions above exist too — but an agent that
+treats thickening purity as a gradient to climb is now reading the map the
+way it is built. Agents must still not infer that a pure implies another
+pure nearby; §2.2's separation rule is unchanged and is the stronger signal.
 
 These tier names are the canonical vocabulary across the codebase
 (`sea_of_colours.render.RED_LEVEL_NAMES`), the agent view payload
@@ -1804,12 +1976,28 @@ afford instead of being dropped whole.
 > there is nothing to lock. The old §4.2 rules about locked parcels,
 > committed bids and start-of-pass eligibility no longer apply.
 
-**The final orbit.** On the terminal settlement orbit
-(`final_orbit`, `day = cap + 1`) purchases are still **accepted**, but
-there is no following Nox for anything you buy to act in, so they are
-simply wasted credits. The engine permits it (there is no longer any
-rule to enforce) and the UI warns you. Settlement itself is unchanged:
-it happens on the final orbit exactly as on every other one.
+**The final orbit — nobody plays it any more (v1.30).** The terminal
+settlement orbit (`final_orbit`, `day = cap + 1`) is now resolved by the
+engine the instant the last Nox does, with no submission from anyone. The
+season ends on its last night.
+
+It was retired because it had stopped being a decision. Since v1.13 the
+only orbit actions left buy hardware, and hardware bought on the terminal
+orbit has no following Nox to act in — so the sole correct play was to buy
+nothing, which is exactly what the heuristic answered ("nothing worth
+buying") and what a human saw as an empty panel. Everyone still had to
+*submit* that nothing before anyone could be told who won: at a four-seat
+table, three people waiting on a fourth to click through a screen with no
+choice on it.
+
+Settlement itself is unchanged — RED ships and GREEN clears exactly as on
+every other orbit (§4.4, §4.5); the same resolver runs, with empty orders.
+Nothing about scoring moves.
+
+> **Older saves still open the panel.** A season persisted mid-final-orbit
+> by a pre-v1.30 build resumes through the normal submit path, so the
+> `final_orbit` flag, its banner and the heuristic's branch are all kept
+> and marked legacy in the code rather than deleted.
 
 ### 4.3 Refine — removed (v1.13)
 
@@ -2590,6 +2778,129 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 
 ## Changelog
 
+### v1.30 — 2026-08-28
+
+**The season now ends on its last night (§4.2).** The terminal settlement
+orbit no longer asks anyone anything — the engine resolves it the moment the
+final Nox does.
+
+- **Why.** It had not been a decision since v1.13. The only orbit actions
+  left buy hardware, and hardware bought on the terminal orbit never gets a
+  Nox to act in, so the sole correct play was to buy nothing — which is
+  literally what `heuristic_agent.plan_orbit_actions` returned ("nothing
+  worth buying") and what a human saw as an empty panel. Every seat still
+  had to submit that nothing before the result could be shown, so a
+  four-seat table ended with three people waiting on a fourth to click
+  through a screen with no choice on it.
+- **What changed.** `NightSimulator`'s `day > cap` branch calls
+  `OrbitResolver` directly with empty orders instead of parking the session
+  in `Phase.ORBIT` awaiting submissions. It is the same call the submit path
+  made, so **settlement and scoring are untouched**: RED ships and GREEN
+  clears exactly as before (§4.4, §4.5).
+- **The one thing lost** is the ability to waste credits on the last orbit.
+  Credits do not score, so no result can change.
+- **Backward compatible.** `final_orbit` is still set, still persisted, and
+  still gates the resolver's `SEASON_COMPLETE` branch, so a season saved
+  mid-final-orbit by an older build resolves exactly as it used to. Its
+  banner and the heuristic's branch are kept and marked legacy rather than
+  deleted.
+- **UI race, fixed with it.** Completion used to arrive long after the last
+  night's cinematic because of the submit round-trip; it now arrives in the
+  same status pull that first reports the night, so the score card could fly
+  in over a still-animating board. `handleLiveSeasonState` now holds the
+  finale while `_nightAwaitingCinematic()` is true, bounded at 90s so a
+  stall shows the winner late rather than never.
+- **Testing.** Two regression tests in `tests/test_endgame.py`, both of
+  which fail against the previous engine. Note they deliberately restore the
+  real `NightSimulator.run`: `tests/conftest.py` monkey-patches it to
+  auto-resolve any lingering orbit, which means the rest of the suite cannot
+  see this gate at all — the change passed every existing test before a line
+  of it was written.
+
+### v1.29 — 2026-08-28
+
+One generator change, and it moves scores — read the last paragraph before
+comparing any season across this boundary.
+
+**Every jackpot now sits in a graded deposit (§2.2, `grade_pure_red`).**
+v1.24 and v1.28 settled how many pures a board carries and how far apart
+they stand, but nothing decided what surrounded them, and the answer was
+"ordinary ground". The top-up in `_spread_pure_red` promotes the richest RED
+cell that clears the separation, and separated `mass` is vanishingly rare —
+over 200 seeds at 40×28 the median board carried **2** `mass` squares out of
+1120, with some boards carrying none — so it routinely lifted a cell of
+purity 80–150 straight to 255. On the five seeds rendered for the contact
+sheet, the extra jackpots minted for a third House came from cells of purity
+115, 149, 183, 80 and 85.
+
+The cost was a read the map should support and did not: *thickening ground
+means you are getting warmer*. A pure surrounded by trace can only be found
+by landing on it, so prospecting was a lottery rather than a deduction.
+
+`_grade_pure_red` now lays a deposit around every pure out to Euclidean
+r≈4.2, with target purity falling off across it. Whether a graded cell is
+`mass` or `vein` is a probability decaying from `pure_mass_core_chance`
+beside the jackpot to a `pure_mass_fringe_chance` floor, so mass reads as a
+few chunks clinging to the pure plus a scatter further out. Median `mass`
+per board goes 2 → 15 at two Houses, 1 → 19 at three, 1 → 20 at four; a
+jackpot carries a median of 2 `mass` cells within 1.5 cells and 5 across
+its whole deposit.
+
+*The first cut filled the core solid* (every cell inside r1.7 became mass,
+median 22 a board) and it was both too much and too neat — a bright disc
+that read as a target reticle. Density is a dial, so the tests assert the
+lift as a **ratio** over the ungraded baseline rather than pinning an
+absolute count, which would turn every future tuning pass into a test edit.
+
+Three rules bound it: it **only ever raises** purity, it **never touches
+GREEN or BLUE** (bare ground may become RED — that is growing the seam — but
+another colour is not ours to overwrite, and those cells come out
+byte-identical), and it **never writes 255**, so it cannot mint a pure
+adjacent to the one it is decorating, which is the exact shape
+`decluster_pure_red` exists to remove. The pure sets are unchanged. It runs
+last, after the pure set is final, on its own RNG stream (`seed + 7_000`),
+so no earlier layer moves.
+
+**Making it not look generated was the hard part.** A correct halo that
+reads as a bullseye is worse than no halo — it advertises the jackpot from
+across the board, which is the opposite of what fog is for. Three devices:
+the radius wanders with angle (two harmonics, per-jackpot random phase) so
+every deposit is a different lopsided blob; edges are ragged; and grading
+prefers ground that is already RED (`pure_halo_bare_bias`) so a deposit
+grows along its seam rather than stamping a disc onto the void. Natural rich
+patches and generated ones are meant to be hard to tell apart.
+
+*Two tests were written, measured, and thrown away for being unable to
+fail,* which is worth recording because both looked reasonable. A roundness
+check scored the RED near each pure — dominated by natural terrain, so a
+deliberate perfect disc scored 0.42 against a 0.82 threshold and the test
+passed while measuring nothing; it now scores only the cells grading
+changed (shipped 0.40 vs a disc's 0.63) and is paired with a test that
+re-measures a deliberate disc every run so it cannot decay back. A
+raggedness check counted gaps in the shoulder and scored *highest* with
+grading switched off entirely, because a deposit that does not exist is all
+gap; it is now an A/B against a seam-blind disc. `tests/test_generator_pure_halo.py`,
+15 tests. The three older generator modules opt out via `grade_pure_red=False`
+in their `_params` helpers, the same scoping `spread_pure_red` already uses,
+so each still measures one layer.
+
+**SCORES MOVE.** This roughly doubles the RED on the board — median map RED
+value 8,844 → 15,394 at two Houses, 9,058 → 18,458 at four. Most of that is
+the `vein` shoulder rather than the `mass` chunks; there is far more
+shoulder than core. Seasons score
+higher than they did, the `EXTRACTED %` denominator moves with it, and
+landing near a jackpot pays considerably better. This was a deliberate
+choice rather than a side effect, but it means **a score from before v1.29
+is not comparable to one after it**, including agent benchmarks and the
+RED_HARVEST performance floor.
+
+**So it has an off switch.** `SOC_MAP_HALO=off` restores byte-identical
+v1.28 terrain with no code edit, and `SOC_MAP_HALO=0.5` thins the `mass`
+without moving the jackpots or changing the deposit's reach. Safe to flip
+on a live server — a session persists its grid, not just its seed, so
+nothing in progress is re-terraformed. §2.2 carries the full note on how
+hard a revert is, including what a permanent removal would touch.
+
 ### v1.28 — 2026-08-28
 
 One engine bug fixed (EMP vs. the hour-start beacon snapshot, §3.9.7) and
@@ -2650,43 +2961,68 @@ heading inserted mid-paragraph, stranding "step and pickup work in fog
 but the initial drop does not" at the foot of §3.9.8's risk list, where
 it read as a stray line item. Rejoined.
 
-**One jackpot per House (§2.2).** `min_pure_count` becomes
-`max(2, seats)`. v1.24 put a flat floor of 2 under the pure count, which
-is right for a duel and wrong for four Houses: two seats could be handed
-a jackpot each and two given nothing to contest, which is the same
-flattened opening §2.2 was written to prevent, only now distributed
-unfairly rather than suffered by everyone.
+**The jackpot count is now a random band sized to the table (§2.2).**
+v1.24 put a flat floor of 2 under the pure count, which is right for a
+duel and wrong for four Houses: two seats could be handed a jackpot each
+and two given nothing to contest, the same flattened opening §2.2 was
+written to prevent, only distributed unfairly rather than suffered by
+everyone.
 
-The seat count is applied at the **call site**, in `GameSession.new`, and
-not baked into `GenerationParams` — the dataclass has no notion of seats,
-and a seat-shaped default would silently change every standalone
-generator call and every existing generator test. The parameter default
-stays 2. It reads the **normalised** seat list, after the v0.9.6 dedupe
-and `MAX_SEATS` clamp, so `["p1", "p1", "p2"]` asks for two jackpots and
-not three; the seat normalisation block was moved above the map
-generation to make that possible, which is safe because it reads nothing
-but its own argument.
+The obvious repair — one pure per House — was tried and rejected, and the
+reason is worth recording because it is not obvious. Pinning the count to
+the seat count makes the count a **constant**, and a constant is a tell:
+a seat that finds its first jackpot then knows exactly how many more
+exist, which converts the opening question (how much of this board is
+worth contesting?) into arithmetic. So `pure_count_range` returns a band
+— 1→2-3, 2→2-4, 3→3-5, 4→3-6 — and the generator draws uniformly inside
+it.
 
-**The separation does not scale down to pay for it,** which was the open
-question going in. Measured over 200 seeds at 40×28 with separation held
-at 12 Chebyshev: floors of 2, 3 and 4 are met on 100% of seeds with no
-pair closer than 12 (closest-pair medians 18, 14, 13). Only a floor of 5
-strains the board, at 2% of seeds landing a pair at 10–11, and
-`MAX_SEATS` is 4 — so the tight case is unreachable and no dial needed
-retuning. `scripts/_mapgen_pure_census.py` takes a seat count now, so
-that claim is reproducible.
+**Four Houses may be short of one each, on purpose.** The four-seat band
+starts at 3, so about one board in five leaves a House with no jackpot of
+its own. That asymmetry is the scarcity the band exists to create, and it
+is pinned by its own test with a comment saying so, because it reads
+exactly like an off-by-one and would otherwise be "corrected".
 
-Six tests in `tests/test_generator_pure_spread.py`, deliberately driving
-whole sessions rather than `generate_grid` because the plumbing is what
-is under test. Beyond the floor and the separation they pin the three
-ways this could go quietly wrong: a duplicated seat must not inflate the
-count, `players=None` must produce a board identical to an explicit
-two-seat game, and — the one worth keeping — adding seats may only **add**
-jackpots. A 4-seat board must be the 2-seat board plus two, with every
-other cell identical, tile and purity. If that fails, the count is being
-met by re-running the thinning pass with different survivors, which would
-mean the seat count silently re-rolls terrain the seed is supposed to
-fix. Backed out, the floor test fails with `3 seats got 2 pure cell(s)`.
+Applied at the **call site**, in `GameSession.new`, not baked into
+`GenerationParams` — the dataclass has no notion of seats, and a
+seat-shaped default would silently change every standalone generator call
+and every existing generator test. The defaults stay `2` / `None`, i.e. a
+plain floor with no draw. It reads the **normalised** seat list, after the
+v0.9.6 dedupe and `MAX_SEATS` clamp, so `["p1", "p1", "p2"]` gets a
+duel's board; the seat normalisation block moved above map generation to
+make that possible, which is safe because it reads nothing but its own
+argument.
+
+Two properties keep the draw from disturbing anything. It is a **floor,
+not a cap** — terrain that naturally carries more separated pures than
+the draw keeps them, since demoting a real jackpot to hit a target is
+destroying terrain to satisfy a statistic. And it runs on its **own RNG
+stream** (`seed + 6_000`), so a board that lands on N is byte-identical
+to one generated with a flat floor of N, and raising the count only ever
+*adds* pures to the same terrain.
+
+**The separation did not need to scale down,** which was the open
+question going in. Over 200 seeds at 40×28 with separation held at 12
+Chebyshev: counts of 2, 3 and 4 are met on 100% of seeds with no pair
+closer than 12 (closest-pair medians 18, 14, 13); 5 and 6 are still
+always met but soften the separation on 2% and 15% of boards. Nothing in
+range ever drops below 9 and an r4 probe spans 8, so "no single probe
+lights two jackpots" — the property the 12 protects — survives the whole
+table. At 7 the closest pair reaches 8 and that stops being true, which
+is why the band's ceiling is clamped to 6.
+`scripts/_mapgen_pure_census.py` takes a seat count now, so the figures
+are reproducible.
+
+`tests/test_generator_pure_spread.py` grows to 20 tests. The seat-count
+half drives whole sessions rather than `generate_grid`, because the
+plumbing is what is under test. Two traps are pinned explicitly. The
+count must actually **vary** across seeds — without that check, a draw
+that always returned the low end would satisfy every other assertion in
+the file while defeating the entire point. And the count must be
+**deterministic per seed**, or a persisted season would re-roll its map
+on reload. A first cut of these tests asserted `len(pures) >= seats` and
+passed only because seed 7 drew high; the file now carries a note saying
+why that assertion is wrong however natural it looks.
 
 **The extraction strip is no longer readable during live play.**
 `SEED · RED ON MAP · EXTRACTED %` was specified for the watcher and for

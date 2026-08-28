@@ -38,7 +38,6 @@ from sea_of_colours.game.policy import (
     BuildChaffAction,
     BuildEmpAction,
     BuildHarvesterAction,
-    BuildMineAction,
     BuildProbeAction,
     OrbitAction,
     OrbitWasteAction,
@@ -262,10 +261,6 @@ class OrbitResolver:
             # at launch time.
             elif isinstance(act, BuildEmpAction):
                 ok, msg = sess.apply_build_emp(
-                    player, count=int(getattr(act, "count", 1) or 1),
-                )
-            elif isinstance(act, BuildMineAction):
-                ok, msg = sess.apply_build_mine(
                     player, count=int(getattr(act, "count", 1) or 1),
                 )
             elif isinstance(act, BuildChaffAction):

@@ -69,10 +69,23 @@ MoveTag = Literal[
     "pickup",
     "wait",
     "emp_launch",
-    "mine_lay",
     "chaff_flare",
     "waste",
 ]
+
+
+# v1.31 — night tags the engine used to accept. Mirrors
+# ``_RETIRED_ORBIT_TAGS`` below, added when the caltrop MINE was retired:
+# persisted queues, archived replay frames and stale LLM replies still
+# carry ``mine_lay``, and a named refusal is worth far more than the
+# generic "unknown action" shrug — especially to an agent, which can only
+# stop asking for a thing if it is told why the thing failed.
+_RETIRED_MOVE_TAGS: Dict[str, str] = {
+    "mine_lay": (
+        "the caltrop mine was retired in v1.31 — EMP and chaff are the "
+        "remaining weapons"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -141,22 +154,6 @@ class EmpLaunchMove:
 
 
 @dataclass(frozen=True)
-class MineLayMove:
-    """Drop a caltrop mine on ``at`` (RULEBOOK §5, v0.9).
-
-    Cost debited on apply. Stores a hidden mine at the tile (only
-    the owner sees it by default; a probe witness records it into
-    the other seat's intel echo). Any harvester (own or opponent's)
-    stepping into the tile has its move cancelled, becomes damaged,
-    and the mine is removed. No harvest happens on the cancelled
-    step.
-    """
-
-    at: Tuple[int, int]
-    tag: MoveTag = "mine_lay"
-
-
-@dataclass(frozen=True)
 class ChaffFlareMove:
     """Fire an orbital chaff flare (RULEBOOK §5, v0.9).
 
@@ -189,7 +186,6 @@ Move = Union[
     PickupMove,
     WaitMove,
     EmpLaunchMove,
-    MineLayMove,
     ChaffFlareMove,
     WasteMove,
 ]
@@ -273,14 +269,16 @@ def _parse_one(raw: Any) -> Move:
             )
         return EmpLaunchMove(at=targets[0], extra_ats=tuple(targets[1:]))
 
-    if action in ("mine", "mine_lay", "mine-lay"):
-        xy = _pair(raw.get("at"))
-        if xy is None:
-            return WasteMove(reason="mine_lay.at must be [x,y]", raw=raw)
-        return MineLayMove(at=xy)
-
     if action in ("chaff", "chaff_flare", "chaff-flare"):
         return ChaffFlareMove()
+
+    # v1.31 — retired night moves. Normalise the punctuation variants the
+    # old parser accepted so a stale queue gets the real reason back.
+    _canon = action.replace("-", "_")
+    if _canon == "mine":
+        _canon = "mine_lay"
+    if _canon in _RETIRED_MOVE_TAGS:
+        return WasteMove(reason=_RETIRED_MOVE_TAGS[_canon], raw=raw)
 
     return WasteMove(reason=f"unknown action '{action}'", raw=raw)
 
@@ -336,8 +334,6 @@ def move_to_wire(m: Move) -> dict:
                 "at": [list(t) for t in m.ats],
             }
         return {"a": "emp_launch", "at": list(m.at)}
-    if isinstance(m, MineLayMove):
-        return {"a": "mine_lay", "at": list(m.at)}
     if isinstance(m, ChaffFlareMove):
         return {"a": "chaff_flare"}
     return {"a": "waste", "reason": m.reason}
@@ -368,7 +364,6 @@ OrbitTag = Literal[
     "build_harvester",
     "build_probe",
     "build_emp",
-    "build_mine",
     "build_chaff",
     "repair",
     "orbit_waste",
@@ -384,6 +379,10 @@ _RETIRED_ORBIT_TAGS: Dict[str, str] = {
     "refine_cascade": "the final refinery run was removed in v1.13",
     "ship_catapult": "RED now ships automatically at settlement (v1.13) — no bid needed",
     "solar_jettison": "GREEN is now auto-settled at a flat -100/parcel (v1.13)",
+    # v1.31 — the caltrop went with the mechanic, not the buy button.
+    "build_mine": (
+        "the caltrop mine was retired in v1.31 — build EMP or chaff instead"
+    ),
 }
 
 
@@ -429,21 +428,6 @@ class BuildEmpAction:
 
 
 @dataclass(frozen=True)
-class BuildMineAction:
-    """v0.9.3 — Construct ``count`` caltrop mines in orbit.
-
-    Cost: ``count × (MINE_COST_BLUE_PURITY + MINE_COST_CREDITS)``.
-    On success, ``count`` is added to ``weapon_stock[seat]["mine"]``;
-    each ``MineLayMove`` during the night drains one. Mines per
-    BUILD batch is independent of ``MINES_PER_BUY`` (which scales
-    one lay action into multiple tiles via batch shapes).
-    """
-
-    count: int = 1
-    tag: OrbitTag = "build_mine"
-
-
-@dataclass(frozen=True)
 class BuildChaffAction:
     """v0.9.3 — Construct ``count`` orbital chaff flares.
 
@@ -482,7 +466,6 @@ OrbitAction = Union[
     BuildHarvesterAction,
     BuildProbeAction,
     BuildEmpAction,
-    BuildMineAction,
     BuildChaffAction,
     RepairAction,
     OrbitWasteAction,
@@ -519,14 +502,6 @@ def _parse_orbit_one(raw: Any) -> OrbitAction:
             count = 1
         return BuildEmpAction(count=max(1, count))
 
-    if a in ("build_mine", "build-mine", "buildmine"):
-        raw_count = raw.get("count", raw.get("n"))
-        try:
-            count = int(raw_count) if raw_count is not None else 1
-        except (TypeError, ValueError):
-            count = 1
-        return BuildMineAction(count=max(1, count))
-
     if a in ("build_chaff", "build-chaff", "buildchaff"):
         raw_count = raw.get("count", raw.get("n"))
         try:
@@ -550,6 +525,8 @@ def _parse_orbit_one(raw: Any) -> OrbitAction:
         _canon = "ship_catapult"
     if _canon in ("jettison", "green_catapult"):
         _canon = "solar_jettison"
+    if _canon in ("buildmine", "build_caltrop", "mine"):
+        _canon = "build_mine"
     if _canon in _RETIRED_ORBIT_TAGS:
         return OrbitWasteAction(reason=_RETIRED_ORBIT_TAGS[_canon], raw=raw)
 
@@ -599,15 +576,11 @@ def orbit_action_to_wire(a: OrbitAction) -> dict:
         if int(getattr(a, "count", 1) or 1) > 1:
             out["count"] = int(a.count)
         return out
-    # v0.9.3 — symmetric serialiser for the three new weapon-build
-    # actions. Same "skip count when 1" rule as build_probe.
+    # v0.9.3 — symmetric serialiser for the weapon-build actions. Same
+    # "skip count when 1" rule as build_probe. (v1.31 — two of them now;
+    # ``build_mine`` retired with the caltrop.)
     if isinstance(a, BuildEmpAction):
         out = {"a": "build_emp"}
-        if int(getattr(a, "count", 1) or 1) > 1:
-            out["count"] = int(a.count)
-        return out
-    if isinstance(a, BuildMineAction):
-        out = {"a": "build_mine"}
         if int(getattr(a, "count", 1) or 1) > 1:
             out["count"] = int(a.count)
         return out

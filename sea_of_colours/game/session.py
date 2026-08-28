@@ -26,6 +26,7 @@ from sea_of_colours.game.ledger import LEDGER_STORE, SquareLedger
 from sea_of_colours.game.policy import MAX_MOVES, Move, moves_to_wire, parse_moves
 from sea_of_colours.game.tuning import (
     live_only_drops,
+    map_halo_density,
     probe_lifetime_nights,
     probe_vision_radius,
 )
@@ -349,6 +350,14 @@ parcel lands in ``shipped_squares`` (see ``score_for``)."""
 # GREEN_ENDGAME_PENALTY. Same pressure, no ceremony: GREEN is a tax on
 # mining blind, and the interesting decision was always whether to take
 # the harvest at all, not how to dispose of the consequences.
+_MINE_REFUND_BLUE_EACH: int = 100
+"""v1.31 — blue purity handed back per unspent caltrop when a pre-1.31
+save loads (the retired ``MINE_COST_BLUE_PURITY``). Frozen here rather
+than imported from :mod:`weapons` precisely because the weapon is gone:
+this is a historical price, not a live dial, and it must not drift if a
+replacement weapon takes the slot at a different cost."""
+
+
 GREEN_ENDGAME_PENALTY: int = 100
 """Final-score penalty per undisposed VAULT-green parcel (toxic legacy).
 Green is the 'mistake tax' (blind/contested harvests); it must be
@@ -1135,15 +1144,16 @@ class GameSession:
     #: drained by the matching night-phase launch move
     #: (``EmpLaunchMove`` / ``MineLayMove`` / ``ChaffFlareMove``).
     #:
-    #: Shape: ``{seat: {"emp": int, "mine": int, "chaff": int}}``.
+    #: Shape: ``{seat: {"emp": int, "chaff": int}}`` (v1.31 — the
+    #: ``mine`` key retired with the caltrop; loads refund any held).
     #: All slots default to ``0`` — a fresh seat owns no weapons; a
     #: night-move that finds zero stock for its weapon is wasted as
     #: a yellow log line ("``emp_launch: no EMP in stockpile``"),
     #: never live-debited mid-night.
     weapon_stock: Dict[str, Dict[str, int]] = field(
         default_factory=lambda: {
-            "p1": {"emp": 0, "mine": 0, "chaff": 0},
-            "p2": {"emp": 0, "mine": 0, "chaff": 0},
+            "p1": {"emp": 0, "chaff": 0},
+            "p2": {"emp": 0, "chaff": 0},
         }
     )
 
@@ -1157,8 +1167,8 @@ class GameSession:
     #: ``weapon_stock`` block. Keyed by seat → ``{emp, mine, chaff}``.
     weapons_used: Dict[str, Dict[str, int]] = field(
         default_factory=lambda: {
-            "p1": {"emp": 0, "mine": 0, "chaff": 0},
-            "p2": {"emp": 0, "mine": 0, "chaff": 0},
+            "p1": {"emp": 0, "chaff": 0},
+            "p2": {"emp": 0, "chaff": 0},
         }
     )
 
@@ -1404,10 +1414,11 @@ class GameSession:
 
     #: v0.9 — Transient EMP / chaff replay outboxes. Drained by the
     #: simulator after each apply tick; folded onto the relevant
-    #: replay frame as ``frame["emp"]`` / ``frame["chaff"]`` /
-    #: ``frame["mine"]``. NOT persisted.
+    #: replay frame as ``frame["emp"]`` / ``frame["chaff"]``. NOT
+    #: persisted. (v1.31 — ``pending_mine_events`` went with the
+    #: caltrop; ``replay_push_scene`` still accepts a ``mine=`` kwarg so
+    #: archived frames keep their shape.)
     pending_emp_events: List[Dict[str, Any]] = field(default_factory=list)
-    pending_mine_events: List[Dict[str, Any]] = field(default_factory=list)
     pending_chaff_events: List[Dict[str, Any]] = field(default_factory=list)
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -1480,8 +1491,8 @@ class GameSession:
             self.credits.setdefault(seat, 0)
             self.blue_bank.setdefault(seat, 0)
             self.probe_stock.setdefault(seat, PROBE_INITIAL_STOCK)
-            self.weapon_stock.setdefault(seat, {"emp": 0, "mine": 0, "chaff": 0})
-            self.weapons_used.setdefault(seat, {"emp": 0, "mine": 0, "chaff": 0})
+            self.weapon_stock.setdefault(seat, {"emp": 0, "chaff": 0})
+            self.weapons_used.setdefault(seat, {"emp": 0, "chaff": 0})
             self.pending_orbit_actions.setdefault(seat, None)
             self.agents.setdefault(seat, "human")
             self.cumulative_shipped_score.setdefault(seat, 0.0)
@@ -1601,6 +1612,19 @@ class GameSession:
             min_pure_count=pure_lo,
             max_pure_count=pure_hi,
         )
+        # v1.29 — SOC_MAP_HALO is the escape hatch on the jackpot deposit
+        # (§2.2). Grading roughly doubled the RED on a board, which is a
+        # balance change best judged after play, so backing it out is a
+        # server restart rather than a code edit. 0 restores byte-identical
+        # v1.28 terrain; a fraction thins the mass without changing the
+        # deposit's reach. Safe mid-season either way: a session persists
+        # its GRID, not just its seed, so this only affects new boards.
+        halo = map_halo_density()
+        if halo <= 0.0:
+            params.grade_pure_red = False
+        elif halo != 1.0:
+            params.pure_mass_core_chance *= halo
+            params.pure_mass_fringe_chance *= halo
         grid = generate_grid(params)
         ledger = SquareLedger.from_grid(seed, grid)
         # ``season_name`` falls back to a deterministic ``Aurora_Falcon``-style
@@ -2181,22 +2205,6 @@ class GameSession:
                     ):
                         if (tx, ty) not in newly_pure:
                             newly_pure[(tx, ty)] = oid
-                    # v0.9.5 — top up the mine witness set whenever an
-                    # opposing seat's probe / harvester pulses a mined
-                    # cell. The mine itself owns the witness list (see
-                    # :meth:`try_lay_mine`) so the snapshot bucket above
-                    # can keep overwriting tile data without losing the
-                    # opponent's mine intel.
-                    mkey = self._mine_key(tx, ty)
-                    m = self.mines.get(mkey)
-                    if m is not None:
-                        mowner = str(m.get("owner", ""))
-                        viewer = str(oid)
-                        if viewer != mowner:
-                            wit = m.get("witnesses") or []
-                            if viewer not in wit:
-                                wit = list(wit) + [viewer]
-                                m["witnesses"] = sorted(wit)
         if newly_pure:
             self._register_redsign(newly_pure)
         # v9 (I12) — backstop: retire any beacon whose seam is no longer pure
@@ -2645,22 +2653,6 @@ class GameSession:
                 collision = self._collision_summary(x, y)
                 if collision:
                     packed["collision"] = collision
-                # v0.9.5 — observer is omniscient: stamp every live
-                # mine onto the cell so the tooltip can render
-                # "◆ caltrop mine · owner=…" in the obs view of the
-                # replay. The owner is exposed because that's what
-                # the watcher pane needs; opposing-seat fog rules
-                # only apply to the player_dense_view path.
-                mkey = self._mine_key(x, y)
-                m = self.mines.get(mkey)
-                if m is not None:
-                    packed["mine"] = {
-                        "x": int(x),
-                        "y": int(y),
-                        "owner": str(m.get("owner", "")),
-                        "laid_at_day": int(m.get("laid_at_day", 0)),
-                        "laid_at_hour": int(m.get("laid_at_hour", 0)),
-                    }
                 emp = emp_owner_at.get((x, y))
                 if emp is not None:
                     packed["emp_cloud"] = emp
@@ -2976,16 +2968,6 @@ class GameSession:
                         "day": int(dest_marker.get("day", 0)),
                     }
 
-                # v0.9.5 — surface caltrop mines on the cell itself
-                # so the watcher tooltip can render "MINE · owner=p2,
-                # laid day 4 21:00" without cross-referencing the
-                # frame-level ``mines_active`` list. Visibility honours
-                # RULEBOOK §5.2: owner always; opposing seat only if
-                # they witnessed the lay (or have since flown over).
-                mine_info = self.mine_visible_to(player, x, y)
-                if mine_info is not None:
-                    cell["mine"] = mine_info
-
                 # v0.9.5 — EMP clouds are public (RULEBOOK §5.1 — not
                 # gated by fog); surface the cloud payload on any
                 # non-fog cell so the tooltip can render the active
@@ -3114,15 +3096,6 @@ class GameSession:
                     top = self._entity_at_tile(x, y)
                     if top is not None:
                         row["entity"] = _entity_payload(top)
-                    # v0.9.5 — caltrop mines are first-class objects on
-                    # the cell. Owner sees their own mines on live LOS;
-                    # opposing seat sees them only via the witness rule
-                    # (RULEBOOK §5.2). The shape mirrors what the
-                    # frontend tooltip reads so the agent prompt and
-                    # the watcher pane consume the same payload.
-                    mine_info = self.mine_visible_to(player, x, y)
-                    if mine_info is not None:
-                        row["mine"] = mine_info
                     live_rows.append(row)
                 elif k in echoes:
                     snap = echoes[k]
@@ -3180,12 +3153,6 @@ class GameSession:
                     collision = self._collision_summary(x, y)
                     if collision:
                         row["collision"] = collision
-                    # v0.9.5 — opposing-seat mine intel surfaces on
-                    # echo rows too: once witnessed, the mine stays
-                    # known even after the witnessing probe is gone.
-                    mine_info = self.mine_visible_to(player, x, y)
-                    if mine_info is not None:
-                        row["mine"] = mine_info
                     echo_rows.append(row)
                 elif k in mem:
                     # Memory-only tiles count as echoes for the agent —
@@ -3209,12 +3176,6 @@ class GameSession:
                         "value": max(0, min(255, int(cell.purity))),
                         "via": "memory",
                     }
-                    # v0.9.5 — owner sees their own mines even on
-                    # memory-only cells (the mine is the owner's own
-                    # asset; they don't forget where they put it).
-                    mine_info = self.mine_visible_to(player, x, y)
-                    if mine_info is not None:
-                        row["mine"] = mine_info
                     # v1.8 — frozen trail from the memory tile (bug #1).
                     _ft = (mem.get(k) or {}).get("trail")
                     if isinstance(_ft, dict):
@@ -3836,7 +3797,7 @@ class GameSession:
         ``_hoard_snap_payload`` backs the hoard grid. Keyed by seat →
         ``{stock: {emp, mine, chaff}, used: {emp, mine, chaff}}``,
         mirroring the live ``inventory_pack`` weapon block."""
-        keys = ("emp", "mine", "chaff")
+        keys = ("emp", "chaff")
         out: Dict[str, Any] = {}
         for p in self.players:
             stock = self.weapon_stock.get(p, {})
@@ -3975,31 +3936,12 @@ class GameSession:
                 for c in self.emp_clouds
                 if int(c.get("hours_remaining", 0)) > 0
             ]
-        # v0.9.4 — surface live mines on every frame so the watcher
-        # can paint a persistent rhombus on each mined cell after
-        # the laying animation finishes. The owner field lets the
-        # client render in seat-colour and apply the "live vs echo"
-        # visibility rule (deployer always sees live; opposing seat
-        # sees an echo iff a probe witnessed the lay, recorded in
-        # ``probe_intel``). The omniscient observer (the default
-        # watcher pane) always sees every mine as live.
-        if self.mines:
-            mines_active: List[Dict[str, Any]] = []
-            for key, mdata in self.mines.items():
-                try:
-                    xs, ys = key.split(":")
-                    mx, my = int(xs), int(ys)
-                except (ValueError, AttributeError):
-                    continue
-                mines_active.append({
-                    "x": mx,
-                    "y": my,
-                    "owner": str(mdata.get("owner", "")),
-                    "laid_at_hour": int(mdata.get("laid_at_hour", 0)),
-                    "laid_at_day": int(mdata.get("laid_at_day", 0)),
-                })
-            if mines_active:
-                frame["mines_active"] = mines_active
+        # v1.31 — a ``mines_active`` snapshot used to ride every frame so
+        # the watcher could paint a persistent rhombus on each mined
+        # cell. Nothing can arm a caltrop now and load clears the rest,
+        # so the block was unreachable. ARCHIVED frames still carry the
+        # key and the client still renders it — that is the point of
+        # retiring rather than deleting.
         # v1.2 — probe ring-degrade lands AT dawn. ``probe_nights_remaining``
         # is ``self.day``-relative and the dawn frame is captured BEFORE the
         # day counter rolls, so a surviving probe's ring count would only
@@ -4124,10 +4066,10 @@ class GameSession:
             "harvested_tiles": hoard_copy,
             "orbital_holds_red": orbital_hold,
             "weapon_stock": {
-                k: int(wstock.get(k, 0)) for k in ("emp", "mine", "chaff")
+                k: int(wstock.get(k, 0)) for k in ("emp", "chaff")
             },
             "weapons_used": {
-                k: int(wused.get(k, 0)) for k in ("emp", "mine", "chaff")
+                k: int(wused.get(k, 0)) for k in ("emp", "chaff")
             },
         }
 
@@ -4711,9 +4653,9 @@ class GameSession:
         crash when the counter is bumped on a fire.
         """
         slot = self.weapons_used.setdefault(
-            str(player), {"emp": 0, "mine": 0, "chaff": 0},
+            str(player), {"emp": 0, "chaff": 0},
         )
-        for k in ("emp", "mine", "chaff"):
+        for k in ("emp", "chaff"):
             slot.setdefault(k, 0)
         return slot
 
@@ -4721,7 +4663,7 @@ class GameSession:
         """v0.9.5 — record that ``player`` just successfully fired
         one ``kind`` weapon. Returns the new total. Called from the
         three weapon fire paths (:meth:`apply_emp_launch`,
-        :meth:`apply_mine_lay`, :meth:`apply_chaff_flare`) AFTER the
+        :meth:`apply_chaff_flare`) AFTER the
         stockpile drain so a refused fire (empty stockpile, bad
         target) doesn't bump the counter.
         """
@@ -4739,9 +4681,9 @@ class GameSession:
         on the first orbit action.
         """
         slot = self.weapon_stock.setdefault(
-            str(player), {"emp": 0, "mine": 0, "chaff": 0},
+            str(player), {"emp": 0, "chaff": 0},
         )
-        for k in ("emp", "mine", "chaff"):
+        for k in ("emp", "chaff"):
             slot.setdefault(k, 0)
         return slot
 
@@ -4820,23 +4762,6 @@ class GameSession:
             blue_cost_each=EMP_COST_BLUE_PURITY,
             credit_cost_each=EMP_COST_CREDITS,
             display="EMP warhead",
-        )
-
-    def apply_build_mine(
-        self, player: PlayerId, count: int = 1,
-    ) -> Tuple[bool, str]:
-        """v0.9.3 — Build ``count`` caltrop mines into the stockpile."""
-        from sea_of_colours.game.weapons import (
-            MINE_COST_BLUE_PURITY,
-            MINE_COST_CREDITS,
-        )
-        return self._apply_build_weapon(
-            player,
-            kind="mine",
-            count=count,
-            blue_cost_each=MINE_COST_BLUE_PURITY,
-            credit_cost_each=MINE_COST_CREDITS,
-            display="caltrop mine",
         )
 
     def apply_build_chaff(
@@ -5050,7 +4975,7 @@ class GameSession:
             "weapon_stock": {
                 p: {
                     k: int(self.weapon_stock.get(p, {}).get(k, 0) or 0)
-                    for k in ("emp", "mine", "chaff")
+                    for k in ("emp", "chaff")
                 }
                 for p in self.players
             },
@@ -5060,7 +4985,7 @@ class GameSession:
             "weapons_used": {
                 p: {
                     k: int(self.weapons_used.get(p, {}).get(k, 0) or 0)
-                    for k in ("emp", "mine", "chaff")
+                    for k in ("emp", "chaff")
                 }
                 for p in self.players
             },
@@ -5268,7 +5193,7 @@ class GameSession:
             weapon_stock={
                 p: {
                     k: int(((data.get("weapon_stock") or {}).get(p) or {}).get(k, 0) or 0)
-                    for k in ("emp", "mine", "chaff")
+                    for k in ("emp", "chaff")
                 }
                 for p in seat_ids
             },
@@ -5279,7 +5204,7 @@ class GameSession:
             weapons_used={
                 p: {
                     k: int(((data.get("weapons_used") or {}).get(p) or {}).get(k, 0) or 0)
-                    for k in ("emp", "mine", "chaff")
+                    for k in ("emp", "chaff")
                 }
                 for p in seat_ids
             },
@@ -5415,7 +5340,10 @@ class GameSession:
             # won't have these fields; ``default_factory`` plus an empty
             # ``.get()`` fall through to fresh containers.
             emp_clouds=[dict(c) for c in (data.get("emp_clouds") or [])],
-            mines={str(k): dict(v) for k, v in (data.get("mines") or {}).items()},
+            # v1.31 — caltrops are NOT rehydrated. See the migration
+            # below: a weapon that no longer exists must not still be
+            # killing harvesters on a board mid-season.
+            mines={},
             session_id=str(data.get("session_id") or uuid.uuid4().hex),
             season_name=(
                 str(data["season_name"])
@@ -5438,6 +5366,37 @@ class GameSession:
                 damaged=bool(raw.get("damaged", False)),
             )
         sess.entities = ents
+
+        # v1.31 — MINE RETIREMENT MIGRATION.
+        #
+        # Two kinds of orphan can arrive from a pre-1.31 save, and both
+        # would otherwise be silent. Armed caltrops are dropped above
+        # (a retired weapon must not keep damaging steppers on a board
+        # someone is still playing), and unspent stock is refunded here
+        # rather than confiscated — the seat paid blue purity for it and
+        # nothing they can now do will ever spend it.
+        #
+        # Refund goes back as blue purity at the price paid. Credits are
+        # deliberately NOT refunded: the credit half was the build fee,
+        # and the vault is where a player feels the loss.
+        _stale_mines = len(data.get("mines") or {})
+        _refunded = 0
+        for _p in seat_ids:
+            _held = int(
+                ((data.get("weapon_stock") or {}).get(_p) or {}).get("mine", 0) or 0
+            )
+            if _held > 0:
+                sess.blue_bank[_p] = int(
+                    sess.blue_bank.get(_p, 0)
+                ) + _held * _MINE_REFUND_BLUE_EACH
+                _refunded += _held
+        if _stale_mines or _refunded:
+            sess.log_info(
+                f"[mineRetired] v1.31 — cleared {_stale_mines} armed "
+                f"caltrop(s) from the board and refunded {_refunded} "
+                f"unspent mine(s) at {_MINE_REFUND_BLUE_EACH} blue each"
+            )
+
         # Restore the square-identity ledger from the persisted blob so
         # synthetic-green provenance survives the Snowflake round-trip.
         # Legacy sessions (pre-v0.6.0) won't have a ``ledger`` field —
@@ -6409,28 +6368,9 @@ class GameSession:
                 False,
             )
 
-        # v0.9 — caltrop mine collision (RULEBOOK §5). A mine triggers
-        # BEFORE the collision / harvest checks: the step is cancelled
-        # outright (harvester stays where it was), the harvester is
-        # damaged, and the mine is consumed. Friendly fire is on, so
-        # the owner of the mine isn't immune. The slot is still
-        # considered "applied" — the engine surfaces the cancellation
-        # as a ``step`` frame with the cancellation noted in the
-        # caption.
-        mine = self.mine_at(nx, ny)
-        if mine is not None:
-            mine_owner = str(mine.get("owner", ""))
-            self.detonate_mine_at(nx, ny, harvester_id)
-            self._damage_harvester(h, by=mine_owner or None)
-            return (
-                True,
-                (
-                    f"{harvester_id} → ({nx},{ny}) — CALTROP MINE "
-                    f"(layer={mine_owner}); step cancelled, "
-                    f"{harvester_id} damaged"
-                ),
-                False,
-            )
+        # v1.31 — the caltrop check used to sit here, ahead of collision
+        # and harvest, cancelling the step and damaging the stepper.
+        # Retired with the weapon.
 
         # Mutual-damage collision (§3.6 v0.9.9): stepping into a cell
         # with one or more HEALTHY harvesters — move is cancelled, both
@@ -7117,6 +7057,9 @@ class GameSession:
                 m = re.search(r"banked\s+(\d+)\s+parcel", caption)
                 if m and int(m.group(1)) > 0:
                     t["recovered_carrying"] += 1
+            # v1.31 — KEPT ON PURPOSE. No new frame carries this tag, but
+            # this walks stored frames, so an archived season's scoreboard
+            # still reports the mines that were laid in it.
             elif tag == "mine_lay":
                 out.setdefault(owner, self._empty_activity_tally())["mines"] += 1
             elif tag == "emp_launch":
@@ -7188,6 +7131,9 @@ class GameSession:
         return out
 
     #: Tags that count as observable orbital actions (public silhouette).
+    #: ``mine_lay`` is retired (v1.31) but stays listed — this classifies
+    #: stored frames, so dropping it would silently blank the orbital
+    #: silhouette of every archived season that used caltrops.
     _ORBITAL_EVENT_TAGS = (
         "probe", "drop", "pickup", "mine_lay", "emp_launch", "chaff_flare",
     )
@@ -7547,7 +7493,7 @@ class GameSession:
 
         # Cross-system kill: probes destroyed, mines neutralized in the
         # blast (friendly fire on).
-        destroyed_probes, neutralized_mines = self._emp_sweep_destroy(
+        destroyed_probes = self._emp_sweep_destroy(
             cloud_cells, owner=str(player), hour=int(hour),
         )
 
@@ -7567,20 +7513,14 @@ class GameSession:
             "from_stockpile": True,
             "stock_remaining": int(slot["emp"]),
             "destroyed_probes": destroyed_probes,
-            "neutralized_mines": neutralized_mines,
         })
         salvo = (
             f"{len(targets)} missile(s) → "
             + ", ".join(f"({tx},{ty})" for tx, ty in targets)
         )
         extra = ""
-        if destroyed_probes or neutralized_mines:
-            bits = []
-            if destroyed_probes:
-                bits.append(f"{len(destroyed_probes)} probe(s) fried")
-            if neutralized_mines:
-                bits.append(f"{len(neutralized_mines)} mine(s) cleared")
-            extra = "; " + ", ".join(bits)
+        if destroyed_probes:
+            extra = f"; {len(destroyed_probes)} probe(s) fried"
         return True, (
             f"{player} fired EMP salvo: {salvo}; clouds r={EMP_RADIUS} "
             f"for {EMP_CLOUD_HOURS}h{extra} (stock {slot['emp']} EMP left)"
@@ -7592,16 +7532,19 @@ class GameSession:
         *,
         owner: str,
         hour: int,
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Destroy probes and neutralize mines inside ``cells``.
+    ) -> List[Dict[str, Any]]:
+        """Destroy probes inside ``cells``.
 
         Friendly fire is on — units are destroyed regardless of owner.
-        Returns ``(destroyed_probes, neutralized_mines)`` as structured
-        event payloads for the launch/tick replay frame. ``owner`` is the
-        EMP's owner (for the event caption); ``hour`` is the resolve hour.
+        Returns the destroyed-probe event payloads for the launch/tick
+        replay frame. ``owner`` is the EMP's owner (for the event
+        caption); ``hour`` is the resolve hour.
+
+        v1.31 — used to neutralise caltrop mines in the blast too, and
+        returned a ``(probes, mines)`` pair. Retired with the weapon.
         """
         if not cells:
-            return [], []
+            return []
         destroyed_probes: List[Dict[str, Any]] = []
         for eid, en in list(self.entities.items()):
             if en.entity_type != "probe":
@@ -7619,26 +7562,9 @@ class GameSession:
                 self._note_asset_destroyed(eid, reason=f"emp@hour{hour}")
                 self._clear_probe_launch_markers(eid, int(en.x), int(en.y))
                 del self.entities[eid]
-        neutralized_mines: List[Dict[str, Any]] = []
-        for (cx, cy) in cells:
-            key = self._mine_key(cx, cy)
-            m = self.mines.pop(key, None)
-            if m is None:
-                continue
-            neutralized_mines.append({
-                "at": [int(cx), int(cy)],
-                "owner": str(m.get("owner", "")),
-            })
-            self.pending_mine_events.append({
-                "kind": "mine_neutralized",
-                "owner": str(m.get("owner", "")),
-                "by": str(owner),
-                "at": [int(cx), int(cy)],
-                "cause": "emp",
-            })
         if destroyed_probes:
             self._persist_asset_ledger()
-        return destroyed_probes, neutralized_mines
+        return destroyed_probes
 
     def tick_emp_clouds(self) -> None:
         """Decrement every cloud's ``hours_remaining`` by 1 and prune.
@@ -7657,15 +7583,14 @@ class GameSession:
         live_cells = self.cells_in_any_emp_cloud()
         if not live_cells:
             return
-        destroyed_probes, neutralized_mines = self._emp_sweep_destroy(
+        destroyed_probes = self._emp_sweep_destroy(
             live_cells, owner="emp_field", hour=-1,
         )
-        if destroyed_probes or neutralized_mines:
+        if destroyed_probes:
             self.pending_emp_events.append({
                 "kind": "emp_field_sweep",
                 "owner": "emp_field",
                 "destroyed_probes": destroyed_probes,
-                "neutralized_mines": neutralized_mines,
             })
 
     def cells_in_any_emp_cloud(self) -> Set[Tuple[int, int]]:
@@ -7714,202 +7639,18 @@ class GameSession:
         self.emp_harv_seen[key] = True
         self._attrib("emp_harvesters", attacker, victim)
 
-    # ── Mines ───────────────────────────────────────────────────────
-
-    @staticmethod
-    def _mine_key(x: int, y: int) -> str:
-        return f"{int(x)}:{int(y)}"
-
-    def _mine_cluster_cells(self, x: int, y: int) -> List[Tuple[int, int]]:
-        """In-bounds cells a single ``mine_lay`` arms, per
-        :data:`MINE_BATCH_SHAPE`. The center is always first.
-
-        ``"single"`` — center only.
-        ``"plus"`` — center + N/E/S/W (5 cells).
-        ``"cross3x3"`` — full 3x3 block (9 cells).
-        Unknown shapes fall back to ``"single"``.
-        """
-        from sea_of_colours.game.weapons import MINE_BATCH_SHAPE
-
-        shape = str(MINE_BATCH_SHAPE)
-        if shape == "plus":
-            offsets = [(0, 0), (0, -1), (0, 1), (-1, 0), (1, 0)]
-        elif shape == "cross3x3":
-            offsets = [
-                (dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
-            ]
-            offsets.sort(key=lambda o: (o != (0, 0), o))
-        else:
-            offsets = [(0, 0)]
-        cells: List[Tuple[int, int]] = []
-        seen: Set[Tuple[int, int]] = set()
-        for dx, dy in offsets:
-            cx, cy = int(x) + dx, int(y) + dy
-            if (cx, cy) in seen:
-                continue
-            seen.add((cx, cy))
-            if 0 <= cx < self.width and 0 <= cy < self.height:
-                cells.append((cx, cy))
-        return cells
-
-    def apply_mine_lay(
-        self, player: PlayerId, x: int, y: int, *, hour: int,
-    ) -> Tuple[bool, str]:
-        """Lay a hidden caltrop mine CLUSTER from the stockpile.
-
-        v0.9.x — one ``mine_lay`` expands the target into a cluster
-        (:data:`MINE_BATCH_SHAPE`, default ``"plus"`` = 5 cells) and
-        arms a mine on each in-bounds, not-already-mined cell. A single
-        lay drains one mine from ``weapon_stock[player]["mine"]``
-        (``MINES_PER_BUY`` scales the BUILD batch, not the footprint).
-        Refuses with a yellow "no mine in stockpile" line if the seat
-        hasn't built any, or if every cluster cell is already mined /
-        out of bounds. Records a probe-intel witness per cell for any
-        opposing seat whose probe vision covered it at lay time.
-        """
-        if not (0 <= int(x) < self.width and 0 <= int(y) < self.height):
-            return False, f"mine_lay: ({x},{y}) out of bounds"
-        cluster = self._mine_cluster_cells(int(x), int(y))
-        free_cells = [c for c in cluster if self._mine_key(*c) not in self.mines]
-        if not free_cells:
-            return False, f"mine_lay: ({x},{y}) cluster fully mined"
-        slot = self._ensure_weapon_stock_slot(player)
-        if int(slot.get("mine", 0)) <= 0:
-            return False, (
-                "mine_lay: no caltrop mine in stockpile — build one "
-                "in the next Orbit phase before deploying"
-            )
-        slot["mine"] = int(slot.get("mine", 0)) - 1
-        # v0.9.5 — bump the lifetime "USED" counter so the vault bay
-        # reflects the deploy. See :meth:`apply_emp_launch` for the
-        # same pattern.
-        self._bump_weapons_used(player, "mine")
-        # v0.9.5 — track witnesses ON THE MINE rather than scribbling
-        # into ``probe_intel`` (which gets overwritten by the next
-        # ``_pulse_vision_intel`` tile snapshot, silently destroying
-        # the opponent's mine memory). The witness set is owner-
-        # excluded by construction and grows monotonically: any
-        # opposing seat that gets live LOS on the cell — at lay time
-        # OR later (probe fly-over, harvester walk-by) — joins the
-        # set and from then on sees the mine as an echo even after
-        # losing line of sight. The owner is always implicitly a
-        # "witness" and is not stored here.
-        for (mx, my) in free_cells:
-            witnesses: Set[str] = set()
-            for other in self.players:
-                if other == player:
-                    continue
-                try:
-                    if self._tile_visible_to_probe(
-                        cast(PlayerId, other), int(mx), int(my)
-                    ):
-                        witnesses.add(str(other))
-                except Exception:
-                    pass
-            self.mines[self._mine_key(mx, my)] = {
-                "owner": str(player),
-                "laid_at_hour": int(hour),
-                "laid_at_day": int(self.day),
-                "witnesses": list(sorted(witnesses)),
-            }
-        self.pending_mine_events.append({
-            "kind": "mine_lay",
-            "owner": str(player),
-            "at": [int(x), int(y)],
-            "cluster": [[int(cx), int(cy)] for cx, cy in free_cells],
-            "from_stockpile": True,
-            "stock_remaining": int(slot["mine"]),
-        })
-        return True, (
-            f"{player} laid caltrop mine cluster @ ({x},{y}) "
-            f"[{len(free_cells)} cell(s)]; stock {slot['mine']} mine(s) left"
-        )
-
-    def mine_at(self, x: int, y: int) -> Optional[Dict[str, Any]]:
-        """Return the mine at ``(x, y)`` or ``None``."""
-        return self.mines.get(self._mine_key(x, y))
-
-    def mine_visible_to(
-        self, player: PlayerId, x: int, y: int,
-    ) -> Optional[Dict[str, Any]]:
-        """Return the mine at ``(x, y)`` iff ``player`` can lawfully see it.
-
-        Visibility rule (RULEBOOK §5.2 v0.9.5):
-
-        * **Owner** — always sees their own mines.
-        * **Other seat** — sees the mine iff they're in the mine's
-          ``witnesses`` list (recorded at lay time and topped up by
-          :meth:`_pulse_vision_intel` whenever an opposing unit gains
-          live LOS on the tile).
-
-        Returns a shallow copy with a stable ``{x, y, owner, laid_at_day,
-        laid_at_hour}`` shape — ``witnesses`` is **not** echoed back to
-        keep one seat's intel out of the other's view.
-        """
-        m = self.mines.get(self._mine_key(x, y))
-        if m is None:
-            return None
-        owner = str(m.get("owner", ""))
-        if owner == str(player):
-            visible = True
-        else:
-            witnesses = m.get("witnesses") or []
-            visible = str(player) in witnesses
-        if not visible:
-            return None
-        return {
-            "x": int(x),
-            "y": int(y),
-            "owner": owner,
-            "laid_at_day": int(m.get("laid_at_day", 0)),
-            "laid_at_hour": int(m.get("laid_at_hour", 0)),
-        }
-
-    def detonate_mine_at(
-        self, x: int, y: int, harvester_id: str,
-    ) -> bool:
-        """Pop the mine at ``(x, y)`` and return True iff one was there.
-
-        Also queues a ``pending_mine_events`` entry so the matching
-        replay frame can fire the explosion animation. Damage to
-        the triggering harvester is handled by the caller (it owns
-        the entity reference).
-        """
-        key = self._mine_key(x, y)
-        m = self.mines.pop(key, None)
-        if m is None:
-            return False
-        hh = self.entities.get(harvester_id)
-        self.pending_mine_events.append({
-            "kind": "mine_detonate",
-            "owner": str(m.get("owner", "")),
-            "at": [int(x), int(y)],
-            "harvester_id": str(harvester_id),
-            "harvester_at": [int(hh.x), int(hh.y)] if hh and hh.x is not None else None,
-        })
-        return True
-
-    def _tile_visible_to_probe(
-        self, player: PlayerId, x: int, y: int,
-    ) -> bool:
-        """Best-effort: is ``(x, y)`` currently in any of ``player``'s probe LOS?
-
-        Used by :meth:`apply_mine_lay` to decide whether to drop a
-        probe-witness echo. Falls back to "no" if the session
-        helper isn't available, so the mine lay still succeeds —
-        the only consequence is the opposing seat misses the echo.
-        """
-        for ent in self.entities.values():
-            if ent.entity_type != "probe" or ent.owner != player:
-                continue
-            if ent.x is None or ent.y is None:
-                continue
-            if max(abs(ent.x - x), abs(ent.y - y)) <= probe_vision_radius():
-                # Use Chebyshev for the LOS test — matches the
-                # probe-vision computation in :meth:`_pulse_vision_intel`.
-                # Switch to Euclidean if the canonical helper diverges.
-                return True
-        return False
+    # ── Mines — RETIRED v1.31 ───────────────────────────────────────
+    #
+    # The caltrop subsystem lived here: _mine_key, _mine_cluster_cells,
+    # apply_mine_lay, mine_at, mine_visible_to, detonate_mine_at, and
+    # the probe-witness helper _tile_visible_to_probe that existed only
+    # to decide who saw a lay. All removed together — with no way to
+    # arm one, and existing caltrops cleared at load, every one of them
+    # was unreachable.
+    #
+    # ``self.mines`` itself is KEPT (always empty) so the persisted
+    # shape and the replay/FX path survive for archived seasons. See
+    # docs/ADDING_A_WEAPON.md before putting a weapon back in this slot.
 
     # ── Chaff ───────────────────────────────────────────────────────
 
@@ -7933,7 +7674,7 @@ class GameSession:
                 "in the next Orbit phase before firing"
             )
         slot["chaff"] = int(slot.get("chaff", 0)) - 1
-        # v0.9.5 — see :meth:`apply_emp_launch` / :meth:`apply_mine_lay`
+        # v0.9.5 — see :meth:`apply_emp_launch` / :meth:`apply_chaff_flare`
         # for the parallel bump.
         self._bump_weapons_used(player, "chaff")
         until_hour = int(hour) + int(CHAFF_DURATION_HOURS) - 1

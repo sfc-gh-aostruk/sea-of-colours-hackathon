@@ -812,11 +812,10 @@ def build_agent_view(
     # actually fire ("I have 0 EMPs and the prompt told me to
     # launch one — must build first"). Defensive ``.get`` chain so
     # a hand-edited or legacy session that's missing one of the
-    # sub-keys still serialises as a clean ``{emp, mine, chaff}``.
+    # sub-keys still serialises as a clean ``{emp, chaff}``.
     weapon_stock_seat = sess.weapon_stock.get(pid, {}) or {}
     weapon_stock_block = {
         "emp": int(weapon_stock_seat.get("emp", 0) or 0),
-        "mine": int(weapon_stock_seat.get("mine", 0) or 0),
         "chaff": int(weapon_stock_seat.get("chaff", 0) or 0),
     }
     from sea_of_colours.game.weapons import (
@@ -825,29 +824,25 @@ def build_agent_view(
         EMP_RADIUS,
         EMP_MISSILES_PER_LAUNCH,
         EMP_CLOUD_HOURS,
-        MINE_COST_BLUE_PURITY,
-        MINE_COST_CREDITS,
-        MINE_BATCH_SHAPE,
         CHAFF_COST_BLUE_PURITY,
         CHAFF_COST_CREDITS,
         CHAFF_DURATION_HOURS,
     )
     weapon_prices_block = {
         "emp": {"blue": EMP_COST_BLUE_PURITY, "credits": EMP_COST_CREDITS},
-        "mine": {"blue": MINE_COST_BLUE_PURITY, "credits": MINE_COST_CREDITS},
         "chaff": {"blue": CHAFF_COST_BLUE_PURITY, "credits": CHAFF_COST_CREDITS},
     }
     # v0.9.x — live weapon mechanics so the frontend targeting UI and
     # tooltips read the real dials (EMP salvo size / radius, chaff
-    # window, mine cluster shape) instead of hard-coding them.
+    # window) instead of hard-coding them. (v1.31 — the mine cluster
+    # shape went with the caltrop.)
     weapon_specs_block = {
         "emp": {
             "radius": int(EMP_RADIUS),
             "missiles_per_launch": int(EMP_MISSILES_PER_LAUNCH),
             "cloud_hours": int(EMP_CLOUD_HOURS),
-            "destroys": ["probe", "mine"],
+            "destroys": ["probe"],
         },
-        "mine": {"batch_shape": str(MINE_BATCH_SHAPE)},
         "chaff": {"duration_hours": int(CHAFF_DURATION_HOURS)},
     }
     # v0.9.6 — surface the seat's own hoard parcels so the orbit-phase

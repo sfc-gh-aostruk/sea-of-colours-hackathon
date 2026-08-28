@@ -1073,6 +1073,141 @@ failure being the pre-existing `two_seams_choose_one` eval debt.
 
 ---
 
+## 24. ✅ (DONE, v1.28) A same-hour EMP voided a rival's landing
+
+**Status (v1.28):** Fixed. The hour-start visibility snapshot is taken inside
+`NightSimulator._pre_hour_phase`, beside the established-cloud snapshot and
+immediately after the decay sweep, instead of in the hour loop after that
+function has already fired the hour's salvos.
+
+**Symptom:** reported from a live season (Terra_Kestrel, day 6, hour 1). p1
+fired an EMP salvo onto (2,14); it destroyed p2's probe; p2's harvester drop
+on (2,14), queued for that **same hour**, was refused with `drop: (2,14) has
+no live sensor beacon`. The landing should have succeeded *and* auto-harvested.
+
+**Root cause:** the engine had the right mechanism and consulted it a beat too
+late. `try_drop_unit` correctly honours a `live_override` snapshot, but the
+simulator computed that snapshot *after* `_pre_hour_phase` returned — and
+`_pre_hour_phase` is where this hour's EMP launches are pre-empted and
+resolved. So "what this seat could see at hour start" was recorded with the
+rival's beacon already destroyed by an event that had not happened yet at hour
+start.
+
+The tell is that **supersede obeyed the rule and EMP did not**, despite
+§3.9.7 listing them as equivalent. That is purely an artefact of where each
+resolves: a supersede is a normal dispatch action and lands *after* the
+snapshot, a weapon launch is pre-empted and lands *before* it.
+
+**Why it survived so long:** the rule is stated in four places and the engine
+was the only dissenter — RULEBOOK §3.9.7 ("a beacon a rival destroys,
+supersedes, or EMPs *later in the same hour* still validates that hour's
+landing"), §3.9.8 restating it, §4.9.3 (a cloud spawned this same hour is not
+"established", so the landing keeps its auto-harvest), and `manual/manual.js`,
+which scripts this exact scenario for attendees. Meanwhile §3.9.8's own risk
+list recommended "launching an EMP at your probe location to destroy it before
+your drop resolves" as a counter to the hot-drop — four lines below the
+sentence saying that cannot work. The bug had been written up as a feature.
+
+Test coverage existed and could not have caught it:
+`test_vision_rework.test_live_only_honours_hour_start_override` passes
+`try_drop_unit` an override by hand, so it pins the plumbing, not the *timing*.
+
+**Regression:** `tests/test_emp_beacon_timing.py`, four tests, all driving the
+real `NightSimulator`. Two reproduce the report (the landing, and the harvest)
+and fail without the fix with the reported error string verbatim. Two are
+counterweights that pass either way, so the fix cannot be over-applied: a cloud
+established on an *earlier* hour must still forfeit the landing's auto-harvest
+(§4.9.3), and the one-hour reprieve must not persist — a beacon destroyed on
+hour 1 must not validate a drop on hour 2, which is exactly what a "cache the
+first snapshot" implementation would have done.
+
+**Note for the next reader:** the snapshot instant is deliberate. It sits after
+the decay sweep, not at the very top of the hour, because a probe swept by a
+cloud that has been standing since an earlier hour is killed by a weapon
+already on the board — not by something happening "later in the same hour".
+
+---
+
+## 25. ✅ (DONE, v1.29) A jackpot sat in poor ground, so "warmer" was not a readable signal
+
+**Symptom (design, not a crash).** A `pure` cell — the jackpot the whole
+redsign mechanic is built around — was usually an isolated 255 in trace. The
+median board carried **2** `mass` squares out of 1120, and **79% of jackpots
+had no `mass` at all within 4.5 cells**.
+
+**Root cause.** `_spread_pure_red`'s top-up promotes the richest RED cell that
+clears the 12-cell separation, and separated `mass` barely exists, so it
+routinely lifted a cell of purity 80–150 straight to 255. Nothing had ever
+decided what should surround a pure; the count and spacing rules only decided
+*where* they go.
+
+**Why it mattered.** It broke the read prospecting should give a player —
+*thickening ground means you are getting warmer*. A pure surrounded by trace
+can only be found by landing on it, making the search a lottery rather than a
+deduction.
+
+**Fix.** New `_grade_pure_red` pass (RULEBOOK §2.2) lays a deposit around every
+pure: `mass` chunks clinging to it plus a scatter further out, through a `vein`
+shoulder. Bounded by three rules — only ever raises purity, never touches GREEN
+or BLUE, never writes 255 (so it cannot mint a pure beside the one it is
+decorating). Runs last on its own RNG stream. Median `mass` per board 2 → 15,
+jackpots with no mass 79% → 1.4%.
+
+**⚠ THIS MOVES SCORES, AND THE FOLLOW-UPS MATTER MORE THAN THE FIX:**
+
+1. **Total RED on a board roughly doubled** (median map value 8,844 → 15,394 at
+   two seats). Seasons score higher, the `EXTRACTED %` denominator moves, and
+   **a score from before v1.29 is not comparable to one after it** — including
+   agent benchmarks and the RED_HARVEST floor.
+2. **V12's `_ASSUMED_HALO_PURITY = 55` — investigated and largely a false
+   alarm.** It prices the blind comb of an unseen redsign halo, which is the
+   ground grading enriched, so it looked like a serious knock-on. Measured with
+   `scripts/_v12_halo_trace.py` over 28 offline seasons (14 graded, 14 not, same
+   seeds), sampling every real smear a seat could see:
+
+   * **The constant is reached on 1.0% of priced seams** (2.1% ungraded).
+     `blind_estimate` measures each visible seam and pools across seams first,
+     and that path reads the new terrain by itself. The terrain change did not
+     quietly break redsign pricing.
+   * **55 was never right.** Real smears measure a median non-pure purity of
+     **30** ungraded and **107** graded (n=1095 / 1525). The original 53/54/63
+     came from three hand-picked snapshots richer than a typical board, so the
+     constant ran ~1.8× *high* before v1.29 and ~1.9× *low* now.
+   * **The `mass` cliff at 151 is not in play.** That step (×1.0 → ×1.5) is what
+     made an early 180 guess beat every option on the card — a 6-cell comb
+     prices 281 at purity 55, 602 at 107, 1377 at 180. Across 1525 graded
+     samples the measured mean never exceeded **146**; real halos stay in
+     `vein`, so a value near 107 is safe in a way 180 was not.
+
+   **Applied (v1.29):** `_ASSUMED_HALO_PURITY` 55 → **105** (graded median 107,
+   rounded down) and `_ASSUMED_RED_DENSITY` 0.85 → **0.95** (measured 0.98).
+   Both nudged slightly conservative, because the failure this constant has
+   historically produced is over-valuing a blind attack, never under-valuing
+   one. Safe to apply alongside the terrain change precisely because of the 1%
+   reach — it cannot meaningfully confound a score comparison. Re-run the
+   tracer before moving them again.
+3. **Revert is a server restart, not a code change.** `SOC_MAP_HALO=off`
+   restores byte-identical v1.28 terrain (pinned by
+   `test_soc_map_halo_off_restores_the_v128_board_exactly`); a fraction thins
+   the `mass` without moving jackpots. Safe mid-season — sessions persist their
+   grid, not just their seed.
+
+**Reproduce:** `python scripts/_mapgen_pure_census.py 200 40 28 2` prints both
+sides over the same seeds.
+
+**Loose end — `manual/agent-data.js` still carries the v1.28 prompt wording**
+("the halo is thin"). It could not be regenerated here:
+`scripts/export_agent_guide_data.py` needs `SOC_BACKEND=snowflake` to read
+snapshot `SNAP_408ddd46_d4_p1`, and its other input,
+`reports/turn_suite/cards/post_phaseD/own_seam_d4.txt`, is not in the repo.
+Worth a thought before regenerating: that file is an **autopsy of one real
+historical turn**, so the prompt it shows is the prompt genuinely sent that
+night. Rewriting it to today's wording would falsify the record — the choice is
+between re-capturing a fresh turn on a graded board (better teaching material)
+and leaving the old turn intact and dating it. Not a product bug either way.
+
+---
+
 ## Triage summary
 
 | # | Area | Severity | Blocking multiplayer? |
@@ -1100,3 +1235,5 @@ failure being the pre-existing `two_seams_choose_one` eval debt.
 | 21 | Doomed probe held in the DOM but painted under the opaque terrain stand-in, so it vanished at hour open | ✅ done (v1.19) | no |
 | 22 | V12 had no cross-night memory on Snowflake: `SOC_AGENT_MEMORY` was never deployed and every write/read swallowed the failure | ✅ done (v1.19) | no |
 | 23 | Snowflake picker scored off a SQL view that credited disposed GREEN at +255 instead of charging −100 and applied no tier multiplier, inverting a finished season's winner | ✅ done (v1.20) | no |
+| 24 | A same-hour EMP voided a rival's queued landing: the hour-start vision snapshot was taken after the pre-hour phase had already fired the salvo and destroyed the beacon (§3.9.7 ⇄ engine) | ✅ done (v1.28) | no |
+| 25 | A jackpot sat in trace (79% had no mass within 4.5), so "richer ground means warmer" was not a readable signal — new graded-deposit pass (§2.2). **Doubles map RED: pre-v1.29 scores are not comparable.** V12's `_ASSUMED_HALO_PURITY` fallback measured (reached on only 1% of seams, so never the knock-on it looked like) and retuned 55 → 105 | ✅ done (v1.29) | no |
