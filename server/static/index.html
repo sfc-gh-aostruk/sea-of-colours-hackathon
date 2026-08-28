@@ -142,11 +142,16 @@
                 <span class="cc-map-zoom-readout" id="cc-map-zoom-readout">100%</span>
               </div>
             </div>
+            <!-- v1.24 — the aiming bar sits ABOVE the viewport in normal
+                 flow, not absolutely over it. It carries the [ stop ] button
+                 so it cannot be pointer-events:none, and overlaying the board
+                 meant it swallowed every click on the top rows — while
+                 aiming, which is exactly when you need them. -->
+            <div id="pick-mode-banner" class="pick-mode-banner" hidden>
+              <span>// <strong id="pick-mode-label"></strong></span>
+              <button type="button" id="pick-mode-cancel" class="cli-btn pick-mode-cancel-btn">[ stop ]</button>
+            </div>
             <div class="cc-map-viewport">
-              <div id="pick-mode-banner" class="pick-mode-banner" hidden>
-                <span>// <strong id="pick-mode-label"></strong></span>
-                <button type="button" id="pick-mode-cancel" class="cli-btn pick-mode-cancel-btn">[ stop ]</button>
-              </div>
               <div id="map-player" class="map-host map-host--main">
                 <span class="dim"># start NEW GAME</span>
               </div>
@@ -362,85 +367,135 @@
               </span>
             </header>
 
-            <div class="cc-orbit-readouts">
-              <div class="cc-orbit-readout" data-readout="credits">
-                <span class="cc-orbit-readout-label dim">CREDITS</span>
-                <span id="cc-orbit-credits" class="cc-orbit-readout-value">0c</span>
-              </div>
-              <div class="cc-orbit-readout" data-readout="probe-stock">
-                <span class="cc-orbit-readout-label dim">PROBE STOCK</span>
-                <span id="cc-orbit-probe-stock" class="cc-orbit-readout-value">0</span>
-              </div>
-              <div class="cc-orbit-readout" data-readout="harvesters">
-                <span class="cc-orbit-readout-label dim">HARVESTERS</span>
-                <span id="cc-orbit-harvesters" class="cc-orbit-readout-value">0/3</span>
-              </div>
-              <div class="cc-orbit-readout" data-readout="green-owned">
-                <span class="cc-orbit-readout-label dim">GREEN &rarr; DUMPED</span>
-                <span id="cc-orbit-green" class="cc-orbit-readout-value">0 (&Sigma;0p)</span>
-              </div>
-              <div class="cc-orbit-readout" data-readout="tier-counts">
-                <span class="cc-orbit-readout-label dim">RED &rarr; SHIPPING</span>
-                <span id="cc-orbit-tier-counts" class="cc-orbit-readout-value">trace 0 &middot; vein 0 &middot; mass 0</span>
-              </div>
-              <div class="cc-orbit-readout" data-readout="blue-tier-counts">
-                <span class="cc-orbit-readout-label dim">BLUE TIERS (&Sigma; <span id="cc-orbit-blue-total">0</span>p)</span>
-                <span id="cc-orbit-blue-tier-counts" class="cc-orbit-readout-value">shallow 0 &middot; mid 0 &middot; sink 0 &middot; deep 0</span>
-              </div>
-              <div class="cc-orbit-readout" data-readout="weapon-stock">
-                <span class="cc-orbit-readout-label dim">WEAPONS</span>
-                <span id="cc-orbit-weapon-stock" class="cc-orbit-readout-value cc-weapon-stock-readout">
-                  <span class="cc-weapon-stock-chip" data-weapon="emp">
-                    <span class="cc-weapon-icon cc-weapon-icon-emp" aria-hidden="true"></span>
-                    <span data-weapon-stock-count="emp">0</span>
-                  </span>
-                  <span class="cc-weapon-stock-chip" data-weapon="mine">
-                    <span class="cc-weapon-icon cc-weapon-icon-mine" aria-hidden="true"></span>
-                    <span data-weapon-stock-count="mine">0</span>
-                  </span>
-                  <span class="cc-weapon-stock-chip" data-weapon="chaff">
-                    <span class="cc-weapon-icon cc-weapon-icon-chaff" aria-hidden="true"></span>
-                    <span data-weapon-stock-count="chaff">0</span>
-                  </span>
-                </span>
-              </div>
-            </div>
-
-            <!-- v0.9.5 — full asset roster so the seat can see every
-                 owned harvester / probe / orblift, including damaged
-                 status and live coords. The orbit panel was previously
-                 reduced to "0/3 harvesters" with no way to tell which
-                 unit was damaged or which surface tile a harvester
-                 was sitting on. -->
-            <div class="cc-orbit-assets" id="cc-orbit-assets-pane">
-              <header class="cc-orbit-assets-head">
-                <span class="dim">ASSETS</span>
-                <span class="dim cc-orbit-assets-sub" id="cc-orbit-assets-sub">none owned</span>
-              </header>
-              <ul class="cc-orbit-assets-list" id="cc-orbit-assets-list"></ul>
-            </div>
-
             <form
               id="solo-orbit-form"
               class="cc-orders-form cc-orbit-form"
               autocomplete="off"
               onsubmit="return false;"
             >
-              <fieldset class="cc-queue-fieldset">
-                <legend class="cc-queue-legend">
-                  <span class="dim">orbit action queue</span>
-                  <span id="solo-orbit-queue-count" class="solo-queue-count">0</span>
-                </legend>
-                <div
-                  id="solo-orbit-queue"
-                  class="cc-move-queue"
-                  aria-label="Ordered orbit action queue"
-                ></div>
+              <!-- v1.27 — ORBIT is THREE STACKED THIRDS, each scrolling on
+                   its own: what is TRUE (wallet, fleet, what the vault does
+                   on resolve), what you can DO about it, and what you have
+                   DECIDED plus the button that sends it.
+
+                   The panel used to run as one column in that same order but
+                   with no divisions, so the ~200px of readouts and asset list
+                   at the top pushed the first button off the bottom of a
+                   short rail — on a screen whose entire purpose is pressing
+                   buttons. Nothing has been removed; the facts simply can no
+                   longer displace the actions, or vice versa. -->
+
+              <!-- FIRST THIRD — the facts. Read-only, every one of them. -->
+              <div class="cc-orbit-facts">
+                <!-- v1.25 — this block used to be seven equal tiles, four of
+                     which were vault bookkeeping: RED as trace/vein/mass/pure
+                     and BLUE as shallow/mid/sink/deep. Those are the VAULT
+                     tab's job, and the settlement block below already says
+                     what the vault will DO tonight. Meanwhile CREDITS and
+                     BLUE — the only two numbers you can actually spend here —
+                     were rendered at the same weight as everything else, so
+                     the panel shouted "what is in my hold" and murmured "what
+                     can I buy", which is backwards for a buying screen.
+
+                     Now: the wallet leads at double size with its projected
+                     remainder underneath, and everything you OWN collapses to
+                     two one-line readouts. The old #cc-orbit-harvesters and
+                     #cc-orbit-probe-stock ids survive inside the FLEET line so
+                     the existing writes keep working and the line reads as a
+                     sentence rather than as two tiles. -->
+                <div class="cc-orbit-readouts">
+                  <div class="cc-orbit-readout cc-orbit-readout--wallet" data-readout="credits">
+                    <span class="cc-orbit-readout-label dim">CREDITS</span>
+                    <span id="cc-orbit-credits" class="cc-orbit-readout-value">0c</span>
+                    <span id="cc-orbit-credits-proj" class="cc-orbit-readout-proj dim" hidden></span>
+                  </div>
+                  <div class="cc-orbit-readout cc-orbit-readout--wallet" data-readout="blue">
+                    <span class="cc-orbit-readout-label dim">BLUE</span>
+                    <span id="cc-orbit-blue-total" class="cc-orbit-readout-value">0b</span>
+                    <span id="cc-orbit-blue-proj" class="cc-orbit-readout-proj dim" hidden></span>
+                  </div>
+                  <div class="cc-orbit-readout" data-readout="fleet">
+                    <span class="cc-orbit-readout-label dim">FLEET</span>
+                    <span class="cc-orbit-readout-value">
+                      <span id="cc-orbit-harvesters">0/3</span> harvesters
+                      &middot; <span id="cc-orbit-probe-stock">0</span> probes
+                    </span>
+                  </div>
+                  <div class="cc-orbit-readout" data-readout="weapon-stock">
+                    <span class="cc-orbit-readout-label dim">ARMS</span>
+                    <span id="cc-orbit-weapon-stock" class="cc-orbit-readout-value cc-weapon-stock-readout">
+                      <span class="cc-weapon-stock-chip" data-weapon="emp">
+                        <span class="cc-weapon-icon cc-weapon-icon-emp" aria-hidden="true"></span>
+                        <span data-weapon-stock-count="emp">0</span>
+                      </span>
+                      <span class="cc-weapon-stock-chip" data-weapon="mine">
+                        <span class="cc-weapon-icon cc-weapon-icon-mine" aria-hidden="true"></span>
+                        <span data-weapon-stock-count="mine">0</span>
+                      </span>
+                      <span class="cc-weapon-stock-chip" data-weapon="chaff">
+                        <span class="cc-weapon-icon cc-weapon-icon-chaff" aria-hidden="true"></span>
+                        <span data-weapon-stock-count="chaff">0</span>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- v0.9.5 — full asset roster so the seat can see every
+                     owned harvester / probe / orblift, including damaged
+                     status and live coords. The orbit panel was previously
+                     reduced to "0/3 harvesters" with no way to tell which
+                     unit was damaged or which surface tile a harvester
+                     was sitting on. -->
+                <div class="cc-orbit-assets" id="cc-orbit-assets-pane">
+                  <header class="cc-orbit-assets-head">
+                    <span class="dim">ASSETS</span>
+                    <span class="dim cc-orbit-assets-sub" id="cc-orbit-assets-sub">none owned</span>
+                  </header>
+                  <ul class="cc-orbit-assets-list" id="cc-orbit-assets-list"></ul>
+                </div>
+
+                <!-- v1.13 — not a control, a readout. Settlement is
+                     automatic now, so the thing a player most needs
+                     to know here is what their vault is about to do
+                     without being asked. app.js fills the counts.
+                     v1.27 — moved out of the action toolbar, where being
+                     the third `.cc-orbit-block` in a row of buttons read
+                     as a thing you could press. It is a fact, so it lives
+                     with the facts. -->
+                <div class="cc-orbit-block" data-orbit-block="settlement">
+                  <div class="cc-orbit-block-head dim">// on resolve &middot; automatic</div>
+                  <div class="cc-orbit-block-body cc-orbit-settlement">
+                    <div class="cc-settle-line" data-settle="red">
+                      <span class="cc-settle-arrow" aria-hidden="true">&#8648;</span>
+                      <span id="cc-settle-red">no RED to ship</span>
+                    </div>
+                    <div class="cc-settle-line" data-settle="green">
+                      <span class="cc-settle-arrow" aria-hidden="true">&#9760;</span>
+                      <span id="cc-settle-green">no GREEN to dump</span>
+                    </div>
+                    <!-- v1.27 — was "Your vault empties every orbit — no
+                         bid, no slot, no action." Two lines in a pane that
+                         is one third of the rail, spent restating what the
+                         "automatic" in the heading already says. -->
+                    <div
+                      class="cc-settle-note dim"
+                      title="Settlement needs no bid, no slot and no action from you. It happens the moment the orbit resolves."
+                    >
+                      no bid, no slot, no action
+                    </div>
+                  </div>
+                </div>
+              </div><!-- /.cc-orbit-facts -->
+
+              <!-- SECOND THIRD — the options. -->
+              <div class="cc-orbit-actions">
                 <!-- v1.13 — final settlement orbit banner. Nothing is
                      blocked any more (settlement is automatic, so there
                      is no last-turn move to protect); the banner now
                      just warns that anything bought here never flies.
-                     app.js toggles it via updateFinalOrbitUi. -->
+                     app.js toggles it via updateFinalOrbitUi.
+                     v1.27 — sits with the OPTIONS, because what it changes
+                     is the value of buying anything at all. -->
                 <div id="final-orbit-banner" class="final-orbit-banner" hidden>
                   <div class="final-orbit-banner-copy">
                     FINAL SETTLEMENT ORBIT &mdash; your vault settles automatically when
@@ -457,176 +512,220 @@
                        2. WEAPONS — EMP / MINE / CHAFF stockpile -->
                 <div class="cc-queue-toolbar cc-orbit-toolbar">
                   <div class="cc-orbit-block" data-orbit-block="construct">
-                    <div class="cc-orbit-block-head dim">// construct &middot; repair</div>
+                    <!-- v1.25 — the verb lives on the HEADING, so the six
+                         buttons below are bare nouns. `[ BUILD HARVESTER ]`
+                         plus its cost did not fit the rail at 1024 and the
+                         price wrapped under the button; "build" was on
+                         every row of a block already titled build. -->
+                    <div class="cc-orbit-block-head dim">// build &middot; repair</div>
+                    <!-- v1.25 — every action is wrapped in a
+                         `.cc-orbit-act` carrying a `.cc-orbit-why` line
+                         that app.js fills when the action is dimmed. A
+                         button you cannot use has to say what would make
+                         it usable; the old panel dimmed REPAIR with a
+                         class that had no CSS at all, so it rendered at
+                         full brightness and explained nothing.
+
+                         Costs are `data-orbit-cost` placeholders filled
+                         from `ship_prices` / `weapon_prices` on the view,
+                         NOT literals. They were hardcoded in three places
+                         (here, the button title, and orbitActionCost) —
+                         exactly the drift AGENTS.md warns about. -->
                     <div class="cc-orbit-block-body">
-                      <button
-                        type="button"
-                        class="cli-btn solo-add-orbit cc-add-btn"
-                        data-orbit-action="build_harvester"
-                        title="Mint a new orbital harvester (1500c, max 3)"
-                      >
-                        [ + build harvester (1500c) ]
-                      </button>
-                      <span class="cc-add-btn-group" data-orbit-group="build_probe">
-                        <button
-                          type="button"
-                          class="cli-btn solo-add-orbit cc-add-btn"
-                          data-orbit-action="build_probe"
-                          title="Mint N probes in one action slot (250c each)"
-                        >
-                          [ + build probes &times;<span class="cc-probe-count" data-orbit-probe-count>1</span> (250c) ]
-                        </button>
-                        <input
-                          type="number"
-                          min="1"
-                          max="20"
-                          step="1"
-                          value="1"
-                          id="solo-orbit-probe-count"
-                          class="cc-probe-count-input"
-                          title="How many probes to mint this slot"
-                          aria-label="Probe count"
-                        />
-                      </span>
-                      <button
-                        type="button"
-                        class="cli-btn solo-add-orbit cc-add-btn"
-                        data-orbit-action="repair"
-                        title="Repair a damaged harvester (500c)"
-                      >
-                        [ + repair (500c) &middot; <span data-orbit-damaged-count>0</span> damaged ]
-                      </button>
+                      <div class="cc-orbit-act">
+                        <span class="cc-orbit-act-line">
+                          <button
+                            type="button"
+                            class="cli-btn solo-add-orbit cc-add-btn"
+                            data-orbit-action="build_harvester"
+                          >
+                            [ HARVESTER ]
+                          </button>
+                          <span class="cc-orbit-cost" data-orbit-cost="build_harvester"></span>
+                        </span>
+                        <span class="cc-orbit-why" data-orbit-why="build_harvester" hidden></span>
+                      </div>
+                      <div class="cc-orbit-act">
+                        <span class="cc-orbit-act-line">
+                          <button
+                            type="button"
+                            class="cli-btn solo-add-orbit cc-add-btn"
+                            data-orbit-action="build_probe"
+                          >
+                            [ PROBE &times;<span class="cc-probe-count" data-orbit-probe-count>1</span> ]
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            max="20"
+                            step="1"
+                            value="1"
+                            id="solo-orbit-probe-count"
+                            class="cc-probe-count-input"
+                            title="How many probes to mint this slot"
+                            aria-label="Probe count"
+                          />
+                          <span class="cc-orbit-cost" data-orbit-cost="build_probe"></span>
+                        </span>
+                        <span class="cc-orbit-why" data-orbit-why="build_probe" hidden></span>
+                      </div>
+                      <div class="cc-orbit-act">
+                        <span class="cc-orbit-act-line">
+                          <button
+                            type="button"
+                            class="cli-btn solo-add-orbit cc-add-btn"
+                            data-orbit-action="repair"
+                          >
+                            [ REPAIR ]
+                          </button>
+                          <span class="cc-orbit-cost" data-orbit-cost="repair"></span>
+                          <span class="cc-orbit-stock dim">&middot; <span data-orbit-damaged-count>0</span> damaged</span>
+                        </span>
+                        <span class="cc-orbit-why" data-orbit-why="repair" hidden></span>
+                      </div>
                     </div>
                   </div>
 
                   <div class="cc-orbit-block" data-orbit-block="weapons">
-                    <div class="cc-orbit-block-head dim">// weapons bay</div>
+                    <div class="cc-orbit-block-head dim">// build weapons</div>
                     <div class="cc-orbit-block-body">
-                      <span class="cc-add-btn-group" data-orbit-group="build_emp">
-                        <button
-                          type="button"
-                          class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
-                          data-orbit-action="build_emp"
-                          title="Construct N EMP warheads (200 blue + 250c each)"
-                        >
-                          [ + build
-                            <span class="cc-weapon-icon cc-weapon-icon-emp" aria-hidden="true"></span>
-                            EMP &times;<span class="cc-weapon-count" data-orbit-weapon-count="emp">1</span>
-                            (200b/250c) ]
-                        </button>
-                        <input
-                          type="number"
-                          min="1"
-                          max="10"
-                          step="1"
-                          value="1"
-                          id="solo-orbit-emp-count"
-                          class="cc-probe-count-input"
-                          title="How many EMP warheads to build this slot"
-                          aria-label="EMP count"
-                        />
-                      </span>
-                      <span class="cc-add-btn-group" data-orbit-group="build_mine">
-                        <button
-                          type="button"
-                          class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
-                          data-orbit-action="build_mine"
-                          title="Construct N caltrop mines (100 blue + 100c each)"
-                        >
-                          [ + build
-                            <span class="cc-weapon-icon cc-weapon-icon-mine" aria-hidden="true"></span>
-                            MINE &times;<span class="cc-weapon-count" data-orbit-weapon-count="mine">1</span>
-                            (100b/100c) ]
-                        </button>
-                        <input
-                          type="number"
-                          min="1"
-                          max="10"
-                          step="1"
-                          value="1"
-                          id="solo-orbit-mine-count"
-                          class="cc-probe-count-input"
-                          title="How many mines to build this slot"
-                          aria-label="Mine count"
-                        />
-                      </span>
-                      <span class="cc-add-btn-group" data-orbit-group="build_chaff">
-                        <button
-                          type="button"
-                          class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
-                          data-orbit-action="build_chaff"
-                          title="Construct N orbital chaff flares (255 blue)"
-                        >
-                          [ + build
-                            <span class="cc-weapon-icon cc-weapon-icon-chaff" aria-hidden="true"></span>
-                            CHAFF &times;<span class="cc-weapon-count" data-orbit-weapon-count="chaff">1</span>
-                            (255b) ]
-                        </button>
-                        <input
-                          type="number"
-                          min="1"
-                          max="10"
-                          step="1"
-                          value="1"
-                          id="solo-orbit-chaff-count"
-                          class="cc-probe-count-input"
-                          title="How many chaff flares to build this slot"
-                          aria-label="Chaff count"
-                        />
-                      </span>
-                    </div>
-                  </div>
-
-                  <!-- v1.13 — not a control, a readout. Settlement is
-                       automatic now, so the thing a player most needs
-                       to know here is what their vault is about to do
-                       without being asked. app.js fills the counts. -->
-                  <div class="cc-orbit-block" data-orbit-block="settlement">
-                    <div class="cc-orbit-block-head dim">// on resolve &middot; automatic</div>
-                    <div class="cc-orbit-block-body cc-orbit-settlement">
-                      <div class="cc-settle-line" data-settle="red">
-                        <span class="cc-settle-arrow" aria-hidden="true">&#8648;</span>
-                        <span id="cc-settle-red">no RED to ship</span>
+                      <div class="cc-orbit-act">
+                        <span class="cc-orbit-act-line">
+                          <button
+                            type="button"
+                            class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
+                            data-orbit-action="build_emp"
+                          >
+                            [
+                              <span class="cc-weapon-icon cc-weapon-icon-emp" aria-hidden="true"></span>
+                              EMP &times;<span class="cc-weapon-count" data-orbit-weapon-count="emp">1</span> ]
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            step="1"
+                            value="1"
+                            id="solo-orbit-emp-count"
+                            class="cc-probe-count-input"
+                            title="How many EMP warheads to build this slot"
+                            aria-label="EMP count"
+                          />
+                          <span class="cc-orbit-cost" data-orbit-cost="build_emp"></span>
+                        </span>
+                        <span class="cc-orbit-why" data-orbit-why="build_emp" hidden></span>
                       </div>
-                      <div class="cc-settle-line" data-settle="green">
-                        <span class="cc-settle-arrow" aria-hidden="true">&#9760;</span>
-                        <span id="cc-settle-green">no GREEN to dump</span>
+                      <div class="cc-orbit-act">
+                        <span class="cc-orbit-act-line">
+                          <button
+                            type="button"
+                            class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
+                            data-orbit-action="build_mine"
+                          >
+                            [
+                              <span class="cc-weapon-icon cc-weapon-icon-mine" aria-hidden="true"></span>
+                              MINE &times;<span class="cc-weapon-count" data-orbit-weapon-count="mine">1</span> ]
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            step="1"
+                            value="1"
+                            id="solo-orbit-mine-count"
+                            class="cc-probe-count-input"
+                            title="How many mines to build this slot"
+                            aria-label="Mine count"
+                          />
+                          <span class="cc-orbit-cost" data-orbit-cost="build_mine"></span>
+                        </span>
+                        <span class="cc-orbit-why" data-orbit-why="build_mine" hidden></span>
                       </div>
-                      <div class="cc-settle-note dim">
-                        Your vault empties every orbit &mdash; no bid, no slot, no action.
+                      <div class="cc-orbit-act">
+                        <span class="cc-orbit-act-line">
+                          <button
+                            type="button"
+                            class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
+                            data-orbit-action="build_chaff"
+                          >
+                            [
+                              <span class="cc-weapon-icon cc-weapon-icon-chaff" aria-hidden="true"></span>
+                              CHAFF &times;<span class="cc-weapon-count" data-orbit-weapon-count="chaff">1</span> ]
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            step="1"
+                            value="1"
+                            id="solo-orbit-chaff-count"
+                            class="cc-probe-count-input"
+                            title="How many chaff flares to build this slot"
+                            aria-label="Chaff count"
+                          />
+                          <span class="cc-orbit-cost" data-orbit-cost="build_chaff"></span>
+                        </span>
+                        <span class="cc-orbit-why" data-orbit-why="build_chaff" hidden></span>
                       </div>
                     </div>
                   </div>
 
-                  <div class="cc-orbit-block cc-orbit-block--foot">
-                    <button
-                      type="button"
-                      id="solo-orbit-queue-clear"
-                      class="cli-btn cc-add-btn cc-clear-btn"
-                    >
-                      [ clear ]
-                    </button>
-                  </div>
+                </div><!-- /.cc-orbit-toolbar -->
+              </div><!-- /.cc-orbit-actions -->
+
+              <!-- THIRD THIRD — what you have decided, and the button that
+                   sends it. The button is OUTSIDE the scroller (same rule as
+                   ORDERS): it is the one control pressed every single orbit,
+                   so it holds one position regardless of how long the queue
+                   runs. [ clear ] rides WITH the rows rather than above the
+                   scrollport, because unlike ORDERS this pane is nothing but
+                   the queue — there is no other content it could be mistaken
+                   for acting on. -->
+              <div class="cc-orbit-policy">
+                <div class="cc-orbit-commit">
+                  <button
+                    type="button"
+                    class="cli-btn cli-btn-primary cc-transmit-btn"
+                    id="solo-commit-orbit"
+                  >
+                    [ &raquo; COMMIT ORBIT PHASE ]
+                  </button>
+                  <ol
+                    id="solo-commit-orbit-progress"
+                    class="cc-transmit-progress"
+                    role="status"
+                    aria-live="polite"
+                    hidden
+                  ></ol>
+                  <p id="err-solo-orbit" class="policy-err dim" hidden></p>
                 </div>
-              </fieldset>
 
-              <div class="cc-orbit-foot">
-                <button
-                  type="button"
-                  class="cli-btn cli-btn-primary cc-transmit-btn"
-                  id="solo-commit-orbit"
-                >
-                  [ &raquo; COMMIT ORBIT PHASE ]
-                </button>
-                <ol
-                  id="solo-commit-orbit-progress"
-                  class="cc-transmit-progress"
-                  role="status"
-                  aria-live="polite"
-                  hidden
-                ></ol>
-                <p id="err-solo-orbit" class="policy-err dim" hidden></p>
-              </div>
+                <div class="cc-orbit-policy-scroll">
+                  <fieldset class="cc-queue-fieldset">
+                    <legend class="cc-queue-legend">
+                      <span class="dim">orbit action queue</span>
+                      <span id="solo-orbit-queue-count" class="solo-queue-count">0</span>
+                    </legend>
+                    <div
+                      class="cc-queue-toolbar cc-queue-toolbar--mini"
+                      id="solo-orbit-queue-toolbar"
+                    >
+                      <button
+                        type="button"
+                        id="solo-orbit-queue-clear"
+                        class="cli-btn cc-add-btn cc-clear-btn"
+                      >
+                        [ clear queue ]
+                      </button>
+                    </div>
+                    <div
+                      id="solo-orbit-queue"
+                      class="cc-move-queue"
+                      aria-label="Ordered orbit action queue"
+                    ></div>
+                  </fieldset>
+                </div>
+              </div><!-- /.cc-orbit-policy -->
             </form>
           </section>
 
@@ -651,20 +750,18 @@
               autocomplete="off"
               onsubmit="return false;"
             >
-              <div class="cc-policy-meta dim">
-                <span>// one row = one slot · illegal moves struck through · <strong>5</strong> reds max / Nox</span>
-              </div>
+              <!-- v1.27 — the panel is TWO STACKED HALVES and the split is
+                   the whole point. The top half is what you CAN order; the
+                   bottom half is what you HAVE ordered, headed by the button
+                   that sends it. Each scrolls on its own, so a long queue can
+                   no longer push the roster off the end of the rail and a
+                   long roster can no longer bury the queue.
 
-              <fieldset id="solo-standard-fieldset" class="cc-queue-fieldset">
-                <legend class="cc-queue-legend">
-                  <span class="dim">directive queue</span>
-                  <span id="solo-queue-count" class="solo-queue-count">0/21 slots</span>
-                </legend>
-                <div
-                  id="solo-move-queue"
-                  class="cc-move-queue"
-                  aria-label="Ordered move queue"
-                ></div>
+                   v1.25 pinned the commit bar to the very top of the panel,
+                   above everything. It now heads the BOTTOM half instead,
+                   directly above the directives it transmits — same job, but
+                   adjacent to the thing it acts on. -->
+              <div class="cc-orders-compose">
                 <!-- v0.8.0 asset-first roster (replaces the legacy
                      [+probe][+drop][+step][+pickup] toolbar). Each
                      chip IS the action selector:
@@ -678,30 +775,6 @@
                   class="cc-orders-roster"
                   aria-label="Asset roster — click a unit to compose an order"
                 ></div>
-                <div class="cc-queue-toolbar" id="solo-queue-toolbar">
-                  <button
-                    type="button"
-                    id="solo-queue-clear"
-                    class="cli-btn cc-add-btn cc-clear-btn"
-                  >
-                    [ clear queue ]
-                  </button>
-                  <!-- v0.9.5 — toggle that expands the queue to show
-                       all 21 hour slots at once; empty slots render
-                       as (wait) placeholders and remain valid drop
-                       targets for the drag-reorder API. -->
-                  <button
-                    type="button"
-                    id="solo-queue-show-all"
-                    class="cli-btn cc-add-btn cc-queue-show-all-btn"
-                    aria-pressed="false"
-                    title="Show all 21 hour slots; empty slots render as (wait) placeholders"
-                  >
-                    [ show all 21 slots ]
-                  </button>
-                </div>
-              </fieldset>
-
               <!-- v1.19 — ASK V12. A read-only second opinion on the
                    position from the shipped LLM harness: it runs the full
                    THINK/PLAN pipeline against your board, submits nothing
@@ -787,6 +860,79 @@
                 </div>
               </section>
 
+              <p class="dim cc-orders-agent-link">// autoplay / versus &rarr; AGENT tab [7]</p>
+              </div><!-- /.cc-orders-compose -->
+
+              <!-- BOTTOM HALF — the policy you are about to send. Fixed
+                   order, and each piece is where it is for a reason:
+                   TRANSMIT first because it is the one control you always
+                   want in reach; the slot count under it because that is
+                   the number that decides whether you may add another row;
+                   [ clear queue ] / [ show all ] small, because they are
+                   occasional; then the directives, the only part that
+                   scrolls, because it is the only part that can run long. -->
+              <div class="cc-orders-policy">
+                <div class="cc-orders-commit">
+                  <button
+                    type="button"
+                    class="cli-btn cli-btn-primary cc-transmit-btn"
+                    id="solo-commit-night"
+                  >
+                    [ &raquo; TRANSMIT / PRAXIS ]
+                  </button>
+                  <div class="cc-orders-commit-meta">
+                    <span id="solo-queue-count" class="solo-queue-count">0/21 slots</span>
+                    <span class="dim cc-orders-commit-hint">one row = one hour</span>
+                  </div>
+                  <ol
+                    id="solo-commit-progress"
+                    class="cc-transmit-progress"
+                    role="status"
+                    aria-live="polite"
+                    hidden
+                  ></ol>
+                  <p id="err-solo" class="policy-err dim" hidden></p>
+                </div>
+
+                <fieldset id="solo-standard-fieldset" class="cc-queue-fieldset">
+                  <legend class="cc-queue-legend">
+                    <span class="dim">directive queue</span>
+                  </legend>
+                  <div
+                    class="cc-queue-toolbar cc-queue-toolbar--mini"
+                    id="solo-queue-toolbar"
+                  >
+                    <button
+                      type="button"
+                      id="solo-queue-clear"
+                      class="cli-btn cc-add-btn cc-clear-btn"
+                    >
+                      [ clear queue ]
+                    </button>
+                    <!-- v0.9.5 — toggle that expands the queue to show
+                         all 21 hour slots at once; empty slots render
+                         as (wait) placeholders and remain valid drop
+                         targets for the drag-reorder API. -->
+                    <button
+                      type="button"
+                      id="solo-queue-show-all"
+                      class="cli-btn cc-add-btn cc-queue-show-all-btn"
+                      aria-pressed="false"
+                      title="Show all 21 hour slots; empty slots render as (wait) placeholders"
+                    >
+                      [ show all 21 slots ]
+                    </button>
+                  </div>
+                  <div class="cc-orders-queue-scroll">
+                    <div
+                      id="solo-move-queue"
+                      class="cc-move-queue"
+                      aria-label="Ordered move queue"
+                    ></div>
+                  </div>
+                </fieldset>
+              </div><!-- /.cc-orders-policy -->
+
               <!-- v1.19 — ASK V12 full card. The inline pane is a glance;
                    this is the read-everything view, plus a download of the
                    whole exchange (untruncated prompt + reasoning + orders)
@@ -842,27 +988,6 @@
                 </div>
               </div>
 
-              <div class="cc-orders-foot">
-                <button
-                  type="button"
-                  class="cli-btn cli-btn-primary cc-transmit-btn"
-                  id="solo-commit-night"
-                >
-                  [ &raquo; TRANSMIT / PRAXIS<span
-                    id="solo-commit-slots"
-                    class="cc-transmit-slots"
-                  ></span> ]
-                </button>
-                <ol
-                  id="solo-commit-progress"
-                  class="cc-transmit-progress"
-                  role="status"
-                  aria-live="polite"
-                  hidden
-                ></ol>
-                <p id="err-solo" class="policy-err dim" hidden></p>
-                <p class="dim cc-orders-agent-link">// autoplay / versus &rarr; AGENT tab [7]</p>
-              </div>
             </form>
           </section>
 

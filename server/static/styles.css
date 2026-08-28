@@ -1705,6 +1705,121 @@ button.cli-btn:not(#new-game-btn):disabled {
   display: none;
 }
 
+/* ── v1.26 — right-click board menu ──────────────────────────────────
+ *
+ * Same shell as the cell tooltip (fixed, mono, hairline frame) because
+ * it replaces it for as long as it is open — the tooltip hides on
+ * right-click, so this has to read as the same object gaining verbs
+ * rather than a second, competing panel. It differs in the one way it
+ * must: `pointer-events` are live and the rows are focusable buttons.
+ */
+.board-menu {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  padding: 4px 0 5px;
+  color: var(--green);
+  background: rgba(0, 0, 0, 0.97);
+  border: 1px solid var(--frame);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.9),
+    0 8px 28px rgba(0, 0, 0, 0.7);
+  min-width: 196px;
+  max-width: 300px;
+}
+
+.board-menu-head {
+  padding: 2px 10px 5px;
+  margin-bottom: 3px;
+  border-bottom: 1px dashed var(--frame);
+  color: #eaf7ff;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.board-menu-div {
+  padding: 5px 10px 1px;
+  opacity: 0.55;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.board-menu-item,
+.board-menu-dim {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 2px 10px;
+  text-align: left;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+
+.board-menu-item {
+  cursor: pointer;
+}
+
+.board-menu-item:hover,
+.board-menu-item:focus-visible {
+  background: rgba(0, 255, 0, 0.14);
+  outline: none;
+}
+
+/* Not `disabled`, and not clickable either — these rows are STATEMENTS
+ * ("hv 2 is 6 away"), not offers the player is being denied. Dimming a
+ * button would imply the opposite. */
+.board-menu-dim {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.board-menu-glyph {
+  flex: 0 0 auto;
+  min-width: 1ch;
+  text-align: center;
+}
+
+.board-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.board-menu-note {
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+.board-menu-note--warn {
+  color: #ffdc5a;
+  opacity: 1;
+}
+
+/* The square the open menu is talking about. Amber rather than the
+ * hover ring's white so the two are distinguishable when the pointer
+ * has moved off to reach the menu. */
+.map-host > .map-grid .row .cell.cell--menu-at {
+  outline: 2px solid #ffdc5a;
+  outline-offset: 0;
+  box-shadow: 0 0 0 1px #000, 0 0 8px rgba(255, 220, 90, 0.55);
+}
+
 .cc-celltip-head {
   display: flex;
   align-items: baseline;
@@ -2166,7 +2281,12 @@ body.cc-mode {
 .cc-map-frame {
   flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto 1fr;
+  /* v1.24 — three rows: head / aiming banner / board. The banner's row is
+   * `auto`, so it collapses to zero height while it is [hidden] and costs
+   * nothing. Rows are placed EXPLICITLY below; a child without a grid-row
+   * auto-places into an implicit row after the 1fr board, which is exactly
+   * where the banner landed when it was first moved out of the viewport. */
+  grid-template-rows: auto auto 1fr;
   border: 1px solid var(--frame);
   background: var(--panel-bg);
   min-width: 0;
@@ -2175,7 +2295,8 @@ body.cc-mode {
 }
 
 .cc-map-frame-head  { grid-row: 1; }
-.cc-map-viewport     { grid-row: 2; position: relative; min-height: 0; height: 100%; overflow: hidden; }
+.cc-map-frame > .pick-mode-banner { grid-row: 2; }
+.cc-map-viewport     { grid-row: 3; position: relative; min-height: 0; height: 100%; overflow: hidden; }
 
 /* ---- v0.7.4 unified PRAXIS timeline ----
    ONE chronological list — every frame in the current night becomes a
@@ -3212,10 +3333,15 @@ body.cc-mode {
 }
 
 /* Banner overlays the top of the map — no layout shift */
+/* v1.24 — IN FLOW, above .cc-map-viewport. It used to be
+ * `position:absolute; top:0; left:0; right:0` INSIDE the viewport, painted
+ * over the board. Because it carries #pick-mode-cancel it cannot be
+ * pointer-events:none, so it ate every click in the strip it covered — and
+ * it only appears WHILE aiming, so the top rows were unreachable at exactly
+ * the moment you were trying to target them. In flow it displaces the board
+ * instead; the cost is a one-off downward shift when you arm, which happens
+ * before you start aiming rather than during. */
 .pick-mode-banner {
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3227,7 +3353,56 @@ body.cc-mode {
   background: rgba(14, 17, 23, 0.92);
   animation: pick-blink 0.9s step-start infinite;
 }
-.pick-mode-banner[hidden] { display: none; }
+
+/* v1.27 — THE ROW IS RESERVED, NOT COLLAPSED.
+ *
+ * v1.24 moved this out of the map viewport into its own grid row above
+ * the board, which fixed it swallowing clicks on the top map rows. It
+ * introduced the opposite annoyance: the row is `auto`, so arming an
+ * order made the banner appear and shoved the whole board down a line —
+ * the board moving underneath you at the precise moment you are trying
+ * to click a square on it.
+ *
+ * `visibility` rather than `display` keeps the box, so the row holds its
+ * height whether or not anything is aiming and the board never moves.
+ * It still hides properly: `visibility: hidden` takes the element out of
+ * the accessibility tree and off the hit-test, which is what the
+ * `hidden` attribute we are overriding was there for.
+ *
+ * The cost, stated plainly because it was a deliberate trade: the map is
+ * permanently one line shorter. Overlaying the banner instead would cost
+ * nothing in height, and is exactly what v1.24 removed — it cannot be
+ * pointer-events:none while it carries [ stop ].
+ *
+ * The blink is stopped as well; an invisible animation is just work. */
+.pick-mode-banner[hidden] {
+  display: flex;
+  visibility: hidden;
+  animation: none;
+}
+
+/* Height stability is the whole point, so the label may not wrap: a
+ * two-line banner would move the board by the amount this rule exists to
+ * prevent. Unit names are user-supplied, so this is reachable. */
+.pick-mode-banner > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* v1.27 — the row's height is now paid for on EVERY night, aimed or not,
+ * so it is worth trimming. The [ stop ] button set it: at the base
+ * `button.cli-btn` 13px/4px-10px the strip cost 34px of map, roughly two
+ * board rows. Shrinking the button to the banner's own type size brings
+ * that under 24px. (Qualified `button.` — the base rule is (0,1,1) and
+ * would otherwise keep its own font-size and padding.) */
+.pick-mode-banner > button.pick-mode-cancel-btn {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  line-height: 1.35;
+}
 @keyframes pick-blink {
   0%, 49% { opacity: 1; }
   50%, 100% { opacity: 0.45; }
@@ -3479,15 +3654,46 @@ body.cc-mode {
   display: flex;
   flex-direction: column;
 }
-#cc-panel-vault.cc-panel--active > *:not(.cc-panel-head),
-#cc-panel-orbit.cc-panel--active > *:not(.cc-panel-head),
-#cc-panel-orders.cc-panel--active > *:not(.cc-panel-head) {
+#cc-panel-vault.cc-panel--active > *:not(.cc-panel-head) {
   flex-shrink: 0;
 }
-#cc-panel-vault.cc-panel--active,
-#cc-panel-orbit.cc-panel--active,
-#cc-panel-orders.cc-panel--active {
+#cc-panel-vault.cc-panel--active {
   overflow-y: auto;
+}
+
+/* v1.27 — ORBIT leaves that group too, for the same reason ORDERS did in
+ * v1.25: it scrolls in three places of its own (facts / options / queue)
+ * and an outer scroller on top of those would let COMMIT drift out of
+ * view, which is the whole thing the split prevents. */
+#cc-panel-orbit.cc-panel--active {
+  overflow: hidden;
+}
+#cc-panel-orbit.cc-panel--active > .cc-panel-head {
+  flex: 0 0 auto;
+}
+#cc-panel-orbit.cc-panel--active > .cc-orbit-form {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* v1.25 — ORDERS leaves that group; v1.27 — and now scrolls in two
+ * places, neither of which is the panel: .cc-orders-compose (the top
+ * half) and .cc-orders-queue-scroll (the directives in the bottom half).
+ * The PANEL must not scroll as well — an outer scroller would let the
+ * fixed pieces (TRANSMIT, the slot count) drift out of view, which is
+ * the exact problem both moves were made to fix. The form is the flex
+ * spine that hands the panel's height down to the two halves. */
+#cc-panel-orders.cc-panel--active {
+  overflow: hidden;
+}
+#cc-panel-orders.cc-panel--active > .cc-panel-head {
+  flex: 0 0 auto;
+}
+#cc-panel-orders.cc-panel--active > .cc-orders-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .cc-panel--active {
@@ -3520,11 +3726,26 @@ body.cc-mode {
   display: none;
 }
 
+/* ── v1.25 ORBIT readouts: the wallet leads ─────────────────────────
+ *
+ * Was `repeat(4, 1fr)` over seven tiles of equal weight — 219px of panel
+ * at a 1024 viewport, most of it spent on tier breakdowns that belong to
+ * the VAULT tab. Now two rows: the two spendable figures across the top
+ * at double size, then what you own on one line each.
+ *
+ * `1fr 1fr` rather than a fixed count so the two rows stay in register;
+ * `minmax(0, 1fr)` because a long projection line would otherwise refuse
+ * to shrink the column below its content and push the grid wide. */
+/* v1.27 — the paddings here are tuned against the height of ONE THIRD of
+ * the rail (~175px at 1280). Facts is the fullest of the three panes, and
+ * the settlement lines at its foot are the ones a buyer most needs, so a
+ * few px of chrome per tile is the difference between reading them and
+ * scrolling for them. */
 .cc-orbit-readouts {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-  padding: 8px 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 5px 10px;
   border-bottom: 1px dashed var(--frame);
   background: rgba(63, 185, 80, 0.03);
 }
@@ -3533,43 +3754,80 @@ body.cc-mode {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding: 4px 6px;
+  padding: 2px 6px 3px;
   border: 1px solid var(--frame);
   border-radius: 2px;
+  min-width: 0;
 }
 
 .cc-orbit-readout-label {
-  font-size: 10px;
+  font-size: 9.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  line-height: 1.5;
 }
 
 .cc-orbit-readout-value {
-  font-size: 14px;
+  font-size: 12px;
+  line-height: 1.4;
   color: var(--green);
   letter-spacing: 0.03em;
+}
+
+/* The two you spend. Double the type of the fleet readouts beside them —
+ * this is the whole point of the block, and the harness asserts it. */
+.cc-orbit-readout--wallet {
+  border-color: rgba(63, 185, 80, 0.4);
+  background: rgba(63, 185, 80, 0.05);
+}
+
+.cc-orbit-readout--wallet .cc-orbit-readout-value {
+  font-size: 21px;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The forecast sits UNDER the balance rather than inside it. It used to
+ * be concatenated on — `1000c (→250c, 300 over)` — which is four numbers
+ * on the panel's headline figure, and at this type size it wrapped. */
+/* Allowed to run to two lines. It was `nowrap` + ellipsis and the
+ * overdraft case immediately hit it (`→ 1000c · 1500c un…`), which is
+ * the one case where the line is load-bearing — a truncated warning is
+ * worse than a tall tile. */
+.cc-orbit-readout-proj {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.cc-orbit-readout-proj--over {
+  color: #ff7b72;
+  opacity: 1;
 }
 
 .cc-orbit-readout[data-readout="credits"] .cc-orbit-readout-value {
   color: var(--amber, #ffcc66);
 }
 
-.cc-orbit-readout[data-readout="green-owned"] .cc-orbit-readout-value {
-  color: var(--green, #3fb950);
+.cc-orbit-readout[data-readout="blue"] .cc-orbit-readout-value {
+  color: rgb(88, 166, 255);
 }
 
-/* v0.9.5 — BLUE tier readout: keep the value text in the BLUE
-   foreground so the eye distinguishes it from the RED tier line
-   sitting two cells over. */
-.cc-orbit-readout[data-readout="blue-tier-counts"] .cc-orbit-readout-value {
-  color: rgb(88, 166, 255);
+/* Owned, not spendable: one line, small, and allowed to wrap rather than
+ * clip — these are read once and then ignored. */
+.cc-orbit-readout[data-readout="fleet"] .cc-orbit-readout-value,
+.cc-orbit-readout[data-readout="weapon-stock"] .cc-orbit-readout-value {
+  font-size: 11px;
 }
 
 /* v0.9.5 — asset roster pane. Hugs the readout strip above; the
    list reads as plain monospace rows so it lines up with the rest
    of the CLI aesthetic. */
 .cc-orbit-assets {
-  padding: 6px 10px 4px;
+  padding: 4px 10px 4px;
   border-bottom: 1px dashed var(--frame);
   background: rgba(63, 185, 80, 0.02);
   display: flex;
@@ -3597,10 +3855,18 @@ body.cc-mode {
   flex-direction: column;
   gap: 1px;
 }
+/* v1.25 — `white-space: pre` was clipping every row off the right edge
+ * of a ~200px rail (`Harvester \`harvester_p1\` (p1) · orb…`). The rows
+ * are short again now that the JS quotes the unit id instead of the
+ * server's full label, but they wrap rather than clip either way: a
+ * truncated asset row is worse than a two-line one, because the part
+ * that gets cut is the location and the DAMAGED flag. */
 .cc-orbit-asset {
-  font-size: 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
   color: var(--green);
-  white-space: pre;
+  white-space: normal;
+  overflow-wrap: anywhere;
   letter-spacing: 0.02em;
   padding: 1px 0;
 }
@@ -3611,37 +3877,127 @@ body.cc-mode {
   color: rgba(220, 222, 230, 0.85);
 }
 
+/* v1.27 — the form is the flex SPINE of the three thirds and does nothing
+ * else. Padding moved into the panes: padding on a scroll container's
+ * ancestor sits outside the scrollport, so the first row of a scrolled
+ * list would collide with the edge. */
 .cc-orbit-form {
   min-height: 0;
-  display: grid;
-  grid-template-rows: 1fr auto;
-  gap: 8px;
-  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
   overflow: hidden;
 }
 
-.cc-orbit-foot {
+/* THREE EQUAL THIRDS. `flex: 1 1 0` (basis ZERO, not `auto`) is what makes
+ * them equal — with `auto` the basis is the content height and a tall
+ * asset list would claim more than its share, which is the behaviour this
+ * split exists to stop. `min-height: 0` is load-bearing on all three: a
+ * flex child defaults to `min-height: auto` and refuses to shrink below
+ * its content, so overflow would never engage and the panes would push
+ * each other out of the panel instead of scrolling. */
+.cc-orbit-facts,
+.cc-orbit-actions,
+.cc-orbit-policy {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.cc-orbit-facts,
+.cc-orbit-actions {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* v1.27 — SCROLL SHADOWS on every pane that can hide content. Splitting a
+ * rail into fixed panes means a pane can clip a heading mid-glyph, which
+ * reads as a rendering fault rather than as "there is more below" — the
+ * facts pane does exactly this on a fresh season, where the readouts, the
+ * asset list and the settlement lines total ~40px more than a third, and
+ * the gap only widens as the fleet grows.
+ *
+ * No JS and no state: two `local` gradients painted in the panel colour
+ * ride WITH the content and sit over two `scroll` gradients pinned to the
+ * pane. At the top of the scroll the local layer covers the shadow; scroll
+ * down and it travels away and uncovers it. So the hint appears exactly
+ * when there is something to see and never on a pane that fits. Cover
+ * layers must be listed first — background layers paint front to back. */
+.cc-orbit-facts,
+.cc-orbit-actions,
+.cc-orbit-policy-scroll,
+.cc-orders-compose,
+.cc-orders-queue-scroll {
+  background-image:
+    linear-gradient(var(--panel-bg) 40%, rgba(0, 0, 0, 0)),
+    linear-gradient(rgba(0, 0, 0, 0), var(--panel-bg) 60%),
+    radial-gradient(
+      farthest-side at 50% 0,
+      rgba(63, 185, 80, 0.3),
+      rgba(63, 185, 80, 0)
+    ),
+    radial-gradient(
+      farthest-side at 50% 100%,
+      rgba(63, 185, 80, 0.3),
+      rgba(63, 185, 80, 0)
+    );
+  background-position: 0 0, 0 100%, 0 0, 0 100%;
+  background-size: 100% 14px, 100% 14px, 100% 7px, 100% 7px;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+
+.cc-orbit-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 4px;
+}
+
+.cc-orbit-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--frame);
+}
+
+.cc-orbit-policy {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--frame);
+  background: var(--panel-bg);
+}
+
+/* Outside the scroller, so it holds one position however long the queue
+ * runs — same rule as ORDERS' TRANSMIT. */
+.cc-orbit-commit {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 7px 10px;
 }
 
-/* v0.9.1 — batched probe build (input wired beside the [+] button). */
-.cc-add-btn-group {
-  display: inline-flex;
-  align-items: stretch;
-  gap: 4px;
+.cc-orbit-policy-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 10px 8px;
 }
-.cc-add-btn-group .cc-add-btn {
-  border-right: 0;
-}
+
+/* v1.25 — 3.5em -> 2.4em, and the left border is back. It used to abut
+ * the button as one welded control (`border-left: 0`), which is why it
+ * was so wide; now the button, the count and the price are three items
+ * on a flex line, and every em the input does not need is an em the
+ * CHAFF row needs to stay on one line. Max is 20, so two digits. */
 .cc-probe-count-input {
-  width: 3.5em;
+  width: 2.4em;
   background: var(--bg-deep, #060c0a);
   color: var(--green);
   border: 1px solid var(--green);
-  border-left: 0;
-  padding: 0 6px;
+  padding: 0 3px;
   font-family: inherit;
   font-size: 0.95em;
   text-align: center;
@@ -3844,15 +4200,60 @@ body.cc-mode {
 /* ── ORDERS panel (command-centre policy composer) ───────────────── */
 
 .cc-orders-form {
-  /* v0.9.11 — the panel (#cc-panel-orders) now owns the scroll, so the
-     form just stacks its sections at their natural height and lets the
-     whole composer scroll. The old fixed-row grid + ``overflow:hidden``
-     trapped the queue in a squeezed internal-scroll region that clipped
-     rows out of reach on shorter screens. */
+  /* v1.27 — the form is now purely the SPINE of the two-half split: it
+     hands the panel's height down to .cc-orders-compose and
+     .cc-orders-policy and does nothing else. Padding and gap moved into
+     the halves, because a scrolling box wants its own padding — padding
+     on the ancestor would sit outside the scrollport and the first row
+     of a scrolled list would collide with the edge. */
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 8px;
+  gap: 0;
+  padding: 0;
+  min-height: 0;
+}
+
+/* TOP HALF — everything you can order. Scrolls independently, so the
+ * roster keeps its full height no matter how long the queue below runs. */
+.cc-orders-compose {
+  flex: 1 1 auto;
+  /* Not `0`: this half must never be crushed to nothing by a tall queue.
+   * A floor still scrolls (content taller than the allocation overflows);
+   * it only stops the pane collapsing. */
+  min-height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 8px 8px;
+}
+
+/* BOTTOM HALF — TRANSMIT, the slot count, the two utility buttons, and
+ * the directive queue. Only the queue inside it scrolls. */
+.cc-orders-policy {
+  /* A FIXED fraction, not `0 1 auto`. Sizing this half to its content
+   * was the first attempt and it looked tidier on an empty queue, but it
+   * made TRANSMIT drift ~200px up the rail as the night filled: the
+   * button you press every single night moving under the cursor,
+   * proportionally to how much you had planned. A fixed midpoint costs
+   * some blank on a first screen and buys a control that is always in
+   * the same place. */
+  flex: 0 0 46%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--frame);
+  background: var(--panel-bg);
+}
+
+/* The only scroller in the bottom half. `min-height: 0` is load-bearing
+ * — a flex child defaults to `min-height: auto` and refuses to shrink
+ * below its content, so overflow would never engage and the rows would
+ * push TRANSMIT off the panel, which is the failure this split exists to
+ * prevent. */
+.cc-orders-queue-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .cc-policy-meta {
@@ -3882,6 +4283,16 @@ body.cc-mode {
    * This one line is most of why the orders menu felt unusable on a
    * small laptop. */
   min-width: 0;
+}
+
+/* v1.27 — in the bottom half the fieldset is the flex column that owns
+ * the queue's scrollport: legend + toolbar fixed, rows scrolling. */
+.cc-orders-policy > .cc-queue-fieldset {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 8px 8px;
+  padding: 4px 8px 6px;
+  gap: 4px;
 }
 
 .cc-queue-legend {
@@ -3922,6 +4333,38 @@ body.cc-mode {
   display: none;
 }
 
+/* v1.27 — the two utility buttons moved ABOVE the directives, where they
+ * label what they act on. They are occasional controls sitting directly
+ * under the panel's loudest button, so they are rendered small and dim
+ * and brighten on hover; at full size they competed with TRANSMIT.
+ * Qualified past `button.cli-btn` (0,1,1) or the base rule keeps its
+ * font-size — the same specificity trap the fleet verbs hit in v1.24. */
+.cc-queue-toolbar--mini {
+  flex: 0 0 auto;
+  gap: 4px;
+  opacity: 0.62;
+  transition: opacity 120ms ease-out;
+}
+
+.cc-queue-toolbar--mini:hover,
+.cc-queue-toolbar--mini:focus-within {
+  opacity: 1;
+}
+
+.cc-queue-toolbar--mini button.cli-btn {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  letter-spacing: 0.03em;
+}
+
+/* `.cc-clear-btn` carries `margin-left: auto` from the days when it was
+ * the LAST control in a bottom toolbar and wanted the far corner. It is
+ * now the first of two, so the auto margin shoved it to the right edge
+ * and knocked [ show all ] onto a second line at 1024px. */
+.cc-queue-toolbar--mini > .cc-clear-btn {
+  margin-left: 0;
+}
+
 /* v0.9.5 — vertical-stack variant used by the ORBIT toolbar so the
  * four functional blocks (construct/repair, weapons, refine,
  * shipping) sit one above the other rather than wrapping in a flat
@@ -3950,21 +4393,139 @@ body.cc-mode {
   opacity: 0.65;
 }
 
+/* v1.25 — one action per ROW, not a wrapping bag of buttons. Each row
+ * is a `.cc-orbit-act` carrying its control and, under it, the reason it
+ * is dimmed. Stacking is what lets the reason exist at all: the old
+ * `flex-wrap` row had nowhere to put a second line that belonged to one
+ * particular button. */
 .cc-orbit-block-body {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 5px;
-  align-items: center;
+  align-items: stretch;
 }
 
-/* The foot block hosts only the [ clear ] button — render flush
- * right with no header / border so it doesn't compete with the
- * action sections. */
-.cc-orbit-block.cc-orbit-block--foot {
-  align-items: flex-end;
-  border: 0;
-  background: transparent;
-  padding: 0;
+.cc-orbit-act {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+/* v1.25 — verb, then batch input, then price. The cost used to live
+ * INSIDE the button label (`[ + build harvester (1500c) ]`), which made
+ * every label wrap to two lines in a ~200px rail and buried the verb.
+ * Pulling it out matches how the ORDERS deploy block reads — verb first,
+ * stock/price as a trailing annotation — so the two panels now share one
+ * grammar. `flex-wrap` is the degradation path for a spun-up count. */
+.cc-orbit-act-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* `button.` is load-bearing here, exactly as it is for the ORDERS verbs:
+ * the base rule is `button.cli-btn` at specificity (0,1,1), so a bare
+ * `.cc-add-btn` loses font-size and padding to it.
+ *
+ * `nowrap` is the other half. Without it `[ BUILD HARVESTER ]` broke at
+ * the space before the closing bracket, so the row rendered as two lines
+ * with a lone `]` under it — which then pushed the count input onto a
+ * third. A verb should be as wide as its verb; if the line runs out, the
+ * PRICE wraps, because that is the part you can read second. */
+.cc-orbit-act-line > button.cc-add-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 3px 6px;
+  letter-spacing: 0.03em;
+}
+
+.cc-orbit-cost,
+.cc-orbit-stock {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  opacity: 0.62;
+}
+
+/* Dimmed, NOT disabled. Same rule as the ORDERS deploy verbs: the panel
+ * annotates and the engine decides, so the control has to stay
+ * reachable — see the click handler, which deliberately stopped
+ * refusing these. Full opacity on hover so it never feels dead under
+ * the pointer. */
+.cc-orbit-act--dim {
+  opacity: 0.45;
+  transition: opacity 90ms linear;
+}
+
+.cc-orbit-act--dim:hover,
+.cc-orbit-act--dim:focus-within {
+  opacity: 1;
+}
+
+/* ── v1.25 — the ORBIT queue opts OUT of the ORDERS row rules ────────
+ *
+ * Both composers render `.solo-queue-row` inside `.cc-move-queue`, so
+ * the thinning done for ORDERS reached this queue too — and it is the
+ * wrong shape for it. An ORBIT row carries a long explanatory note
+ * (`⚠ dropped · needs 1500c`) that ORDERS rows do not have, so under
+ * `nowrap` the label collapsed to `build h…` and the remove button was
+ * squeezed until `[ x ]` stacked one glyph per line.
+ *
+ * The note gets its OWN line via `flex-basis: 100%`, which is the same
+ * shape as `.cc-orbit-why` above: the control reads on line one and the
+ * reason it will not fire reads under it. */
+#solo-orbit-queue .solo-queue-row {
+  flex-wrap: wrap;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 1px 4px;
+}
+
+/* `flex-basis: 0`, so the label starts at zero and GROWS into whatever
+ * the row has spare. At `auto` it starts at its own text width, which on
+ * a 172px rail was the whole line, and the remove button wrapped under
+ * it — the same base-size-before-shrink rule that made the ORDERS rows
+ * two lines tall. The untruncated text is on the title. */
+#solo-orbit-queue .solo-queue-label {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* `order`, not DOM order: the remove button must sit beside the label
+ * on line one, but the note is its sibling and takes the full width, so
+ * source order alone would push the button to a third line. */
+#solo-orbit-queue .solo-queue-note {
+  order: 2;
+  flex: 1 1 100%;
+  padding-left: 10px;
+}
+
+#solo-orbit-queue .solo-queue-drop {
+  order: 1;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+/* The reason. Amber because it is a condition, not an error — the thing
+ * is still orderable and the text says what would change that. */
+.cc-orbit-why {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  color: #ffdc5a;
+  padding-left: 10px;
+  overflow-wrap: anywhere;
 }
 
 /* Subtle accent so each block reads at a glance without screaming
@@ -4017,9 +4578,21 @@ body.cc-mode {
 .cc-settle-line[data-settle="green"] .cc-settle-arrow { color: #44cc44; }
 .cc-settle-line .dim { opacity: 0.5; }
 .cc-settle-note {
-  margin-top: 2px;
-  font-size: 10px;
+  margin-top: 1px;
+  font-size: 9.5px;
   letter-spacing: 0.02em;
+  line-height: 1.4;
+}
+
+/* v1.27 — the settlement block now sits at the FOOT of the facts third
+ * rather than mid-toolbar, so it drops the boxed-control chrome it wore
+ * when it was surrounded by buttons. It is the last thing in a pane, not
+ * a card among cards. */
+.cc-orbit-facts > .cc-orbit-block[data-orbit-block="settlement"] {
+  border: 0;
+  background: transparent;
+  padding: 2px 10px 0;
+  gap: 2px;
 }
 
 .cc-add-btn {
@@ -4041,9 +4614,10 @@ body.cc-mode {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 4px;
-  border-top: 1px dashed var(--frame);
-  margin-top: 4px;
+  /* v1.27 — no top rule any more: the roster used to sit UNDER the queue
+   * and needed separating from it, and is now the first thing in its own
+   * half, separated by the pane border instead. */
+  padding: 2px 4px 6px;
 }
 
 .cc-asset-roster-section {
@@ -5574,44 +6148,70 @@ body.cc-mode {
   text-align: right;
 }
 
-/* v1.20 — TRANSMIT has to be reachable without scrolling to the foot of
- * a 21-slot queue. The ORDERS panel owns the scroll, so this row sticks
- * to its lower edge and the composer runs underneath it. The gradient
- * is so rows fade out beneath the button instead of being guillotined
- * by a hard background edge. */
-.cc-orders-foot {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
+/* ── ORDERS: the commit bar ─────────────────────────────────────────
+ *
+ * History, because the position has moved twice and each move fixed a
+ * real complaint. v1.20 stuck TRANSMIT to the BOTTOM of a panel that
+ * owned its own scroll: reachable, but at the far end of a list running
+ * up to 21 rows plus a roster plus the advisor, and it forced the slot
+ * count onto the button's own label because the real badge scrolled
+ * away. v1.25 moved it to the very TOP of the panel. v1.27 moves it one
+ * step down, to head the BOTTOM half — same always-in-reach property,
+ * but now adjacent to the directives it sends rather than a panel-length
+ * away from them.
+ *
+ * It needs no sticky/gradient trickery in any of those positions,
+ * because it has never been inside a scrolling box — that is the whole
+ * reason the halves each carry their own scroller instead of the panel
+ * carrying one (see #cc-panel-orders below).
+ */
+.cc-orders-commit {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 0 -8px -8px;
-  padding: 8px;
-  border-top: 1px solid var(--frame);
-  background: linear-gradient(
-    180deg,
-    rgba(13, 13, 18, 0) 0,
-    var(--panel-bg) 14px
-  );
+  flex: 0 0 auto;
+  padding: 6px 8px 7px;
+  background: var(--panel-bg);
 }
 
-.cc-transmit-btn {
-  font-size: 13px;
-  padding: 8px 10px;
-  letter-spacing: 0.07em;
+.cc-orders-commit-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+.cc-orders-commit-hint {
+  font-family: var(--mono);
+  white-space: nowrap;
+  opacity: 0.5;
+}
+
+/* v1.27 — `[ » TRANSMIT / PRAXIS ]` is 23 characters in a rail that is
+ * ~205px at every viewport (fixed column, not responsive — a media query
+ * is the wrong tool here). At 13px/0.07em it broke after the `/` and
+ * rendered as two lines with `PRAXIS ]` orphaned underneath. Trimmed to
+ * fit and pinned `nowrap`, so if the label or the rail ever changes the
+ * failure is a visible overflow the harness catches, not a silent
+ * re-wrap. */
+/* Qualified `button.` for the THIRD time in this file, and for the same
+ * reason each time: the base rule is `button.cli-btn` at specificity
+ * (0,1,1), so a bare `.cc-transmit-btn` (0,1,0) silently loses font-size,
+ * letter-spacing and padding to it. This one had been losing since v1.25
+ * — the declared 13px/0.07em was never what rendered. */
+button.cc-transmit-btn {
+  font-size: 12px;
+  padding: 8px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 /* v1.20 — a section with nothing in it says so in its own divider and
  * emits no body row, so it costs one dim line rather than three. */
 .cc-orders-divider--empty {
   opacity: 0.55;
-}
-
-/* Slot count carried on the button so it survives the scroll. */
-.cc-transmit-slots {
-  font-variant-numeric: tabular-nums;
-  opacity: 0.75;
 }
 
 /* ── INTEL panel ─────────────────────────────────────────────────── */
@@ -5957,98 +6557,263 @@ body.cc-mode {
   opacity: 0.5;
 }
 
-/* v0.9.5 — ORDERS roster wrap. Each row uses the same divider
- * chrome as the VAULT. The ORBLIFT POD sits above the IN-ORBIT
- * row and carries the [DROP] / [PICKUP] composer next to the
- * lifter chip — same flex line, no nested section frame. */
-.cc-orders-pod {
+.cc-orders-divider {
+  margin-top: 6px;
+}
+
+/* ── v1.24 ORDERS: one row per thing you can act on ──────────────
+ *
+ * The old roster was flex-wrap with content-sized chips under
+ * `align-items: flex-start`, and only SOME chips grew a plan
+ * annotation underneath — so rows were ragged by construction and
+ * the action affordances never lined up. This is a GRID: the verb
+ * column is the same width on every row whatever the unit is
+ * called or where it is standing, which is the whole point.
+ *
+ * Three columns — identity | state+stickers | verbs — and the
+ * plan continuation spans all three on its own line, INSIDE the
+ * row, so a unit with orders is taller without pushing its
+ * neighbours sideways.
+ */
+.cc-fleet-row {
+  display: grid;
+  /* The ORDERS rail is ~230px at EVERY viewport — it is a fixed-width
+   * column, not a responsive one — so the verbs get their own line
+   * rather than sharing with the name. Measured: three verbs on the
+   * unit's line crushed "in orbit" to nothing and wrapped the button
+   * labels onto two rows each. The alignment goal survives intact,
+   * since every row's verb block still starts at the same x. */
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "ident mid"
+    "acts  acts"
+    "plan  plan";
+  align-items: center;
+  gap: 3px 8px;
+  padding: 4px 6px 6px;
+  border-left: 2px solid transparent;
+}
+
+.cc-fleet-ident { grid-area: ident; }
+.cc-fleet-mid   { grid-area: mid; }
+.cc-fleet-acts  { grid-area: acts; }
+.cc-fleet-plan  { grid-area: plan; }
+
+/* Hairline between units so two rows of verbs do not read as one
+ * unit with six. */
+.cc-fleet-row + .cc-fleet-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.cc-fleet-row--armed {
+  border-left-color: var(--green);
+  background: rgba(63, 185, 80, 0.07);
+}
+
+.cc-fleet-row--damaged .cc-fleet-glyph {
+  filter: saturate(0.4);
+}
+
+/* The identity block doubles as the tooltip target: it carries the
+ * asset data-* attributes and `bindAssetTooltip` delegates on
+ * `.cc-asset-chip`. It must therefore keep that class and lose all
+ * of its button chrome. */
+.cc-fleet-ident.cc-asset-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: default;
+  min-width: 0;
+}
+
+.cc-fleet-glyph {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.cc-fleet-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.cc-fleet-mid {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.cc-fleet-state {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  opacity: 0.62;
+  white-space: nowrap;
+}
+
+/* v1.25 — gap cut 4px -> 2px. Measured: three verbs at 48px plus two
+ * 4px gaps is 156px, and the acts row is 152px at a 1024 viewport, so
+ * LIFT dropped to a second line by four pixels. */
+.cc-fleet-acts {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  padding: 4px 8px 6px;
-  margin-bottom: 2px;
+  gap: 2px;
+  padding: 0 2px;
 }
 
-.cc-orders-pod-label {
+/* `button.` is load-bearing, not decoration: the base rule is
+ * `button.cli-btn` at specificity (0,1,1), so a bare `.cc-fleet-verb`
+ * silently loses its font-size and padding to it. Measured — the verbs
+ * were rendering at 13px/10px-padding and coming out 90px wide in a
+ * 168px rail.
+ *
+ * `flex: 0 0 auto`, NOT `1 1 0`. Equal-width buttons look tidier until
+ * the rail narrows, at which point flex shrinks them below their own
+ * nowrap labels and the three verbs overlap each other. Natural width
+ * plus wrapping degrades honestly instead. */
+button.cc-fleet-verb {
+  flex: 0 0 auto;
   font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  opacity: 0.55;
-  margin-right: 2px;
+  /* 3px of side padding, not 4: see the gap note above — this row has
+   * about four pixels of slack at 1024 and three verbs to spend it on. */
+  padding: 3px 3px;
+  letter-spacing: 0.03em;
+  /* Without this the brackets are a break opportunity and each button
+   * renders three lines tall. */
+  white-space: nowrap;
 }
 
-.cc-orders-pod-empty {
-  font-size: 11px;
-  opacity: 0.5;
-}
-
-.cc-orders-pod-btn {
-  font-size: 11px;
-  padding: 3px 8px;
-}
-
-.cc-orders-pod-btn--active {
+.cc-fleet-verb--armed {
   background: rgba(63, 185, 80, 0.22);
   border-color: var(--green);
   color: var(--green);
 }
 
-.cc-orders-divider {
-  margin-top: 6px;
-}
-
-.cc-orders-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 8px 10px;
-  padding: 2px 6px 6px;
-}
-
-.cc-orders-row-empty {
-  font-size: 11px;
-  opacity: 0.5;
-}
-
-.cc-orders-row--weapons {
-  gap: 6px;
-}
-
-/* Wraps the harvester chip + its yellow plan annotation in a
- * column so the chip stays compact while the annotation hangs
- * below it. The wrap inherits no chrome — only the chip and the
- * note carry visible styling. */
-.cc-orders-chip-wrap {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.cc-orders-chip-wrap--armed .cc-asset-chip {
-  box-shadow: 0 0 0 1px var(--green) inset;
-}
-
-.cc-orders-chip-plan {
+/* The unit's orders, indented under its own row rather than
+ * hanging in the flex flow beside its neighbours. */
+.cc-fleet-plan {
   font-family: var(--mono);
   font-size: 10px;
-  line-height: 1.3;
+  line-height: 1.35;
   letter-spacing: 0.03em;
   color: #ffdc5a;
-  padding-left: 2px;
-  max-width: 24ch;
+  padding-left: 6px;
   overflow-wrap: anywhere;
 }
 
-.cc-orders-chip-plan-tag {
-  opacity: 0.75;
-  margin-right: 2px;
+/* ── stickers: what has already been decided about this unit ───── */
+.cc-sticker {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.62);
+  white-space: nowrap;
 }
 
-.cc-orders-chip-plan-txt {
-  font-weight: 600;
+.cc-sticker--warn {
+  border-color: rgba(255, 220, 90, 0.55);
+  color: #ffdc5a;
 }
+
+/* STRANDED is the one the panel exists to shout about: a harvester
+ * still on the surface at the end of the queue is destroyed at
+ * Aurora (§3.11.2), and until now nothing said so before TRANSMIT. */
+.cc-sticker--bad {
+  border-color: rgba(255, 96, 96, 0.7);
+  color: #ff8080;
+  background: rgba(255, 60, 60, 0.1);
+}
+
+/* ── deploy / timing: verb first, stock as a trailing annotation ── */
+.cc-deploy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 3px 6px 5px;
+}
+
+.cc-deploy-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+/* `button.` for the same reason as .cc-fleet-verb above. */
+button.cc-deploy-btn {
+  font-size: 10px;
+  padding: 3px 6px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.cc-deploy-line--wide button.cc-deploy-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.cc-deploy-btn--armed {
+  background: rgba(63, 185, 80, 0.22);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+/* v1.25 — an empty bay reads dim. Note what this rule does NOT do: no
+ * `disabled`, no `pointer-events: none`. Over-ordering is a legal thing
+ * to want (buy it in ORBIT later tonight), so the row has to stay live;
+ * it just may not sit at full brightness pretending to be stocked.
+ * Hover and focus return it to full opacity so it never feels dead
+ * under the pointer, and the dimming lifts entirely once something is
+ * queued, because at that point the row is an overdraft warning. */
+.cc-deploy-line--empty {
+  opacity: 0.42;
+  transition: opacity 90ms linear;
+}
+
+.cc-deploy-line--empty:hover,
+.cc-deploy-line--empty:focus-within {
+  opacity: 1;
+}
+
+/* The stock note ANNOTATES, it does not gate — every deploy button
+ * stays clickable at zero stock, because over-ordering is a legal
+ * thing to want and the engine, not the panel, decides what comes
+ * of it. What was missing was being able to SEE the overdraft. */
+.cc-deploy-stock {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  opacity: 0.6;
+}
+
+.cc-deploy-stock--empty {
+  opacity: 0.35;
+}
+
+.cc-deploy-stock--over {
+  opacity: 1;
+  color: #ffdc5a;
+}
+
+.cc-deploy-plan {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.35;
+  letter-spacing: 0.03em;
+  color: #ffdc5a;
+  padding-left: 10px;
+  overflow-wrap: anywhere;
+}
+
 
 .cc-asset-chip--clickable {
   cursor: pointer;
@@ -6737,31 +7502,60 @@ button.cli-btn.cli-btn--live-pulse {
 /* ── Queue rows (override the older crowded look) ────────────────── */
 
 .cc-move-queue .solo-queue-row {
-  /* Drag handle, num, label, xWrap, yWrap, controls. The drag handle
-   * gives the row a visible "grab here" affordance and lets the user
-   * drop a row anywhere on it without clicking the inputs first.
+  /* Drag handle, num, label, target, controls. The drag handle gives the
+   * row a visible "grab here" affordance and lets the user grab anywhere
+   * on the row.
    *
    * v1.20 — was a fixed six-column grid. A row carrying two coordinate
-   * inputs AND three buttons needs about 42ch; this rail is about 34ch,
-   * so those columns ran straight off the edge into an
-   * `overflow-x: hidden` ancestor and the [ x ] button became
-   * unclickable. Flex-wrap lets the controls drop to a second line when
-   * they don't fit and sit inline when they do, so the composer degrades
-   * instead of truncating. */
+   * inputs AND three buttons needs about 42ch in a ~34ch rail, so the
+   * columns ran off the edge into an `overflow-x: hidden` ancestor and
+   * the [ x ] button became unclickable. Flex-wrap was the fix.
+   *
+   * v1.25 — the coordinate inputs are gone (the target is text now) and
+   * the row is `nowrap`, which is the change that actually made it thin.
+   *
+   * Wrapping was the wrong tool and it is worth saying why, because it
+   * looks like the safe option: flex lays items out at their BASE size
+   * and wraps whatever does not fit, and only then shrinks what is left
+   * on each line. So `flex-wrap` never even consults `flex-shrink` on
+   * the label — it just pushed the controls onto a second line and made
+   * every row 43px tall. `nowrap` + `min-width: 0` on the label inverts
+   * that: the label absorbs all of the shrink and ellipsises, and the
+   * controls can no longer be displaced. The v1.20 hazard wrapping was
+   * added to dodge (controls clipped off the right edge, unclickable)
+   * cannot happen either, for the same reason. */
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 4px 6px;
-  padding: 4px 6px;
+  gap: 2px 3px;
+  padding: 0 4px;
   background: rgba(63, 185, 80, 0.04);
   border-color: rgba(63, 185, 80, 0.22);
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.75;
   cursor: grab;
 }
 
-/* Push the controls to the right edge of whichever line they land on. */
+/* v1.25 — the measured budget, so the next person editing this knows
+ * what they are spending. A row is 236px at 1280 and only 172px at
+ * 1024. Fixed costs: drag 4 + num 13 + target 38 + controls 76 + three
+ * 3px gaps = 140px, leaving ~30px of label at 1024 (it ellipsises) and
+ * ~95px at 1280. Anything you add here comes straight off the label. */
+.cc-move-queue .solo-queue-num {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.cc-move-queue .solo-queue-num--range {
+  font-size: 10px;
+}
+
+/* Every fixed column must refuse to shrink, or `nowrap` would steal
+ * width from the target and the buttons instead of the label. */
+.cc-move-queue .solo-queue-drag,
 .cc-move-queue .solo-queue-controls {
-  margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .cc-move-queue .solo-queue-row:hover {
@@ -6895,69 +7689,88 @@ button.cli-btn.cli-btn--live-pulse {
   color: var(--fg);
 }
 
-.cc-move-queue .solo-queue-xy {
-  display: inline-flex;
-  gap: 4px;
-}
-
-.cc-move-queue .solo-queue-xy + .solo-queue-xy {
-  margin-left: 4px;
-}
-
 .cc-move-queue .solo-queue-controls {
   display: inline-flex;
-  gap: 4px;
+  gap: 2px;
 }
 
-/* v1.20 — tightened from `1px 8px`. The composer lives in a ~34ch rail
- * and the row was ~40ch wide, so the last control was clipped off the
- * edge on a small laptop. Horizontal padding is the cheapest ch to
- * reclaim; the hit area is still comfortable, and the touch rules in
- * the max-width block below re-inflate it where it matters. */
-.cc-move-queue .solo-queue-mini {
-  padding: 1px 4px;
+/* v1.20 — tightened from `1px 8px`. The composer lives in a narrow rail
+ * and the row was wider than it, so the last control was clipped off the
+ * edge on a small laptop. v1.25 — tighter again now the labels lost
+ * their inner padding spaces (`[up]`, not `[ up ]`). The touch rules in
+ * the max-width block below re-inflate the hit area where it matters.
+ *
+ * `button.` qualifies these two selectors on purpose: the base rule is
+ * `button.cli-btn` at specificity (0,1,1), so a bare class loses its
+ * font-size and padding to it. That trap cost an hour on the fleet rows
+ * in v1.24 — do not un-qualify them. */
+button.solo-queue-mini {
+  padding: 0;
   font-size: 11px;
-  min-width: 4.2ch;
+  /* Hit area, not text width — the glyph is one character but a 13x16
+   * target is the smallest thing still comfortable to click. */
+  min-width: 13px;
+  line-height: 1.45;
+  text-align: center;
   white-space: nowrap;
+  border-color: transparent;
 }
 
-/* v1.20 — coordinates on this board are two digits, so 6ch of input was
- * mostly air, twice per row. The spinner buttons go too: they cost more
- * width than the digits do, and the arrow keys still step the value. */
-.cc-move-queue .solo-queue-xy .solo-num-input {
-  width: 4.4ch;
-  padding: 1px 3px;
-  appearance: textfield;
-  -moz-appearance: textfield;
+/* The box only appears under the pointer, so at rest the row reads as
+ * text and the three controls do not stripe the whole queue with
+ * borders. They are always PRESENT and always clickable — this is
+ * weight, not visibility. */
+.cc-move-queue .solo-queue-row:hover button.solo-queue-mini {
+  border-color: rgba(63, 185, 80, 0.45);
 }
 
-.cc-move-queue .solo-queue-xy .solo-num-input::-webkit-outer-spin-button,
-.cc-move-queue .solo-queue-xy .solo-num-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
+button.solo-queue-mini:disabled {
+  opacity: 0.28;
 }
 
-/* v1.20 — a long label (an EMP salvo lists its extra cells) used to
- * spill out of its grid cell and print over the coordinate inputs.
- * Clip it instead; the full text is on the row's title. */
+/* v1.25 — the target cell, read-only. Tabular figures so a column of
+ * rows lines its coordinates up instead of shimmering. */
+.cc-move-queue .solo-queue-at {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: 0.72;
+}
+
+/* No target and no longer any way to set one inline, so it reads as a
+ * fault rather than as a placed order. */
+.cc-move-queue .solo-queue-at--unset {
+  color: var(--amber, #d9a441);
+  opacity: 1;
+}
+
 /* The label is what the row is FOR, so it is the last thing allowed to
- * give: 16ch keeps "pickup · H · p1" whole and forces the controls to
- * wrap to a second line instead. Beyond that it ellipsises rather than
- * printing over the coordinate inputs (an EMP salvo lists its extra
- * cells); the full text is on the row's title. */
+ * give — but it must give BEFORE the controls wrap to a second line,
+ * which is why the min-width is small and it ellipsises. The full text
+ * is always on the row's title. */
 .cc-move-queue .solo-queue-row > .solo-queue-label {
   flex: 1 1 auto;
-  min-width: 16ch;
+  /* `min-width: 0` is deliberate and load-bearing. A flex item defaults
+   * to `min-width: auto` = its own content width, so ANY floor here
+   * (this was 5ch = 33px) is a floor the row cannot go under — and at
+   * 1024 there are only ~30px left after the fixed columns, so a 33px
+   * floor pushed the controls onto a second line and doubled every row.
+   * Letting it reach 0 means the label ellipsises, which is the correct
+   * thing to sacrifice: the full text is on the row's title. */
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* The chain summary is a sentence, not a slot label — let it wrap
- * rather than lose the destination, which is its whole point. */
+/* The chain summary carries a step count as well, so it gets the same
+ * treatment rather than being allowed to wrap (v1.25 — it used to, back
+ * when its destination lived inside the label). */
 .cc-move-queue .solo-queue-row--chain > .solo-queue-label {
-  white-space: normal;
-  overflow: visible;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 /* Narrow viewports: stack tab strip on top, drawer below the map */
@@ -7055,6 +7868,24 @@ button.cli-btn.cli-btn--live-pulse {
     border-top: 0;
     background: none;
   }
+
+  /* v1.27 — the two-half split is a DESKTOP-rail answer: it exists so a
+   * long queue cannot push the roster off a fixed-height column. On a
+   * phone the sheet scrolls as one body (rule above) and there is no
+   * fixed height to divide, so two capped panes would just be two tiny
+   * scrollports inside a third. Flatten them back into the flow. */
+  .cc-orders-compose,
+  .cc-orders-policy,
+  .cc-orders-queue-scroll,
+  .cc-orbit-facts,
+  .cc-orbit-actions,
+  .cc-orbit-policy,
+  .cc-orbit-policy-scroll {
+    overflow: visible;
+    max-height: none;
+    min-height: 0;
+    flex: 0 0 auto;
+  }
   .cc-tab {
     grid-template-rows: auto;
     grid-template-columns: auto auto auto;
@@ -7137,8 +7968,9 @@ button.cli-btn.cli-btn--live-pulse {
   .cc-map-frame-head { flex-wrap: wrap; row-gap: 4px; }
   .cc-map-zoom-slider { flex: 1 1 80px; min-width: 80px; }
 
-  /* The pick-mode banner sits over the map top — keep it tap-friendly
-   * and clear of the very top edge so it's reachable. */
+  /* v1.24 — the banner is in flow above the map now, so this is purely
+   * a tap-target size bump. It used to also need clearing off the very
+   * top edge, back when it overlaid the board. */
   .pick-mode-banner {
     font-size: 13px;
     padding: 8px 10px;

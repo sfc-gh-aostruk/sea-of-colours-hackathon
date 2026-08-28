@@ -289,7 +289,6 @@
   const orbitCreditsEl = document.getElementById("cc-orbit-credits");
   const orbitProbeStockEl = document.getElementById("cc-orbit-probe-stock");
   const orbitHarvestersEl = document.getElementById("cc-orbit-harvesters");
-  const orbitGreenEl = document.getElementById("cc-orbit-green");
   const soloExpert = document.getElementById("solo-expert");
   const soloExpertJson = document.getElementById("solo-expert-json");
   const soloCommitBtn = document.getElementById("solo-commit-night");
@@ -614,6 +613,14 @@
   /** Frame `_paintReplayBoard` is about to paint; consumed by the next
    *  `_afterBoardPaint`. Never read directly. */
   let _visionFramePending = null;
+  /** v1.26 — the open right-click board menu, and the square it belongs
+   *  to. Up here with the other paint state for the third time and the
+   *  same reason: `_afterBoardPaint` closes the menu on every repaint,
+   *  and an early placeholder paint would otherwise hit the temporal
+   *  dead zone. @type {HTMLElement | null} */
+  let _boardMenuEl = null;
+  /** @type {[number, number] | null} */
+  let _boardMenuAt = null;
   /** v1.23 — cell under the pointer, for the order-footprint preview. Only
    *  the main board writes it. Declared beside the other paint state for the
    *  same reason `_visionFrame` is: `_afterBoardPaint` reads it, and an early
@@ -2365,6 +2372,10 @@
     // construction instead of asking eight call sites to remember.
     _visionFrame = _visionFramePending;
     _visionFramePending = null;
+    // v1.26 — the right-click menu describes a square on the board that
+    // just got rebuilt, so its model may now be stale and the cell it
+    // ringed no longer exists. Close rather than try to re-anchor.
+    closeBoardMenu();
     try {
       paintVisionBorders();
     } catch (_e) {
@@ -3586,6 +3597,131 @@
    *
    *  Selected chip carries ``.cc-asset-chip--active``; the rest dim
    *  so the eye lands on what's currently active. */
+  /** v1.24 — two-digit slot number, so the continuation lines under a
+   *  row column-align with each other and with the queue below. */
+  function _slotNo(ix) {
+    return String(ix + 1).padStart(2, "0");
+  }
+
+  /** v1.24 — one line describing everything the queue does with ONE
+   *  unit, in slot order, e.g. ``01 drop (12,4) · 02-05 walk → (15,7)
+   *  · 06 lift``. Consecutive steps fold into a range: a five-square
+   *  walk is one intent, and spelling it out five times was most of
+   *  what made the old annotation tall enough to knock its neighbours
+   *  out of alignment. Returns null when the unit has no orders.
+   */
+  function _ordersUnitPlanLine(unitId) {
+    if (!unitId) return null;
+    /** @type {string[]} */
+    const parts = [];
+    let runFrom = -1;
+    let runTo = -1;
+    /** @type {number[] | null} */
+    let runDest = null;
+    const flushWalk = () => {
+      if (runFrom < 0) return;
+      const span = runTo > runFrom ? `${_slotNo(runFrom)}-${_slotNo(runTo)}`
+        : _slotNo(runFrom);
+      const dest = runDest ? ` \u2192 (${runDest[0]},${runDest[1]})` : "";
+      parts.push(`${span} walk${dest}`);
+      runFrom = -1;
+      runTo = -1;
+      runDest = null;
+    };
+    soloQueue.forEach((m, ix) => {
+      if (!m || String(m.unit || "") !== String(unitId)) return;
+      if (m.a === "step") {
+        if (runFrom < 0) runFrom = ix;
+        runTo = ix;
+        if (Number.isFinite(m.x) && Number.isFinite(m.y)) {
+          runDest = [Number(m.x), Number(m.y)];
+        }
+        return;
+      }
+      flushWalk();
+      if (m.a === "drop") {
+        const at = Number.isFinite(m.x) && Number.isFinite(m.y)
+          ? ` (${m.x},${m.y})` : "";
+        parts.push(`${_slotNo(ix)} drop${at}`);
+      } else if (m.a === "pickup") {
+        parts.push(`${_slotNo(ix)} lift`);
+      } else {
+        parts.push(`${_slotNo(ix)} ${m.a}`);
+      }
+    });
+    flushWalk();
+    return parts.length ? parts.join(" \u00B7 ") : null;
+  }
+
+  /** v1.24 — how many stock-consuming orders the queue currently holds,
+   *  keyed by action. One ``emp_launch`` row is one launch (a salvo of
+   *  up to three missiles) and therefore one unit of stock. */
+  function _ordersQueuedCounts() {
+    const c = {
+      probe: 0, emp_launch: 0, mine_lay: 0, chaff_flare: 0, wait: 0,
+    };
+    for (const m of soloQueue) {
+      if (m && m.a && Object.prototype.hasOwnProperty.call(c, m.a)) {
+        c[m.a] += 1;
+      }
+    }
+    return c;
+  }
+
+  /** v1.24 — the stock annotation beside a deploy verb.
+   *
+   *  This is an ANNOTATOR, not a gate. Ordering four probes on a stock
+   *  of three is a legal thing to want — you may be betting on the
+   *  night going a certain way, and the engine, not the panel, decides
+   *  what happens. What the panel owes you is that you can SEE it: the
+   *  old chip said ``probe stock: 3`` and said nothing at all about
+   *  the four you had queued.
+   */
+  /** v1.26 — the WORDS, split out from the element, because the
+   *  right-click board menu says the same thing about the same bay and
+   *  two copies of this sentence would drift. `over` is `queued > held`
+   *  and not `>=`: ordering your last probe is not an overdraft. */
+  function _stockNote(queued, held) {
+    if (queued <= 0) {
+      return { text: `${held} held`, over: false, empty: held <= 0 };
+    }
+    if (queued > held) {
+      return {
+        text: `${queued} queued \u00B7 only ${held} held`,
+        over: true,
+        empty: false,
+        title: `You have queued ${queued} but hold ${held}. The order `
+          + "stays \u2014 the engine will reject the surplus at PRAXIS. "
+          + "Build more in the ORBIT phase, or trim the queue.",
+      };
+    }
+    return {
+      text: `${queued} queued \u00B7 ${held} held`, over: false, empty: false,
+    };
+  }
+
+  function _ordersStockNote(queued, held) {
+    const note = document.createElement("span");
+    note.className = "cc-deploy-stock";
+    const s = _stockNote(queued, held);
+    note.textContent = s.text;
+    if (s.empty) note.classList.add("cc-deploy-stock--empty");
+    if (s.over) note.classList.add("cc-deploy-stock--over");
+    if (s.title) note.title = s.title;
+    return note;
+  }
+
+  /** v1.24 — a small status sticker for a fleet row.
+   *  ``kind`` drives the colour: "warn" (amber), "bad" (red), else neutral.
+   */
+  function _ordersSticker(text, kind, title) {
+    const el = document.createElement("span");
+    el.className = "cc-sticker" + (kind ? ` cc-sticker--${kind}` : "");
+    el.textContent = text;
+    if (title) el.title = title;
+    return el;
+  }
+
   function renderOrdersAssetRoster() {
     const host = document.getElementById("orders-asset-roster");
     if (!host) return;
@@ -3600,329 +3736,422 @@
       ...onSurface.map((r) => ({ row: r, bucket: "on_surface" })),
     ].filter((p) => p.row && p.row.asset_type === "orblift");
 
-    // v0.9.5 — split the rosters into the same vault-style buckets
-    // the VAULT panel uses (IN ORBIT / ON SURFACE) so the two
-    // panels share a single visual language. Orblifts ride their
-    // own POD up top so the [DROP] / [PICKUP] composer can sit
-    // next to the chip in the same flex row.
+    // v1.24 — ORDERS is organised by WHAT YOU CAN DO TONIGHT, not by
+    // asset lifecycle status.
+    //
+    // It used to render ``assets_by_status``' three buckets (in_orbit /
+    // on_surface / destroyed) through ``buildVaultStyleChip`` — the same
+    // builder the VAULT panel uses on the same three buckets. So it was
+    // not merely similar to the vault, it was a second copy of it with
+    // click handlers bolted onto the harvesters, and every complaint
+    // about the panel fell out of that one decision: destroyed assets
+    // and deployed probes were listed because they are buckets, not
+    // because you can order them; the verbs had nowhere to live so
+    // DROP/PICKUP were parked on a global ``// orblift`` pod, making it
+    // verb → unit → target for what is one instruction to one
+    // harvester; ``probe stock: 3`` read as a noun with a count, with
+    // the word "deploy" only in a tooltip; weapons came last because
+    // they arrive on a different payload; and nothing lined up because
+    // content-sized chips wrapped in a flex row while only SOME of them
+    // grew a plan annotation underneath.
+    //
+    // Now: one row per thing you can act on, verbs ON the row, in a
+    // fixed grid so the action column aligns. Deployables (probe and
+    // the three weapons) sit together under one heading, because
+    // launching a probe and launching an EMP are the same kind of act
+    // from where the player sits.
     const orbitHarv = inOrbit.filter(
       (/** @type {any} */ r) => r && r.asset_type === "harvester",
     );
     const surfaceHarv = onSurface.filter(
       (/** @type {any} */ r) => r && r.asset_type === "harvester",
     );
-    const surfaceProbes = onSurface.filter(
-      (/** @type {any} */ r) => r && r.asset_type === "probe",
-    );
+    const fleet = [
+      ...surfaceHarv.map((r) => ({ row: r, bucket: "on_surface" })),
+      ...orbitHarv.map((r) => ({ row: r, bucket: "in_orbit" })),
+    ];
+    // The orblift is not a row and has no chip. The engine's pickup
+    // names the HARVESTER, never the lifter, so the lifter was only
+    // ever a place to hang the two verbs; they now live on the units
+    // themselves. Losing it does grey out the verbs, which is the one
+    // thing the pod was genuinely telling you.
+    const hasLift = orblifts.length > 0;
+    const stranded = new Set(strandedHarvesterIds());
+    const qc = _ordersQueuedCounts();
 
-    // ── ORBLIFT POD (chip + DROP / PICKUP buttons inline) ─────────
-    // Single flex row carrying the orblift chip and its two
-    // composer buttons. The chip itself uses the VAULT-style
-    // compact chip so the visual language matches the rest of
-    // the roster. Buttons remain mini CLI buttons but sit IN the
-    // same pod (vs. the old row-below layout).
-    const orbliftPod = document.createElement("div");
-    orbliftPod.className = "cc-orders-pod cc-orders-pod--orblift";
-    const orbliftPodHead = document.createElement("span");
-    orbliftPodHead.className = "cc-orders-pod-label dim";
-    orbliftPodHead.textContent = "// orblift";
-    orbliftPod.appendChild(orbliftPodHead);
-    if (orblifts.length === 0) {
-      const empty = document.createElement("span");
-      empty.className = "dim cc-orders-pod-empty";
-      empty.textContent = "// none owned";
-      orbliftPod.appendChild(empty);
-    } else {
-      const lift = orblifts[0];
-      // Vault-style compact chip via the shared builder (same
-      // data-* attributes + tooltip surface). v0.9.5 — wrap the
-      // chip so its yellow "// in current plan" annotation can
-      // surface every queued DROP / PICKUP across all harvesters
-      // (the orblift is what executes both).
-      const liftChip = buildVaultStyleChip(lift.row, lift.bucket);
-      const liftPlan = planSummaryForOrblift();
-      orbliftPod.appendChild(wrapChipWithPlan(liftChip, liftPlan));
-
-      const dropBtn = document.createElement("button");
-      dropBtn.type = "button";
-      dropBtn.className = "cli-btn cc-orders-pod-btn";
-      dropBtn.textContent = "[ DROP ]";
-      dropBtn.title =
-        "Drop a harvester from orbit onto a tile. Click DROP, then "
-        + "a harvester in orbit, then the target cell.";
-      dropBtn.addEventListener("click", () => {
-        if (assetSelect && assetSelect.action === "drop") {
-          exitAssetSelect();
-          return;
-        }
-        enterAssetSelect({ action: "drop", awaiting: "unit" });
-      });
-      if (assetSelect && assetSelect.action === "drop")
-        dropBtn.classList.add("cc-orders-pod-btn--active");
-      orbliftPod.appendChild(dropBtn);
-
-      const pickupBtn = document.createElement("button");
-      pickupBtn.type = "button";
-      pickupBtn.className = "cli-btn cc-orders-pod-btn";
-      pickupBtn.textContent = "[ PICKUP ]";
-      pickupBtn.title =
-        "Recall a harvester back to orbit (banks its cargo). Click "
-        + "PICKUP, then the on-surface harvester.";
-      pickupBtn.addEventListener("click", () => {
-        if (assetSelect && assetSelect.action === "pickup") {
-          exitAssetSelect();
-          return;
-        }
-        enterAssetSelect({ action: "pickup", awaiting: "unit" });
-      });
-      if (assetSelect && assetSelect.action === "pickup")
-        pickupBtn.classList.add("cc-orders-pod-btn--active");
-      orbliftPod.appendChild(pickupBtn);
-    }
-    host.appendChild(orbliftPod);
-
-    // ── IN ORBIT row ──────────────────────────────────────────────
-    // Mirror the VAULT panel's divider style. Carries every owned
-    // harvester currently in orbit (no surface coords). Probe
-    // stock + per-probe deployed chips ride the same row format
-    // so the user sees one chip per orbital harvester + a single
-    // "probe stock" affordance.
-    appendOrdersDivider(host, "in orbit");
-    const orbitRow = document.createElement("div");
-    orbitRow.className = "cc-orders-row";
-
-    // Probe stock chip — actionable, sits leftmost so it's easy
-    // to find when deploying. v0.9.5 — wrap so the queued probe
-    // deploys surface as a yellow plan annotation under the chip.
-    const probeStock =
-      (lastOrbitView && Number(lastOrbitView.probe_stock)) || 0;
-    const probeChipEl = makeProbeStockChip(probeStock);
-    const probesPlan = planSummaryForProbes();
-    orbitRow.appendChild(wrapChipWithPlan(probeChipEl, probesPlan));
-
-    if (orbitHarv.length === 0) {
-      const empty = document.createElement("span");
-      empty.className = "dim cc-orders-row-empty";
-      empty.textContent = "// no harvesters in orbit";
-      orbitRow.appendChild(empty);
-    } else {
-      for (const row of orbitHarv) {
-        orbitRow.appendChild(
-          buildOrdersHarvesterChip(row, "in_orbit"),
-        );
-      }
-    }
-    host.appendChild(orbitRow);
-
-    // ── ON SURFACE row ────────────────────────────────────────────
-    const surfEmpty = surfaceHarv.length === 0 && surfaceProbes.length === 0;
-    appendOrdersDivider(host, "on surface", surfEmpty ? "nothing deployed" : "");
-    if (!surfEmpty) {
-      const surfRow = document.createElement("div");
-      surfRow.className = "cc-orders-row";
-      for (const row of surfaceHarv) {
-        surfRow.appendChild(
-          buildOrdersHarvesterChip(row, "on_surface"),
-        );
-      }
-      for (const row of surfaceProbes) {
-        surfRow.appendChild(
-          buildVaultStyleChip(row, "on_surface"),
-        );
-      }
-      host.appendChild(surfRow);
-    }
-
-    // ── DESTROYED / EXPIRED row ───────────────────────────────────
-    // v0.9.18 — probes that ran out their lifetime (reason
-    // ``probe_expired``) and any other lost assets move here so the
-    // ORDERS picker mirrors the VAULT's destroyed bucket. Only shown
-    // when something has actually been lost, to keep the roster tidy
-    // during a clean game.
-    const destroyedAssets = Array.isArray(buckets.destroyed)
-      ? buckets.destroyed
-      : [];
-    if (destroyedAssets.length) {
-      appendOrdersDivider(host, "destroyed");
-      const deadRow = document.createElement("div");
-      deadRow.className = "cc-orders-row cc-orders-row--destroyed";
-      for (const row of destroyedAssets) {
-        deadRow.appendChild(buildVaultStyleChip(row, "destroyed"));
-      }
-      host.appendChild(deadRow);
-    }
-
-    // ── WEAPONS BAY (AVAILABLE only, RULEBOOK §5.0) ───────────────
-    // Weapons are BUILT during the ORBIT phase and drained from
-    // stockpile during the night. ORDERS surfaces only the
-    // available stock (the USED bay lives in the VAULT). Below
-    // the chip row sits the WAIT button so the hour-scheduling
-    // utility stays one click away. The bay uses the same divider
-    // chrome as IN ORBIT / ON SURFACE.
-    const ws = (lastOrbitView && lastOrbitView.weapon_stock) || {};
-    const empStock = Math.max(0, Number(ws.emp || 0));
-    const mineStock = Math.max(0, Number(ws.mine || 0));
-    const chaffStock = Math.max(0, Number(ws.chaff || 0));
-    const totalWeaponStock = empStock + mineStock + chaffStock;
+    // ── FLEET ─────────────────────────────────────────────────────
     appendOrdersDivider(
-      host,
-      "weapons bay",
-      totalWeaponStock === 0 ? "build in ORBIT" : "",
+      host, "fleet", fleet.length ? "" : "no harvesters owned",
     );
-    const wepBody = document.createElement("div");
-    wepBody.className = "cc-orders-row cc-orders-row--weapons";
-
-    if (totalWeaponStock === 0) {
-      // WAIT still belongs here: an empty bay is the common case and
-      // padding the queue to hit a specific hour must stay one click
-      // away, so only the nudge copy folds into the divider.
-      const waitBtnEmpty = document.createElement("button");
-      waitBtnEmpty.type = "button";
-      waitBtnEmpty.className =
-        "cli-btn cc-asset-chip cc-weapon-chip cc-weapon-chip--wait";
-      waitBtnEmpty.textContent = "[ WAIT ]";
-      waitBtnEmpty.title =
-        "Add a WAIT slot (1 hour). Pad the queue to schedule a move " +
-        "at a specific hour without firing a weapon.";
-      waitBtnEmpty.addEventListener("click", () => {
-        addQueueRow("wait");
-      });
-      wepBody.appendChild(
-        wrapChipWithPlan(waitBtnEmpty, planSummaryForWeapon("wait")),
-      );
-      host.appendChild(wepBody);
-      bindAssetTooltip(host);
-      return;
+    for (const { row, bucket } of fleet) {
+      host.appendChild(_buildFleetRow(row, bucket, { hasLift, stranded }));
     }
 
-    // Helper: render a weapon button with embedded icon, stock chip,
-    // and disabled-when-empty styling. The icon is the same DOM
-    // marker used in the orbit readout so a single CSS rule covers
-    // every surface (vault chip, orbit readout, orders chip, queue
-    // row description).
-    const makeWeaponButton = (slot, label, stock, title, onClick) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className =
-        `cli-btn cc-asset-chip cc-weapon-chip cc-weapon-chip--${slot}`;
-      const iconKey = (
-        slot === "emp_launch" ? "emp"
-        : slot === "mine_lay" ? "mine"
-        : slot === "chaff_flare" ? "chaff"
-        : slot
-      );
-      const icon = document.createElement("span");
-      icon.className = `cc-weapon-icon cc-weapon-icon-${iconKey}`;
-      icon.setAttribute("aria-hidden", "true");
-      const text = document.createElement("span");
-      text.className = "cc-weapon-chip-label";
-      text.textContent = ` ${label} `;
-      const stockChip = document.createElement("span");
-      stockChip.className = "cc-weapon-chip-stock";
-      stockChip.textContent = `(${stock})`;
-      btn.append(document.createTextNode("[ "), icon, text, stockChip,
-        document.createTextNode(" ]"));
-      btn.title = title;
-      if (stock <= 0) {
-        btn.classList.add("is-disabled");
-        btn.disabled = true;
-        btn.title = title + "\n\n(stockpile empty — build one in ORBIT)";
-      } else {
-        btn.addEventListener("click", onClick);
-      }
-      return btn;
-    };
+    // ── DEPLOY ────────────────────────────────────────────────────
+    appendOrdersDivider(host, "deploy");
+    host.appendChild(_buildDeployBlock(qc));
 
-    const empBtn = makeWeaponButton(
-      "emp_launch",
-      "EMP",
-      empStock,
-      "Orbital EMP salvo · ONE launch fires 3 simultaneous missiles, each "
-      + "a radius-2 (Manhattan) cloud for 8h. Disables harvesters AND "
-      + "destroys probes + mines caught in the blast (friendly fire on). "
-      + "Open action. Built in ORBIT phase.",
-      () => {
-        if (assetSelect && assetSelect.action === "emp_launch") {
-          exitAssetSelect();
-          return;
-        }
-        enterAssetSelect({ action: "emp_launch", awaiting: "target" });
-      },
-    );
-    if (assetSelect && assetSelect.action === "emp_launch") {
-      empBtn.classList.add("cc-asset-chip--armed");
-    }
-    // v0.9.5 — wrap so queued EMP launches show "EMP @(x,y) @slot N"
-    // as a yellow plan annotation under the chip. Same wrapper
-    // applies to MINE / CHAFF / WAIT below.
-    wepBody.appendChild(
-      wrapChipWithPlan(empBtn, planSummaryForWeapon("emp")),
-    );
+    // ── TIMING ────────────────────────────────────────────────────
+    appendOrdersDivider(host, "timing");
+    host.appendChild(_buildTimingBlock(qc));
 
-    const mineBtn = makeWeaponButton(
-      "mine_lay",
-      "MINE",
-      mineStock,
-      "Caltrop mine cluster · one lay arms a hidden 5-cell (plus-shaped) "
-      + "field; any harvester stepping onto a mined tile is damaged + step "
-      + "cancelled. Hidden until a probe sees it (the minelayer's flight is "
-      + "public). EMP clears mines. Built in ORBIT.",
-      () => {
-        if (assetSelect && assetSelect.action === "mine_lay") {
-          exitAssetSelect();
-          return;
-        }
-        enterAssetSelect({ action: "mine_lay", awaiting: "target" });
-      },
-    );
-    if (assetSelect && assetSelect.action === "mine_lay") {
-      mineBtn.classList.add("cc-asset-chip--armed");
-    }
-    wepBody.appendChild(
-      wrapChipWithPlan(mineBtn, planSummaryForWeapon("mine")),
-    );
-
-    const chaffBtn = makeWeaponButton(
-      "chaff_flare",
-      "CHAFF",
-      chaffStock,
-      "Orbital chaff flare · jams EVERY house's actions (yours included) "
-      + "for 3 turns. Occupies 3 queue slots: the launch + 2 self-jammed "
-      + "turns. Open action. Built in ORBIT.",
-      () => {
-        addQueueRow("chaff_flare");
-      },
-    );
-    wepBody.appendChild(
-      wrapChipWithPlan(chaffBtn, planSummaryForWeapon("chaff")),
-    );
-
-    // WAIT — consume one hour slot without acting. Companion to the
-    // weapons because the same UX pattern (hour-by-hour scheduling)
-    // makes EMP / mines / chaff effective.
-    const waitBtn = document.createElement("button");
-    waitBtn.type = "button";
-    waitBtn.className = "cli-btn cc-asset-chip cc-weapon-chip cc-weapon-chip--wait";
-    waitBtn.textContent = "[ WAIT ]";
-    waitBtn.title =
-      "Add a WAIT slot (1 hour). Pad the queue to schedule a move at " +
-      "a specific hour (e.g. 9 WAITs + EMP fires the warhead at hour 10).";
-    waitBtn.addEventListener("click", () => {
-      addQueueRow("wait");
-    });
-    wepBody.appendChild(
-      wrapChipWithPlan(waitBtn, planSummaryForWeapon("wait")),
-    );
-
-    host.appendChild(wepBody);
-
-    // v0.9.5 — share the VAULT's rich asset tooltip with this
-    // roster so a hover on any chip surfaces created-on, last
-    // deployed, total-red harvested, damaged flag, repair count,
-    // etc. ``bindAssetTooltip`` is idempotent so re-render calls
-    // are cheap.
     bindAssetTooltip(host);
   }
+
+  /** v1.24 — one actionable harvester, as a fixed grid row:
+   *  ``glyph | name + state + stickers | verbs``, with the unit's
+   *  queued orders as an indented continuation line spanning the row.
+   *
+   *  All three verbs are always present and always clickable. That is
+   *  deliberate and was a direct call from the user: the game lets you
+   *  over-order — ten steps, two drops, more probes than you hold — and
+   *  the panel's job is to make the overdraft VISIBLE, not to prevent
+   *  it. The one thing that still nags is the stranding guard on
+   *  TRANSMIT, because a harvester left on the surface is destroyed at
+   *  Aurora (§3.11.2) and nothing else on screen says so.
+   */
+  function _buildFleetRow(row, bucket, ctx) {
+    const unitId = String(row.asset_id || "");
+    const el = document.createElement("div");
+    el.className = "cc-fleet-row";
+    if (row.damaged) el.classList.add("cc-fleet-row--damaged");
+    const armed = assetSelect && String(assetSelect.unit || "") === unitId;
+    if (armed) el.classList.add("cc-fleet-row--armed");
+
+    // ── identity ── carries the asset data-* attributes so the shared
+    // VAULT provenance tooltip works here unchanged; ``cc-asset-chip``
+    // is what ``bindAssetTooltip`` delegates on, and the CSS strips the
+    // button chrome back off it.
+    const ident = document.createElement("span");
+    ident.className = "cc-asset-chip cc-fleet-ident";
+    _stampAssetData(ident, row, bucket);
+    const visual = assetChipVisual({
+      asset_type: "harvester",
+      owner: row.owner,
+      carrying_red: row.carrying_red,
+      alive: row.alive !== false,
+    });
+    const glyph = document.createElement("span");
+    glyph.className = "cc-fleet-glyph";
+    glyph.style.color = visual.fg;
+    glyph.textContent = visual.glyph;
+    const name = document.createElement("span");
+    name.className = "cc-fleet-name";
+    name.textContent = `hv ${unitOrdinal(unitId)}`;
+    ident.append(glyph, name);
+    el.appendChild(ident);
+
+    // ── state + stickers ──
+    const mid = document.createElement("span");
+    mid.className = "cc-fleet-mid";
+    const pos = rowPosition(row);
+    const state = document.createElement("span");
+    state.className = "cc-fleet-state";
+    const cargo = Number(row.current_cargo_count || 0);
+    if (bucket === "on_surface" && pos) {
+      state.textContent = `(${pos[0]},${pos[1]}) \u00B7 `
+        + (cargo > 0 ? `carrying ${cargo}` : "empty");
+    } else {
+      state.textContent = "in orbit"
+        + (cargo > 0 ? ` \u00B7 carrying ${cargo}` : "");
+    }
+    mid.appendChild(state);
+
+    // Stickers say what has ALREADY been decided about this unit
+    // tonight — the user's ask was to see at a glance that a harvester
+    // has been dropped but not picked up, and STRANDED is the sharp end
+    // of exactly that.
+    if (row.damaged) {
+      mid.appendChild(_ordersSticker(
+        "damaged", "bad",
+        "Damaged units cannot step, harvest or be deployed until you pay "
+        + "for REPAIR in the ORBIT phase (\u00A73.6.1).",
+      ));
+    }
+    if (ctx.stranded.has(unitId)) {
+      mid.appendChild(_ordersSticker(
+        "stranded", "bad",
+        "This harvester is still on the surface at the end of your queue. "
+        + "The planet destroys surface units at Aurora (\u00A73.11.2) \u2014 "
+        + "queue a LIFT.",
+      ));
+    } else if (_ordersUnitPlanLine(unitId)) {
+      mid.appendChild(_ordersSticker("ordered", "", "Has orders this night."));
+    }
+    el.appendChild(mid);
+
+    // ── verbs ──
+    const acts = document.createElement("span");
+    acts.className = "cc-fleet-acts";
+    const verb = (label, title, onClick, isArmedFor) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cli-btn cc-fleet-verb";
+      // Tight brackets, not the usual `[ LABEL ]`. Three verbs have to
+      // share a 168px rail; the two padding spaces are 25% of a
+      // four-letter label and are what pushes the row to two lines.
+      b.textContent = `[${label}]`;
+      b.title = title;
+      if (isArmedFor) b.classList.add("cc-fleet-verb--armed");
+      if (!ctx.hasLift) {
+        b.classList.add("is-disabled");
+        b.disabled = true;
+        b.title = title + "\n\n(no orblift \u2014 nothing can move between "
+          + "orbit and the surface)";
+      } else {
+        b.addEventListener("click", onClick);
+      }
+      return b;
+    };
+    const armedFor = (action) =>
+      Boolean(assetSelect && assetSelect.action === action
+        && String(assetSelect.unit || "") === unitId);
+    const toggleTo = (action) => () => {
+      if (armedFor(action)) { exitAssetSelect(); return; }
+      enterAssetSelect({ action, unit: unitId, awaiting: "target" });
+    };
+    acts.appendChild(verb(
+      "DROP",
+      `Deploy ${unitId} from orbit \u2014 click, then pick the landing cell. `
+      + "The landing auto-harvests.",
+      toggleTo("drop"), armedFor("drop"),
+    ));
+    acts.appendChild(verb(
+      "WALK",
+      `Move ${unitId} \u2014 click, then pick cells one at a time. The `
+      + "picker stays armed so you can chain a whole path.",
+      toggleTo("step"), armedFor("step"),
+    ));
+    acts.appendChild(verb(
+      "LIFT",
+      `Recall ${unitId} to orbit and bank its cargo.`,
+      () => { addQueueRow("pickup", undefined, undefined, unitId); },
+      false,
+    ));
+    el.appendChild(acts);
+
+    // ── the plan, INSIDE the row ──
+    // It used to hang below the chip in the flex flow, so a unit with
+    // orders was taller than its neighbours and the row ran ragged.
+    const plan = _ordersUnitPlanLine(unitId);
+    if (plan) {
+      const line = document.createElement("span");
+      line.className = "cc-fleet-plan";
+      line.textContent = `\u2514 ${plan}`;
+      el.appendChild(line);
+    }
+    return el;
+  }
+
+  /** v1.24 — copy an asset row's lifecycle fields onto an element as
+   *  ``data-*`` so ``fillAssetTooltip`` (shared with the VAULT panel)
+   *  can render the full provenance card from it. */
+  function _stampAssetData(el, row, bucket) {
+    el.dataset.assetId = String(row.asset_id || "");
+    el.dataset.assetKind = String(row.asset_type || "harvester");
+    el.dataset.assetType = String(row.asset_type || "harvester");
+    el.dataset.assetState = bucket;
+    el.dataset.bucket = bucket;
+    el.dataset.owner = String(row.owner || "");
+    if (row.created_on_day != null)
+      el.dataset.created = String(row.created_on_day);
+    if (row.first_deployed_day != null)
+      el.dataset.firstDeployed = String(row.first_deployed_day);
+    if (row.destroyed_on_day != null)
+      el.dataset.destroyed = String(row.destroyed_on_day);
+    if (row.destroyed_by) el.dataset.destroyedBy = String(row.destroyed_by);
+    el.dataset.totalRed = String(row.total_red_harvested ?? 0);
+    el.dataset.daysSurfaced = String(row.total_days_on_surface ?? 0);
+    if (row.repair_count != null)
+      el.dataset.repairCount = String(row.repair_count);
+    if (row.last_repaired_day != null)
+      el.dataset.lastRepaired = String(row.last_repaired_day);
+    if (row.damaged) el.dataset.damaged = "1";
+    const pos = rowPosition(row);
+    if (pos) {
+      el.dataset.posX = String(pos[0]);
+      el.dataset.posY = String(pos[1]);
+    }
+    if (typeof row.current_cargo_count === "number")
+      el.dataset.cargo = String(row.current_cargo_count);
+    if (row.holds_red) el.dataset.holdsRed = "1";
+    if (row.carrying_red) el.dataset.carryingRed = "1";
+  }
+
+  /** v1.24 — everything you LAUNCH, under one heading, verb first.
+   *
+   *  Probes used to sit in the "in orbit" row as ``probe stock: 3`` — a
+   *  noun with a count, whose only hint that it was a button was the
+   *  tooltip — while the weapons sat in a separate bay at the bottom
+   *  purely because their stock arrives on a different payload
+   *  (``lastOrbitView.weapon_stock`` rather than ``assets_by_status``).
+   *  That is a data-shape accident and the player should not be able to
+   *  see it.
+   *
+   *  Every button here stays enabled at zero stock. Firing something
+   *  you do not hold is a legal thing to queue; the note next to the
+   *  button says what you hold and flags the overdraft.
+   */
+  function _buildDeployBlock(qc) {
+    const wrap = document.createElement("div");
+    wrap.className = "cc-deploy";
+
+    const probeStock = Math.max(
+      0, Number((lastOrbitView && lastOrbitView.probe_stock) || 0),
+    );
+    const ws = (lastOrbitView && lastOrbitView.weapon_stock) || {};
+    // Read the dials rather than restating them: these are the same
+    // values the AoE overlay draws with, stashed off
+    // ``orbit.weapon_specs`` / ``meta.rules`` on the /view poll. A
+    // hardcoded "radius 2" here is exactly the drift AGENTS.md warns
+    // about — probe radius sat wrong in prompts and UI for months.
+    const empR = Number(window.__SOC_EMP_RADIUS__);
+    const probeR = Number(window.__SOC_PROBE_RADIUS__);
+    const mineN = Array.isArray(window.__SOC_MINE_SHAPE__)
+      ? window.__SOC_MINE_SHAPE__.length : null;
+    const specs = [
+      {
+        key: "probe", action: "probe", label: "LAUNCH PROBE", icon: null,
+        stock: probeStock, queued: qc.probe, wide: true,
+        title: "Light a"
+          + (Number.isFinite(probeR) ? ` radius-${probeR}` : "")
+          + " disk of ground for the rest of the night. Click, "
+          + "then pick the centre \u2014 the footprint follows the pointer.",
+      },
+      {
+        key: "emp", action: "emp_launch", label: "EMP", icon: "emp",
+        stock: Math.max(0, Number(ws.emp || 0)), queued: qc.emp_launch,
+        title: "Orbital EMP salvo \u00B7 ONE launch fires a salvo of missiles, "
+          + "each a"
+          + (Number.isFinite(empR) ? ` radius-${empR}` : "")
+          + " cloud. Disables harvesters and destroys probes "
+          + "and mines caught in it \u2014 including yours.",
+      },
+      {
+        key: "mine", action: "mine_lay", label: "MINE", icon: "mine",
+        stock: Math.max(0, Number(ws.mine || 0)), queued: qc.mine_lay,
+        title: "Arm a hidden"
+          + (mineN ? ` ${mineN}-cell` : "")
+          + " cluster. A harvester stepping onto it is "
+          + "damaged and its step cancelled. Hidden until a probe sees it; "
+          + "the minelayer's flight is public. EMP clears mines.",
+      },
+      {
+        key: "chaff", action: "chaff_flare", label: "CHAFF", icon: "chaff",
+        stock: Math.max(0, Number(ws.chaff || 0)), queued: qc.chaff_flare,
+        title: "Jams EVERY house's actions, yours included, for 3 turns. "
+          + "Occupies 3 queue slots: the launch plus 2 self-jammed turns.",
+      },
+    ];
+
+    for (const s of specs) {
+      // v1.25 — DIMMED, NOT DISABLED, when the bay is empty.
+      //
+      // The user's standing rule for this panel is agency preserved,
+      // clarity added: you may order four probes on a stock of three,
+      // and the engine decides at PRAXIS. So an empty bay may not take
+      // the button away — it only has to stop the button LOOKING like a
+      // live option, which is what the flat-bright row did. Dimming
+      // ends the moment you queue one, because then the row is the
+      // overdraft warning and needs to be read.
+      const empty = s.stock <= 0 && s.queued <= 0;
+      const line = document.createElement("div");
+      line.className = "cc-deploy-line"
+        + (s.wide ? " cc-deploy-line--wide" : "")
+        + (empty ? " cc-deploy-line--empty" : "");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cli-btn cc-deploy-btn";
+      btn.title = empty
+        ? s.title + "\n\nNone in the bay. You can still queue one \u2014 "
+          + "buy it in this night's ORBIT phase, or the engine drops the "
+          + "order at PRAXIS."
+        : s.title;
+      if (s.icon) {
+        const ic = document.createElement("span");
+        ic.className = `cc-weapon-icon cc-weapon-icon-${s.icon}`;
+        ic.setAttribute("aria-hidden", "true");
+        btn.append(document.createTextNode("[ "), ic,
+          document.createTextNode(` ${s.label} ]`));
+      } else {
+        btn.textContent = `[ ${s.label} ]`;
+      }
+      if (assetSelect && assetSelect.action === s.action) {
+        btn.classList.add("cc-deploy-btn--armed");
+      }
+      btn.addEventListener("click", () => {
+        if (s.action === "chaff_flare") {
+          // Chaff has no target — it is an orbital flare, not a shot.
+          addQueueRow("chaff_flare");
+          return;
+        }
+        if (assetSelect && assetSelect.action === s.action) {
+          exitAssetSelect();
+          return;
+        }
+        enterAssetSelect({ action: s.action, awaiting: "target" });
+      });
+      line.appendChild(btn);
+      line.appendChild(_ordersStockNote(s.queued, s.stock));
+      wrap.appendChild(line);
+
+      const plan = _deployPlanLine(s.action);
+      if (plan) {
+        const pl = document.createElement("div");
+        pl.className = "cc-deploy-plan";
+        pl.textContent = `\u2514 ${plan}`;
+        wrap.appendChild(pl);
+      }
+    }
+    return wrap;
+  }
+
+  /** v1.24 — the continuation line under a deploy verb: which slots it
+   *  occupies and, where the order lands on the board, where. */
+  function _deployPlanLine(action) {
+    /** @type {string[]} */
+    const bits = [];
+    soloQueue.forEach((m, ix) => {
+      if (!m || m.a !== action) return;
+      if (action === "emp_launch" && Array.isArray(m.ats) && m.ats.length) {
+        const cells = m.ats.map((t) => `(${t[0]},${t[1]})`).join(" ");
+        bits.push(`${_slotNo(ix)} ${cells}`);
+        return;
+      }
+      const at = Number.isFinite(m.x) && Number.isFinite(m.y)
+        ? ` (${m.x},${m.y})` : "";
+      bits.push(`${_slotNo(ix)}${at}`);
+    });
+    return bits.length ? bits.join(" \u00B7 ") : null;
+  }
+
+  /** v1.24 — WAIT, on its own, because it is not a thing you deploy.
+   *  It pads the queue so a later order lands on a chosen hour, which
+   *  is what makes the timed weapons usable at all. */
+  function _buildTimingBlock(qc) {
+    const wrap = document.createElement("div");
+    wrap.className = "cc-deploy";
+    const line = document.createElement("div");
+    line.className = "cc-deploy-line";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cli-btn cc-deploy-btn";
+    btn.textContent = "[ WAIT ]";
+    btn.title =
+      "Spend one hour doing nothing. Pad the queue to land a later order "
+      + "on a specific hour \u2014 9 WAITs then an EMP fires it at hour 10.";
+    btn.addEventListener("click", () => { addQueueRow("wait"); });
+    line.appendChild(btn);
+    const note = document.createElement("span");
+    note.className = "cc-deploy-stock";
+    note.textContent = qc.wait === 1 ? "1 hour queued"
+      : `${qc.wait} hours queued`;
+    if (!qc.wait) note.classList.add("cc-deploy-stock--empty");
+    line.appendChild(note);
+    wrap.appendChild(line);
+    return wrap;
+  }
+
 
   /**
    * v0.9.5 — section divider mirroring the VAULT panel's
@@ -4056,263 +4285,6 @@
     return chip;
   }
 
-  /**
-   * v0.9.5 — wrap a harvester chip with a yellow plan annotation
-   * row showing what the queue is going to do to it ("dropped
-   * @(4,9) · moved 3 steps · picked up"). Clicking the chip
-   * arms / re-arms the path picker for that harvester.
-   *
-   * @param {any} row
-   * @param {string} bucket
-   */
-  function buildOrdersHarvesterChip(row, bucket) {
-    const armed =
-      assetSelect &&
-      assetSelect.unit &&
-      String(assetSelect.unit) === String(row?.asset_id);
-    const chip = buildVaultStyleChip(row, bucket, {
-      active: Boolean(armed),
-      onClick: () => onHarvesterChipClick({ ...row, _bucket: bucket }),
-    });
-    const plan = planSummaryForUnit(String(row?.asset_id || ""));
-    return wrapChipWithPlan(chip, plan, {
-      extraClass: armed ? "cc-orders-chip-wrap--armed" : "",
-    });
-  }
-
-  /** Build a clickable roster chip for one asset row. The bucket key
-   *  (``in_orbit`` / ``on_surface``) seeds the chip; for harvesters
-   *  we then project the queue forward so the label reflects what
-   *  the unit WILL look like at PRAXIS time (drop → surface, etc.). */
-  function makeAssetChip(row, opts) {
-    const kind = (opts && opts.kind) || row.asset_type;
-    const isStatic = Boolean(opts && opts.static);
-    const bucket = (opts && opts.bucket) || "in_orbit";
-    let inOrbit = bucket === "in_orbit";
-    let surfaced = bucket === "on_surface";
-    let projectedPos = rowPosition(row);
-    let projected = false;
-    if (kind === "harvester" && !isStatic) {
-      const proj = projectedUnitState(String(row.asset_id || ""));
-      const projBucket = proj.bucket;
-      if (
-        (projBucket === "on_surface") !== surfaced ||
-        (projBucket === "in_orbit") !== inOrbit
-      ) {
-        projected = true;
-      }
-      surfaced = projBucket === "on_surface";
-      inOrbit = projBucket === "in_orbit";
-      if (proj.pos) projectedPos = proj.pos;
-    }
-
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "cli-btn cc-asset-chip";
-    chip.dataset.assetId = String(row.asset_id || "");
-    chip.dataset.assetKind = String(kind);
-    chip.dataset.assetState = bucket;
-    // v0.9.5 — stamp the SAME lifecycle ``data-*`` attributes the
-    // VAULT panel's ``renderAssetChipRow`` uses so the shared
-    // ``fillAssetTooltip`` handler shows the full provenance card
-    // here in ORDERS too. The roster host calls ``bindAssetTooltip``
-    // after rendering, so the mouseover wiring is identical to the
-    // vault's. Damaged / repair history rides as data-attrs as well
-    // so the tooltip can render wrench state and repair counts.
-    chip.dataset.assetType = String(row.asset_type || kind || "");
-    chip.dataset.owner = String(row.owner || "");
-    chip.dataset.bucket = bucket;
-    if (row.created_on_day != null)
-      chip.dataset.created = String(row.created_on_day);
-    if (row.first_deployed_day != null)
-      chip.dataset.firstDeployed = String(row.first_deployed_day);
-    if (row.destroyed_on_day != null)
-      chip.dataset.destroyed = String(row.destroyed_on_day);
-    if (row.destroyed_by)
-      chip.dataset.destroyedBy = String(row.destroyed_by);
-    chip.dataset.totalRed = String(row.total_red_harvested ?? 0);
-    chip.dataset.daysSurfaced = String(row.total_days_on_surface ?? 0);
-    if (row.repair_count != null)
-      chip.dataset.repairCount = String(row.repair_count);
-    if (row.last_repaired_day != null)
-      chip.dataset.lastRepaired = String(row.last_repaired_day);
-    if (row.damaged) chip.dataset.damaged = "1";
-    if (Array.isArray(row.current_pos)) {
-      chip.dataset.posX = String(row.current_pos[0]);
-      chip.dataset.posY = String(row.current_pos[1]);
-    }
-    if (typeof row.current_cargo_count === "number")
-      chip.dataset.cargo = String(row.current_cargo_count);
-    if (row.holds_red) chip.dataset.holdsRed = "1";
-    if (row.carrying_red) chip.dataset.carryingRed = "1";
-
-    // ``assetChipVisual`` was built for the VAULT panel. It expects
-    // an ``alive`` flag which the bucketed roster row already carries.
-    const visual = assetChipVisual({
-      asset_type: kind,
-      owner: row.owner,
-      carrying_red: row.carrying_red,
-      alive: row.alive !== false,
-    });
-    const glyph = document.createElement("span");
-    glyph.className = "cc-asset-chip-glyph";
-    glyph.style.color = visual.fg;
-    glyph.textContent = visual.glyph;
-    if (kind === "harvester" || kind === "probe") {
-      // v0.8.1 — stamp the ordinal (1, 2, 3) on the chip glyph as a
-      // bordered subscript tag (Option C) so the orders roster
-      // matches the in-map badge convention.
-      const ordinal = unitOrdinal(String(row.asset_id || ""));
-      if (Number.isFinite(ordinal)) {
-        const badge = document.createElement("span");
-        badge.className = "cc-asset-chip-sub";
-        badge.textContent = String(ordinal);
-        glyph.appendChild(badge);
-      }
-    }
-    chip.appendChild(glyph);
-
-    const label = document.createElement("span");
-    label.className = "cc-asset-chip-label";
-    const stateTag = inOrbit ? "orbit" : surfaced ? "surface" : "destroyed";
-    const posTag = projectedPos && surfaced ? ` @(${projectedPos[0]},${projectedPos[1]})` : "";
-    const projTag = projected ? " *" : "";
-    label.textContent = `${row.asset_id}${posTag} · ${stateTag}${projTag}`;
-    if (projected) {
-      label.title =
-        "* shows projected state after queued moves (live state may differ)";
-    }
-    chip.appendChild(label);
-
-    if (row.damaged) chip.classList.add("cc-asset-chip--damaged");
-    if (row.alive === false) chip.classList.add("cc-asset-chip--dead");
-
-    if (isStatic) {
-      chip.disabled = true;
-      chip.classList.add("cc-asset-chip--static");
-      return chip;
-    }
-
-    if (kind === "harvester") {
-      if (
-        assetSelect &&
-        assetSelect.unit &&
-        String(assetSelect.unit) === String(row.asset_id)
-      ) {
-        chip.classList.add("cc-asset-chip--active");
-      }
-      chip.addEventListener("click", () =>
-        onHarvesterChipClick({ ...row, _bucket: bucket }),
-      );
-      if (assetSelect && assetSelect.action === "drop" && inOrbit) {
-        chip.title = `Drop ${row.asset_id} at a tile (click to choose)`;
-      } else if (assetSelect && assetSelect.action === "pickup" && surfaced) {
-        chip.title = `Pickup ${row.asset_id} (queue order)`;
-      } else if (surfaced) {
-        chip.title = `Step ${row.asset_id} (click to choose a neighbouring cell)`;
-      } else if (inOrbit) {
-        chip.title = `${row.asset_id} is in orbit — use ORBLIFT > DROP to deploy`;
-      }
-      return chip;
-    }
-    return chip;
-  }
-
-  /** v0.8.0 — single chip representing the seat's probe stock. Click
-   *  to enter PROBE-target mode (next map click deploys). Disabled
-   *  when the stock is 0 and the user has nothing buildable queued. */
-  function makeProbeStockChip(stock) {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "cli-btn cc-asset-chip cc-asset-chip--probe-stock";
-
-    const glyph = document.createElement("span");
-    glyph.className = "cc-asset-chip-glyph";
-    glyph.style.color = "#aaffd0";
-    glyph.textContent = "\u00B7";
-    chip.appendChild(glyph);
-
-    const label = document.createElement("span");
-    label.className = "cc-asset-chip-label";
-    label.textContent = `probe stock: ${stock}`;
-    chip.appendChild(label);
-
-    if (stock <= 0) {
-      chip.classList.add("cc-asset-chip--dead");
-      chip.disabled = true;
-      chip.title =
-        "Probe stock exhausted — build a new probe in the next ORBIT phase.";
-    } else {
-      chip.title = "Deploy a probe (click, then choose a target cell)";
-      if (assetSelect && assetSelect.action === "probe") {
-        chip.classList.add("cc-asset-chip--active");
-      }
-      chip.addEventListener("click", () => {
-        if (assetSelect && assetSelect.action === "probe") {
-          exitAssetSelect();
-          return;
-        }
-        enterAssetSelect({ action: "probe", awaiting: "target" });
-      });
-    }
-    return chip;
-  }
-
-  function onHarvesterChipClick(row) {
-    // v0.8.1 — validate against the harvester's PROJECTED state (live
-    // state + queued moves so far), not just its live snapshot. The
-    // "drop and pick up on the same night" rule means a unit that's
-    // currently in orbit can legally be the target of a step or
-    // pickup later in the queue, provided a drop is queued first.
-    const unitId = String(row.asset_id);
-    const proj = projectedUnitState(unitId);
-    const surfaced = proj.bucket === "on_surface";
-    const inOrbit = proj.bucket === "in_orbit";
-
-    if (assetSelect && assetSelect.action === "drop" && assetSelect.awaiting === "unit") {
-      if (!inOrbit) {
-        flashHint(
-          `${unitId} is already on surface — pickup first if you want to re-drop`,
-        );
-        return;
-      }
-      enterAssetSelect({
-        action: "drop",
-        unit: unitId,
-        awaiting: "target",
-      });
-      return;
-    }
-    if (assetSelect && assetSelect.action === "pickup" && assetSelect.awaiting === "unit") {
-      if (!surfaced) {
-        flashHint(`${unitId} is in orbit — nothing to pickup`);
-        return;
-      }
-      addQueueRow("pickup", undefined, undefined, unitId);
-      exitAssetSelect();
-      return;
-    }
-    // Default click → STEP mode. Valid when the harvester is or
-    // WILL BE on surface by the time the new move runs (i.e. a drop
-    // is already queued earlier in the chain).
-    if (inOrbit) {
-      flashHint(`${unitId} is in orbit — queue ORBLIFT > DROP first`);
-      return;
-    }
-    if (row.damaged) {
-      flashHint(`${unitId} is damaged — repair in next ORBIT phase`);
-      return;
-    }
-    if (assetSelect && assetSelect.unit === unitId && assetSelect.action === "step") {
-      exitAssetSelect();
-      return;
-    }
-    enterAssetSelect({
-      action: "step",
-      unit: unitId,
-      awaiting: "target",
-    });
-  }
 
   /** Briefly surface a hint line above the asset roster. Used to flag
    *  things like "this harvester is in orbit, use ORBLIFT > DROP". */
@@ -4375,14 +4347,12 @@
     if (ccTabOrdersMeta) {
       ccTabOrdersMeta.textContent = `${String(n)}/${String(MAX_MOVES)}`;
     }
-    // v1.20 — the queue's own X/21 badge sits in the fieldset legend and
-    // scrolls out of sight behind a long queue. The TRANSMIT row is
-    // sticky, so carrying the count there keeps it in view without
-    // standing up a second counter somewhere else on the panel.
-    const slotsEl = document.getElementById("solo-commit-slots");
-    if (slotsEl) {
-      slotsEl.textContent = n ? ` · ${String(n)}/${String(MAX_MOVES)}` : "";
-    }
+    // v1.25 — the count used to be smuggled onto the TRANSMIT button's
+    // own label (`· 8/21`) because the badge lived in the fieldset
+    // legend and scrolled out of sight behind a long queue. The commit
+    // bar now leads the panel and the badge sits on the line directly
+    // under the button, so there is one counter again and it is always
+    // on screen. `#solo-commit-slots` is gone with the old footer.
     if (mobileOrdersCountEl) {
       mobileOrdersCountEl.textContent = String(n);
     }
@@ -4542,7 +4512,9 @@
     if (!soloQueue.length && !soloQueueShowAll) {
       const empty = document.createElement("p");
       empty.className = "dim solo-queue-empty";
-      empty.textContent = "# queue empty · add moves below ↓";
+      // v1.27 — the roster moved to the TOP half, so the arrow that used
+      // to point down at it now points at nothing.
+      empty.textContent = "# queue empty · add orders above ↑";
       soloQueueHost.appendChild(empty);
       if (soloExpert?.checked) syncExpertJsonFromQueue();
       return;
@@ -4632,7 +4604,9 @@
 
       const drag = document.createElement("span");
       drag.className = "dim solo-queue-drag";
-      drag.textContent = "⋮⋮";
+      // v1.25 — one column of dots, not two. Measured: the rail gives a
+      // row 172px at 1024, and every pixel here comes off the label.
+      drag.textContent = "⋮";
       drag.title = placeholder
         ? "idle slot · drag a queued row here to place it at this hour"
         : jam
@@ -4645,7 +4619,10 @@
       // v0.9.5 — slot numbers always reflect the hour-of-night the
       // row will execute against, which is just ``ix + 1`` for both
       // real and placeholder rows in the padded view.
-      num.textContent = `${String(ix + 1).padStart(2, " ")}.`;
+      // v1.25 — zero-padded and the trailing dot dropped: "01" reads as
+      // an hour, lines up in a column, and costs a character less than
+      // " 1." in a rail with nothing to spare.
+      num.textContent = String(ix + 1).padStart(2, "0");
       row.appendChild(num);
 
       const label = document.createElement("span");
@@ -4678,12 +4655,11 @@
       } else if (
         m.a === "emp_launch" && Array.isArray(m.ats) && m.ats.length > 1
       ) {
-        // v0.9.x — multi-missile salvo: show the count + extra cells.
-        const extra = m.ats
-          .slice(1)
-          .map((t) => `(${t[0]},${t[1]})`)
-          .join(" ");
-        label.textContent = `EMP salvo ×${m.ats.length} → +${extra}`;
+        // v0.9.x — multi-missile salvo: show the count. v1.25 — the
+        // extra cells moved to the tooltip; the row shows the first
+        // target like every other row and the rest is on hover, which
+        // is what keeps a salvo one line high like its neighbours.
+        label.textContent = `EMP salvo ×${m.ats.length}`;
         label.title = m.ats.map((t) => `(${t[0]},${t[1]})`).join("  ");
       } else {
         label.textContent = actionLabel(m.a);
@@ -4698,77 +4674,80 @@
         }
       }
       // v1.20 — the label is clipped rather than allowed to overrun the
-      // coordinate inputs, so anything long has to stay recoverable.
+      // rest of the row, so anything long has to stay recoverable.
       if (!label.title) label.title = label.textContent;
       row.appendChild(label);
 
+      // v1.25 — the target is READ-ONLY text on the row now, where it
+      // used to be a pair of number spinners.
+      //
+      // Two reasons. Typing a raw x/y is the wrong instrument for a
+      // spatial choice — you cannot tell where (33,12) is without
+      // looking at the board, so nobody aimed with them; they re-aim by
+      // deleting the row and clicking the cell, which is also the only
+      // path that draws the AoE footprint. And the two inputs cost more
+      // width than everything else on the row put together, which is
+      // what forced the controls onto a second line in a ~230px rail.
+      //
+      // The FIGURE still has to be here: it is the only place the
+      // target is written down once the pointer has moved on.
       if (actionNeedsXY(m.a)) {
-        const xWrap = document.createElement("label");
-        xWrap.className = "dim solo-queue-xy";
-        xWrap.append("x ");
-        const xIn = document.createElement("input");
-        xIn.type = "number";
-        xIn.className = "solo-num-input";
-        xIn.value = Number.isFinite(m.x) ? String(m.x) : "";
-        xIn.addEventListener("input", () => {
-          const v = Number(xIn.value);
-          m.x = Number.isFinite(v) ? v : undefined;
-          if (soloExpert?.checked) syncExpertJsonFromQueue();
-        });
-        xWrap.appendChild(xIn);
-        row.appendChild(xWrap);
-
-        const yWrap = document.createElement("label");
-        yWrap.className = "dim solo-queue-xy";
-        yWrap.append("y ");
-        const yIn = document.createElement("input");
-        yIn.type = "number";
-        yIn.className = "solo-num-input";
-        yIn.value = Number.isFinite(m.y) ? String(m.y) : "";
-        yIn.addEventListener("input", () => {
-          const v = Number(yIn.value);
-          m.y = Number.isFinite(v) ? v : undefined;
-          if (soloExpert?.checked) syncExpertJsonFromQueue();
-        });
-        yWrap.appendChild(yIn);
-        row.appendChild(yWrap);
+        const at = document.createElement("span");
+        at.className = "solo-queue-at";
+        const known = Number.isFinite(m.x) && Number.isFinite(m.y);
+        at.textContent = known ? `(${m.x},${m.y})` : "(?,?)";
+        if (!known) {
+          // Nothing can aim this any more now the inputs are gone, so
+          // say so rather than letting it look like a placed order.
+          at.classList.add("solo-queue-at--unset");
+          at.title = "No target — remove this row and click a cell.";
+          row.classList.add("solo-queue-row--invalid");
+        }
+        row.appendChild(at);
       }
 
       const controls = document.createElement("span");
       controls.className = "solo-queue-controls";
 
-      const up = document.createElement("button");
-      up.type = "button";
-      up.className = "cli-btn solo-queue-mini";
-      // v0.8.1 — Unicode arrows (↑ ↓) silently fall back to glyphs
-      // missing in many VT-style monospace fonts. Use ASCII-safe
-      // ``up`` / ``dn`` text so the controls render consistently
-      // across font stacks.
-      up.textContent = "[ up ]";
-      up.title = "Move this row up";
-      up.disabled = ix === 0;
-      up.addEventListener("click", () => moveQueueRow(ix, ix - 1));
-      controls.appendChild(up);
+      // v1.25 — bare single-glyph movers, boxed on hover.
+      //
+      // Measured, because this was the whole problem: `[ up ][ dn ][ x ]`
+      // came to 99.8px for the three, and a queue row is only 172px wide
+      // at 1024 — 58% of the row spent on chrome, which is why the
+      // controls kept wrapping to a second line and every row was 43px
+      // tall. Bracketing single glyphs got it to 74.7px, still too much.
+      // Bare glyphs are ~37px and leave the label something to live on.
+      //
+      // The v0.8.1 note here warned that ↑/↓ fall back badly in VT-style
+      // monospace fonts. That caution is stale in this file: the board
+      // and the composer already depend on ⋮, →, ↯, ⬡ and ⇈, so a font
+      // that drops U+2191 has broken far more than these buttons. Every
+      // button carries an aria-label, so dropping the brackets costs a
+      // screen reader nothing.
+      const mini = (text, title, disabled, onClick) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "cli-btn solo-queue-mini";
+        b.textContent = text;
+        b.title = title;
+        b.setAttribute("aria-label", title);
+        b.disabled = disabled;
+        if (!disabled) b.addEventListener("click", onClick);
+        return b;
+      };
 
-      const down = document.createElement("button");
-      down.type = "button";
-      down.className = "cli-btn solo-queue-mini";
-      down.textContent = "[ dn ]";
-      down.title = "Move this row down";
-      down.disabled = ix === soloQueue.length - 1;
-      down.addEventListener("click", () => moveQueueRow(ix, ix + 1));
-      controls.appendChild(down);
-
-      const rm = document.createElement("button");
-      rm.type = "button";
-      rm.className = "cli-btn solo-queue-mini";
-      rm.textContent = "[ x ]";
-      rm.title = "Remove this row";
-      rm.addEventListener("click", () => {
-        soloQueue.splice(ix, 1);
-        renderSoloQueue();
-      });
-      controls.appendChild(rm);
+      controls.appendChild(mini(
+        "\u2191", "Move this row one hour earlier",
+        ix === 0, () => moveQueueRow(ix, ix - 1),
+      ));
+      controls.appendChild(mini(
+        "\u2193", "Move this row one hour later",
+        ix === soloQueue.length - 1, () => moveQueueRow(ix, ix + 1),
+      ));
+      controls.appendChild(mini(
+        "\u00d7", "Remove this row", false,
+        () => { soloQueue.splice(ix, 1); renderSoloQueue(); },
+      ));
 
       row.appendChild(controls);
       return row;
@@ -4855,30 +4834,42 @@
     row.appendChild(twist);
 
     const num = document.createElement("span");
-    num.className = "dim solo-queue-num";
+    num.className = "dim solo-queue-num solo-queue-num--range";
     num.textContent = `${String(first.ix + 1).padStart(2, "0")}-`
       + `${String(last.ix + 1).padStart(2, "0")}`;
     row.appendChild(num);
 
     const label = document.createElement("span");
     label.className = "solo-queue-label";
-    const dest = Number.isFinite(last.m.x) && Number.isFinite(last.m.y)
-      ? ` \u2192 (${last.m.x},${last.m.y})` : "";
-    label.textContent = `walk \u00b7 ${unitShortLabel(unit)}${dest}`;
+    label.textContent = `walk \u00b7 ${unitShortLabel(unit)}`;
+    label.title = `${n} steps \u00b7 hours ${first.ix + 1}\u2013${last.ix + 1}`;
     row.appendChild(label);
 
-    const count = document.createElement("span");
-    count.className = "dim solo-queue-chain-count";
-    count.textContent = `${n} steps`;
-    row.appendChild(count);
+    // v1.25 — the destination moved out of the label into the same
+    // ``.solo-queue-at`` slot a plain row uses, so a collapsed walk and
+    // the rows around it agree on where the target sits.
+    if (Number.isFinite(last.m.x) && Number.isFinite(last.m.y)) {
+      const at = document.createElement("span");
+      at.className = "solo-queue-at";
+      at.textContent = `(${last.m.x},${last.m.y})`;
+      row.appendChild(at);
+    }
+
+    // v1.25 — there is no step count on the row. "5 steps" spelled out
+    // cost as much width as the target beside it, and even shortened to
+    // `×5` it restated something the row already says: the slot range in
+    // the gutter reads `07-10`, so the length IS the label. It also sat
+    // one gap away from the `×` remove button, which made two unrelated
+    // multiplication signs adjacent. The count stays on the row title.
 
     const controls = document.createElement("span");
     controls.className = "solo-queue-controls";
     const rm = document.createElement("button");
     rm.type = "button";
     rm.className = "cli-btn solo-queue-mini";
-    rm.textContent = "[ x ]";
+    rm.textContent = "\u00d7";
     rm.title = `Remove all ${n} steps of this walk`;
+    rm.setAttribute("aria-label", rm.title);
     rm.addEventListener("click", () => {
       soloQueue.splice(first.ix, n);
       expandedChains.clear();
@@ -5141,185 +5132,6 @@
     return `@slot ${String(ix + 1)}`;
   }
 
-  /**
-   * v0.9.5 — summarise the queued plan for a single unit, used to
-   * render the yellow "// in current plan" annotation below an
-   * asset chip. Returns ``null`` when the queue has no moves for
-   * the unit so the caller can skip the annotation row entirely.
-   * Otherwise returns a short, human-scannable string like:
-   *   "dropped @(4,9) · moved 3 steps · picked up"
-   *   "moved 2 steps → @(7,9)"
-   *   "picked up"
-   *
-   * @param {string} unitId
-   * @returns {string | null}
-   */
-  function planSummaryForUnit(unitId) {
-    if (!unitId) return null;
-    let drops = 0;
-    let steps = 0;
-    let pickups = 0;
-    let lastStep = null;
-    let dropAt = null;
-    for (const m of soloQueue) {
-      if (!m || m.unit !== unitId) continue;
-      if (m.a === "drop") {
-        drops += 1;
-        if (Number.isFinite(m.x) && Number.isFinite(m.y)) {
-          dropAt = [Number(m.x), Number(m.y)];
-        }
-      } else if (m.a === "step") {
-        steps += 1;
-        if (Number.isFinite(m.x) && Number.isFinite(m.y)) {
-          lastStep = [Number(m.x), Number(m.y)];
-        }
-      } else if (m.a === "pickup") {
-        pickups += 1;
-      }
-    }
-    if (drops + steps + pickups === 0) return null;
-    /** @type {string[]} */
-    const bits = [];
-    if (drops > 0) {
-      bits.push(
-        dropAt ? `dropped @(${dropAt[0]},${dropAt[1]})` : "dropped",
-      );
-    }
-    if (steps > 0) {
-      const stepLabel = steps === 1 ? "moved 1 step" : `moved ${steps} steps`;
-      bits.push(
-        lastStep ? `${stepLabel} → @(${lastStep[0]},${lastStep[1]})` : stepLabel,
-      );
-    }
-    if (pickups > 0) bits.push("picked up");
-    return bits.join(" · ");
-  }
-
-  /**
-   * v0.9.5 — summarise every DROP / PICKUP queued through the
-   * orblift across all harvesters. Surfaced under the orblift chip
-   * so the user can see what the lifter will do this turn at a
-   * glance. Returns ``null`` when nothing is queued.
-   *
-   * @returns {string | null}
-   */
-  function planSummaryForOrblift() {
-    /** @type {string[]} */
-    const bits = [];
-    soloQueue.forEach((m, ix) => {
-      if (!m) return;
-      const unit = m.unit ? unitShortLabel(m.unit) : "?";
-      if (m.a === "drop") {
-        const at =
-          Number.isFinite(m.x) && Number.isFinite(m.y)
-            ? ` @(${m.x},${m.y})`
-            : "";
-        bits.push(`drop ${unit}${at} ${_slotTag(ix)}`);
-      } else if (m.a === "pickup") {
-        bits.push(`pickup ${unit} ${_slotTag(ix)}`);
-      }
-    });
-    return bits.length ? bits.join(" · ") : null;
-  }
-
-  /**
-   * v0.9.5 — summarise queued probe deploys. Surfaced under the
-   * probe stock chip so the seat can see "2 probes → (5,5), (8,10)"
-   * before transmitting. Returns ``null`` when none are queued.
-   *
-   * @returns {string | null}
-   */
-  function planSummaryForProbes() {
-    /** @type {string[]} */
-    const hits = [];
-    soloQueue.forEach((m, ix) => {
-      if (!m || m.a !== "probe") return;
-      const at =
-        Number.isFinite(m.x) && Number.isFinite(m.y)
-          ? `(${m.x},${m.y})`
-          : "(?)";
-      hits.push(`${at} ${_slotTag(ix)}`);
-    });
-    if (!hits.length) return null;
-    const word = hits.length === 1 ? "probe" : "probes";
-    return `${hits.length} ${word} → ${hits.join(", ")}`;
-  }
-
-  /**
-   * v0.9.5 — summarise queued fires for one weapon ``kind``
-   * (``"emp"`` / ``"mine"`` / ``"chaff"``) or padding (``"wait"``).
-   * Each hit lists its hour slot so the user can see exactly when
-   * the warhead lands relative to other moves.
-   *
-   * @param {"emp"|"mine"|"chaff"|"wait"} kind
-   * @returns {string | null}
-   */
-  function planSummaryForWeapon(kind) {
-    const actionKey =
-      kind === "emp" ? "emp_launch"
-      : kind === "mine" ? "mine_lay"
-      : kind === "chaff" ? "chaff_flare"
-      : "wait";
-    /** @type {string[]} */
-    const hits = [];
-    soloQueue.forEach((m, ix) => {
-      if (!m || m.a !== actionKey) return;
-      if (kind === "emp" || kind === "mine") {
-        const at =
-          Number.isFinite(m.x) && Number.isFinite(m.y)
-            ? `(${m.x},${m.y})`
-            : "(?)";
-        hits.push(`${at} ${_slotTag(ix)}`);
-      } else {
-        hits.push(_slotTag(ix));
-      }
-    });
-    if (!hits.length) return null;
-    const label =
-      kind === "emp" ? "EMP"
-      : kind === "mine" ? "MINE"
-      : kind === "chaff" ? "CHAFF"
-      : "WAIT";
-    return `${hits.length}× ${label} · ${hits.join(", ")}`;
-  }
-
-  /**
-   * v0.9.5 — wrap an arbitrary chip element with a yellow "// in
-   * current plan:" annotation underneath it. Mirrors the layout
-   * used by ``buildOrdersHarvesterChip`` so every chip in the
-   * ORDERS roster shares the same visual contract. Returns the
-   * wrap div (the chip ALWAYS sits at the top; the plan note is
-   * appended below when ``planText`` is non-empty).
-   *
-   * Callers pass ``planText = null`` to skip the annotation (the
-   * wrap is still emitted so flex layout stays consistent across
-   * chips with and without plans). Pass ``extraClass`` to add a
-   * variant class for kind-specific styling.
-   *
-   * @param {HTMLElement} chip
-   * @param {string | null} planText
-   * @param {{ extraClass?: string }} [opts]
-   */
-  function wrapChipWithPlan(chip, planText, opts) {
-    const wrap = document.createElement("div");
-    wrap.className =
-      "cc-orders-chip-wrap" +
-      (opts?.extraClass ? ` ${opts.extraClass}` : "");
-    wrap.appendChild(chip);
-    if (planText) {
-      const note = document.createElement("div");
-      note.className = "cc-orders-chip-plan";
-      const tag = document.createElement("span");
-      tag.className = "cc-orders-chip-plan-tag";
-      tag.textContent = "// in current plan:";
-      const txt = document.createElement("span");
-      txt.className = "cc-orders-chip-plan-txt";
-      txt.textContent = ` ${planText}`;
-      note.append(tag, txt);
-      wrap.appendChild(note);
-    }
-    return wrap;
-  }
 
   function enterAssetSelect(spec) {
     assetSelect = spec;
@@ -5340,6 +5152,361 @@
     if (pickBanner) pickBanner.hidden = true;
     renderOrdersAssetRoster();
     paintHarvesterPathBadges();
+  }
+
+  // ══ v1.26 — RIGHT-CLICK BOARD MENU ═══════════════════════════════
+  //
+  // The panel flow is verb-then-target: arm a verb, then click a cell.
+  // This is the INVERSE — the cell is already chosen, so the menu can
+  // be built out of what that particular square actually affords.
+  //
+  // That inversion is the whole point, and it is also why this menu is
+  // allowed to be shorter than the ORDERS panel without breaking the
+  // standing agency rule. The panel offers every verb because it is
+  // asking "what do you want to do?"; this menu is answering "what can
+  // be done HERE?", and `walk` to a square six cells from the harvester
+  // is not an under-offered option, it is a different question. The
+  // rule still binds where it is about RESOURCES: probe / EMP / mine
+  // are offered at zero stock, annotated, exactly as in the panel.
+  //
+  // A unit with nothing to offer here is still LISTED, dimmed, with the
+  // distance — otherwise a harvester silently missing from the menu
+  // reads as a bug.
+
+  /** Ordering from the board is barred wherever ordering from the panel
+   *  is barred, plus one case the panel cannot hit: the live page can
+   *  show a REPLAY frame, and a right-click on last night's board must
+   *  not post orders against tonight's queue. */
+  function _boardMenuAllowed() {
+    if (WATCH_MODE) return false;
+    if (!sessionId) return false;
+    if (livePhase === "season_complete") return false;
+    // `updateOrbitTabVisibility` HIDES the ORDERS tab for the whole
+    // ORBIT phase, so composing night orders is closed there. Without
+    // this line the board menu is a back door into a phase the panel
+    // shuts, and the two would disagree about what is orderable.
+    if (livePhase === "orbit") return false;
+    if (mainMapSource !== "live") return false;
+    return true;
+  }
+
+  /** Chebyshev is wrong here: the engine's step rule is CARDINAL, and
+   *  the existing click path enforces `dx + dy === 1`. Mirroring it
+   *  keeps the two entry points from disagreeing about what a legal
+   *  walk is. */
+  function _isStepNeighbour(from, x, y) {
+    if (!from) return false;
+    return Math.abs(x - from[0]) + Math.abs(y - from[1]) === 1;
+  }
+
+  /** Queue rows aimed at this exact cell, so the menu can offer to take
+   *  them back. `emp_launch` carries a whole salvo, so it matches on any
+   *  of its target cells and removing it drops only that one. */
+  function _queuedAtCell(x, y) {
+    const out = [];
+    soloQueue.forEach((m, ix) => {
+      if (!m) return;
+      if (m.a === "emp_launch" && Array.isArray(m.ats)) {
+        if (m.ats.some((p) => Number(p[0]) === x && Number(p[1]) === y)) {
+          out.push({ ix, row: m, salvo: true });
+        }
+        return;
+      }
+      if (Number(m.x) === x && Number(m.y) === y) out.push({ ix, row: m });
+    });
+    return out;
+  }
+
+  /** Build the menu model for one square: a flat list of headings and
+   *  items. Items carry `run`; headings and dim lines do not. */
+  function _boardMenuModel(x, y) {
+    const items = [];
+    const inv = lastLiveInventory;
+    const buckets = (inv && inv.assets_by_status) || {};
+    const rows = [
+      ...(Array.isArray(buckets.on_surface) ? buckets.on_surface : []),
+      ...(Array.isArray(buckets.in_orbit) ? buckets.in_orbit : []),
+    ].filter((r) => r && r.asset_type === "harvester" && r.alive !== false);
+    const hasLift = (Array.isArray(buckets.in_orbit) ? buckets.in_orbit : [])
+      .concat(Array.isArray(buckets.on_surface) ? buckets.on_surface : [])
+      .some((r) => r && r.asset_type === "orblift" && r.alive !== false);
+    const full = soloQueue.length >= maxQueueLen;
+
+    // ── fleet ────────────────────────────────────────────────────
+    items.push({ head: "fleet" });
+    if (!rows.length) items.push({ dim: "no harvesters owned" });
+    for (const row of rows) {
+      const unitId = String(row.asset_id || "");
+      const nm = `hv ${unitOrdinal(unitId)}`;
+      const proj = projectedUnitState(unitId);
+      const glyph = assetChipVisual({
+        asset_type: "harvester", owner: row.owner,
+        carrying_red: row.carrying_red, alive: true,
+      });
+      const base = { glyph: glyph.glyph, tint: glyph.fg, unit: unitId };
+      if (row.damaged) {
+        items.push({
+          ...base, label: `${nm} damaged`, note: "repair first",
+          dim: true,
+          title: "Damaged units cannot step, harvest or be deployed until "
+            + "you pay for REPAIR in the ORBIT phase (\u00A73.6.1).",
+        });
+        continue;
+      }
+      if (!hasLift) {
+        items.push({
+          ...base, label: nm, note: "no orblift", dim: true,
+          title: "Nothing can move between orbit and the surface without "
+            + "an orblift.",
+        });
+        continue;
+      }
+      if (proj.bucket === "in_orbit") {
+        items.push({
+          ...base, label: `drop ${nm} here`, note: "auto-harvests",
+          title: `Deploy ${unitId} onto (${x},${y}). The landing harvests `
+            + "the square it lands on (\u00A73.12).",
+          run: () => addQueueRow("drop", x, y, unitId),
+        });
+      } else if (proj.pos && proj.pos[0] === x && proj.pos[1] === y) {
+        items.push({
+          ...base, label: `lift ${nm}`, note: "banks cargo",
+          title: `Recall ${unitId} to orbit and bank what it is carrying.`,
+          run: () => addQueueRow("pickup", undefined, undefined, unitId),
+        });
+      } else if (_isStepNeighbour(proj.pos, x, y)) {
+        items.push({
+          ...base, label: `walk ${nm} here`, note: "harvests",
+          title: `Step ${unitId} from (${proj.pos[0]},${proj.pos[1]}) onto `
+            + `(${x},${y}). Right-click the next square to keep going.`,
+          run: () => addQueueRow("step", x, y, unitId),
+        });
+      } else if (proj.pos) {
+        const d = Math.abs(x - proj.pos[0]) + Math.abs(y - proj.pos[1]);
+        items.push({
+          ...base, label: nm, note: `${d} away`, dim: true,
+          title: `${unitId} will be at (${proj.pos[0]},${proj.pos[1]}) by `
+            + "this point in the queue, so it cannot reach this square in "
+            + "one step. Walk it closer, or use the ORDERS panel.",
+        });
+      }
+    }
+
+    // ── deploy ───────────────────────────────────────────────────
+    // Offered at zero stock, per the standing rule: buying it in
+    // tonight's ORBIT is a legal plan and the engine decides at PRAXIS.
+    const qc = _ordersQueuedCounts();
+    const ws = (lastOrbitView && lastOrbitView.weapon_stock) || {};
+    const bays = [
+      {
+        action: "probe", label: "launch probe here",
+        stock: Math.max(0, Number((lastOrbitView
+          && lastOrbitView.probe_stock) || 0)),
+        queued: qc.probe, glyph: "\u25CE", tint: "#7ab8ff",
+        title: "Light a disk of ground for the rest of the night.",
+      },
+      {
+        action: "emp_launch", label: "EMP here",
+        stock: Math.max(0, Number(ws.emp || 0)), queued: qc.emp_launch,
+        glyph: "\u25C7", tint: "#74dcff",
+        title: "Add this square to an EMP salvo. Disables harvesters and "
+          + "destroys probes and mines caught in it \u2014 including yours.",
+      },
+      {
+        action: "mine_lay", label: "mine here",
+        stock: Math.max(0, Number(ws.mine || 0)), queued: qc.mine_lay,
+        glyph: "\u25A3", tint: "#ff5fd7",
+        title: "Arm a hidden cluster centred here.",
+      },
+    ];
+    items.push({ head: "deploy" });
+    for (const b of bays) {
+      const s = _stockNote(b.queued, b.stock);
+      items.push({
+        glyph: b.glyph, tint: b.tint, label: b.label,
+        note: s.text,
+        warn: s.over || s.empty,
+        title: b.title + (s.title ? `\n\n${s.title}` : "")
+          + (s.empty
+            ? "\n\nNone in the bay. You can still order it \u2014 buy one in "
+              + "this night's ORBIT, or the engine drops the order at PRAXIS."
+            : ""),
+        run: () => {
+          if (b.action === "emp_launch") { empSalvoToggleTarget(x, y); return; }
+          addQueueRow(b.action, x, y);
+        },
+      });
+    }
+
+    // ── already ordered here ─────────────────────────────────────
+    // The user's ask was to cancel from the board as well as order
+    // from it. Without this the menu is write-only and you still have
+    // to hunt the row down in the composer.
+    const here = _queuedAtCell(x, y);
+    if (here.length) {
+      items.push({ head: "queued here" });
+      for (const q of here) {
+        const slot = String(q.ix + 1).padStart(2, "0");
+        // `actionLabel` is written for the queue row, where the verb is
+        // followed by its coordinates — hence the trailing "@" on the
+        // targeted ones. Here the square is the thing you right-clicked,
+        // so the "@" points at nothing.
+        const what = q.salvo
+          ? "EMP target"
+          : actionLabel(q.row.a).replace(/\s*@$/, "");
+        items.push({
+          glyph: "\u00d7", tint: "#ff6b6b",
+          label: `remove ${slot} ${what}`,
+          title: q.salvo
+            ? "Drops this square from the salvo; the other targets stay."
+            : "Removes this row from tonight's queue.",
+          run: () => {
+            if (q.salvo) { empSalvoToggleTarget(x, y); return; }
+            soloQueue.splice(q.ix, 1);
+            renderSoloQueue();
+          },
+        });
+      }
+    }
+
+    if (full) {
+      items.push({
+        dim: `queue full \u2014 ${maxQueueLen} slots used`,
+      });
+    }
+    return items;
+  }
+
+  function closeBoardMenu() {
+    if (_boardMenuEl) {
+      _boardMenuEl.remove();
+      _boardMenuEl = null;
+    }
+    if (_boardMenuAt) {
+      mapPlayer
+        ?.querySelectorAll(".cell--menu-at")
+        .forEach((c) => c.classList.remove("cell--menu-at"));
+      _boardMenuAt = null;
+    }
+  }
+
+  /** Position like the cell tooltip: flip rather than clamp, so the
+   *  menu never covers the square it describes. */
+  function _placeBoardMenu(el, cx, cy) {
+    const pad = 6;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const left = cx + pad + w > window.innerWidth - 4 ? cx - pad - w : cx + pad;
+    const top = cy + pad + h > window.innerHeight - 4
+      ? Math.max(2, cy - pad - h) : cy + pad;
+    el.style.left = `${Math.max(2, left)}px`;
+    el.style.top = `${Math.max(2, top)}px`;
+  }
+
+  function openBoardMenu(x, y, cx, cy) {
+    closeBoardMenu();
+    // One aiming mode at a time. Leaving a half-armed verb live behind
+    // an open menu means the next stray left-click fires an order the
+    // player has mentally moved on from.
+    exitPickMode();
+    exitAssetSelect();
+    if (cellTooltip) cellTooltip.hidden = true;
+
+    const el = document.createElement("div");
+    el.className = "board-menu";
+    el.setAttribute("role", "menu");
+
+    const head = document.createElement("div");
+    head.className = "board-menu-head";
+    const facts = _cellFactsAt(x, y);
+    head.textContent = `(${x},${y})${facts ? ` \u00b7 ${facts}` : ""}`;
+    el.appendChild(head);
+
+    for (const it of _boardMenuModel(x, y)) {
+      if (it.head) {
+        const h = document.createElement("div");
+        h.className = "board-menu-div";
+        h.textContent = `// ${it.head}`;
+        el.appendChild(h);
+        continue;
+      }
+      if (!it.run) {
+        const d = document.createElement("div");
+        d.className = "board-menu-dim";
+        if (it.glyph) {
+          const g = document.createElement("span");
+          g.className = "board-menu-glyph";
+          g.style.color = it.tint || "";
+          g.textContent = it.glyph;
+          d.appendChild(g);
+        }
+        const t = document.createElement("span");
+        t.className = "board-menu-label";
+        t.textContent = it.label || it.dim || "";
+        d.appendChild(t);
+        if (it.note) {
+          const n = document.createElement("span");
+          n.className = "board-menu-note";
+          n.textContent = it.note;
+          d.appendChild(n);
+        }
+        if (it.title) d.title = it.title;
+        el.appendChild(d);
+        continue;
+      }
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "board-menu-item";
+      b.setAttribute("role", "menuitem");
+      if (it.title) b.title = it.title;
+      const g = document.createElement("span");
+      g.className = "board-menu-glyph";
+      g.style.color = it.tint || "";
+      g.textContent = it.glyph || "\u00b7";
+      const t = document.createElement("span");
+      t.className = "board-menu-label";
+      t.textContent = it.label;
+      b.append(g, t);
+      if (it.note) {
+        const n = document.createElement("span");
+        n.className = "board-menu-note"
+          + (it.warn ? " board-menu-note--warn" : "");
+        n.textContent = it.note;
+        b.appendChild(n);
+      }
+      b.addEventListener("click", () => {
+        closeBoardMenu();
+        it.run();
+      });
+      el.appendChild(b);
+    }
+
+    document.body.appendChild(el);
+    _placeBoardMenu(el, cx, cy);
+    _boardMenuEl = el;
+    _boardMenuAt = [x, y];
+    mapPlayer
+      ?.querySelector(`[data-x="${x}"][data-y="${y}"]`)
+      ?.classList.add("cell--menu-at");
+    /** @type {HTMLElement|null} */ (
+      el.querySelector(".board-menu-item")
+    )?.focus();
+  }
+
+  /** One-line terrain summary for the menu header. The hover tooltip
+   *  owns the full readout, but it is hidden while the menu is open, so
+   *  the header has to carry enough to know what you right-clicked. */
+  function _cellFactsAt(x, y) {
+    const store = mapPlayer && /** @type {any} */ (mapPlayer).__cellStore;
+    if (!store || !Array.isArray(store.cells)) return "";
+    const c = store.cells[y * store.width + x];
+    if (!c) return "";
+    if (c.kind === "fog") return "fog";
+    const bits = [];
+    if (c.tier) bits.push(String(c.tier));
+    if (Number.isFinite(Number(c.purity))) bits.push(String(c.purity));
+    if (c.stale) bits.push("remembered");
+    return bits.length ? bits.join(" \u00b7 ") : String(c.kind || "");
   }
 
   /** Refresh the picker banner label from the current assetSelect
@@ -6579,7 +6746,14 @@
       const resolved = mode === "orbit" ? body?.orbit_resolved : body?.night_resolved;
       if (resolved) {
         clearHumanWaitFrame();
-        try { await pullAllMaps({ playFx: true }); } catch (_e) { /* ignore */ }
+        // v1.26 — a NIGHT owes an animation and its frames may still be
+        // being written, so the pull waits for them rather than painting
+        // the outcome first. An ORBIT resolve emits no night frames.
+        try {
+          await pullAllMaps({
+            playFx: true, expectNightFrames: mode !== "orbit",
+          });
+        } catch (_e) { /* ignore */ }
       }
       // else: stashed, agent still finishing — pollLiveSync resolves + animates.
     }, 900);
@@ -7209,88 +7383,201 @@
 
   /* ── v0.8.0 ORBIT panel helpers ─────────────────────────────────── */
 
+  /** v1.25 — the ONE place an orbit price is resolved.
+   *
+   *  Every unit price the panel needs, keyed by action, as
+   *  ``{cr, blue}``. It reads ``ship_prices`` and ``weapon_prices`` off
+   *  the live view, with the canonical constants as a fallback for a
+   *  payload that predates them.
+   *
+   *  This exists because the six prices were previously written out as
+   *  literals in THREE places — the button labels in index.html, the
+   *  queue-row text in ``describeOrbitAction``, and the projector in
+   *  ``orbitActionCost`` — and ``weapon_prices`` was shipped by the
+   *  server but read by nobody, so a weapon retune would have moved the
+   *  engine and left all three copies lying. Exactly the fan-out failure
+   *  AGENTS.md describes (vault 25->15 and probe radius 2->4 drifted for
+   *  months in prompts and UI while the engine was already right).
+   */
+  function _orbitPrices() {
+    const sp = (lastOrbitView && lastOrbitView.ship_prices) || {};
+    const wp = (lastOrbitView && lastOrbitView.weapon_prices) || {};
+    const w = (k, blue, cr) => ({
+      blue: Number(wp[k]?.blue ?? blue),
+      cr: Number(wp[k]?.credits ?? cr),
+    });
+    return {
+      build_harvester: { cr: Number(sp.harvester_build ?? 1500), blue: 0 },
+      build_probe: { cr: Number(sp.probe_build ?? 250), blue: 0 },
+      repair: { cr: Number(sp.repair ?? 500), blue: 0 },
+      build_emp: w("emp", 200, 250),
+      build_mine: w("mine", 100, 100),
+      build_chaff: w("chaff", 255, 0),
+    };
+  }
+
+  /** v1.25 — price as the panel writes it: ``(200b/250c)``, ``(250c)``,
+   *  ``(255b)``. Omits a zero term rather than printing ``0b``. */
+  function _orbitPriceText(cost) {
+    const bits = [];
+    if (cost.blue) bits.push(`${cost.blue}b`);
+    if (cost.cr) bits.push(`${cost.cr}c`);
+    return bits.length ? `(${bits.join("/")})` : "(free)";
+  }
+
   /** Human-friendly summary of an Orbit action for the queue UI. */
   function describeOrbitAction(a) {
     if (!a || typeof a !== "object") return JSON.stringify(a);
+    const p = _orbitPrices();
+    const each = p[a.a];
+    const n = Math.max(1, Number(a.count || 1));
+    const batch = each
+      ? _orbitPriceText({ cr: each.cr * n, blue: each.blue * n })
+      : "";
     switch (a.a) {
       case "build_harvester":
-        return "build harvester (1500c)";
-      case "build_probe": {
-        const n = Math.max(1, Number(a.count || 1));
-        return n > 1
-          ? `build probes \u00D7${n} (${n * 250}c)`
-          : "build probes \u00D71 (250c)";
-      }
+        return `build harvester ${batch}`;
+      case "build_probe":
+        return `build probes \u00D7${n} ${batch}`;
       case "repair":
-        return `repair ${a.unit || "?"} (500c)`;
+        return `repair ${a.unit || "?"} ${batch}`;
       // v0.9.3 — three build-weapons actions. Each enqueues the
       // batch count + the per-unit blue+credit cost so the seat can
       // eyeball the wallet hit before TRANSMIT.
-      case "build_emp": {
-        const n = Math.max(1, Number(a.count || 1));
-        return `build EMP \u00D7${n} (${n * 200}b/${n * 250}c)`;
-      }
-      case "build_mine": {
-        const n = Math.max(1, Number(a.count || 1));
-        return `build MINE \u00D7${n} (${n * 100}b/${n * 100}c)`;
-      }
-      case "build_chaff": {
-        const n = Math.max(1, Number(a.count || 1));
-        return `build CHAFF \u00D7${n} (${n * 255}b)`;
-      }
+      case "build_emp":
+        return `build EMP \u00D7${n} ${batch}`;
+      case "build_mine":
+        return `build MINE \u00D7${n} ${batch}`;
+      case "build_chaff":
+        return `build CHAFF \u00D7${n} ${batch}`;
       default:
         return JSON.stringify(a);
     }
   }
 
   /** v1.2 — per-action wallet cost (credits + blue), mirroring the
-   *  engine's declared-order locking model (RULEBOOK §4.3). Prices come
-   *  off the live ``ship_prices`` block when present, falling back to
-   *  the canonical constants. */
+   *  engine's declared-order locking model (RULEBOOK §4.3). Unit prices
+   *  come from ``_orbitPrices``; this multiplies by the batch count. */
   function orbitActionCost(a) {
-    const prices = (lastOrbitView && lastOrbitView.ship_prices) || {};
-    const HARV = Number(prices.harvester_build ?? 1500);
-    const PROBE = Number(prices.probe_build ?? 250);
-    const REPAIR = Number(prices.repair ?? 500);
     const out = { cr: 0, blue: 0 };
     if (!a || typeof a !== "object") return out;
-    switch (a.a) {
-      case "build_harvester":
-        out.cr = HARV;
-        break;
-      case "build_probe": {
-        const n = Math.max(1, Number(a.count || 1));
-        out.cr = PROBE * n;
-        // v1.2 — probes partial-fill (buy what's affordable), so the
-        // projector needs the per-unit cost + count to mirror the
-        // engine's unit-by-unit purchase.
-        out.units = { each: PROBE, count: n };
-        break;
-      }
-      case "repair":
-        out.cr = REPAIR;
-        break;
-      case "build_emp": {
-        const n = Math.max(1, Number(a.count || 1));
-        out.cr = 250 * n;
-        out.blue = 200 * n;
-        break;
-      }
-      case "build_mine": {
-        const n = Math.max(1, Number(a.count || 1));
-        out.cr = 100 * n;
-        out.blue = 100 * n;
-        break;
-      }
-      case "build_chaff": {
-        const n = Math.max(1, Number(a.count || 1));
-        out.blue = 255 * n;
-        break;
-      }
-      default:
-        break;
+    const each = _orbitPrices()[a.a];
+    if (!each) return out;
+    const n = Math.max(1, Number(a.count || 1));
+    out.cr = each.cr * n;
+    out.blue = each.blue * n;
+    if (a.a === "build_probe") {
+      // v1.2 — probes partial-fill (buy what's affordable), so the
+      // projector needs the per-unit cost + count to mirror the
+      // engine's unit-by-unit purchase.
+      out.units = { each: each.cr, count: n };
     }
     return out;
+  }
+
+  /** v1.25 — write the unit price into every ``[data-orbit-cost]`` chip.
+   *  Called from ``updateOrbitReadouts`` so the labels track a retune on
+   *  the next poll instead of being frozen into the markup. */
+  function _renderOrbitCosts() {
+    const p = _orbitPrices();
+    document.querySelectorAll("[data-orbit-cost]").forEach((el) => {
+      const key = el.getAttribute("data-orbit-cost") || "";
+      if (p[key]) el.textContent = _orbitPriceText(p[key]);
+    });
+  }
+
+  /** v1.25 — how many units the batch input beside an action asks for. */
+  function _orbitBatchCount(action) {
+    const id = {
+      build_probe: "solo-orbit-probe-count",
+      build_emp: "solo-orbit-emp-count",
+      build_mine: "solo-orbit-mine-count",
+      build_chaff: "solo-orbit-chaff-count",
+    }[action];
+    if (!id) return 1;
+    const el = /** @type {HTMLInputElement|null} */ (
+      document.getElementById(id)
+    );
+    return Math.max(1, Number.parseInt(el?.value ?? "1", 10) || 1);
+  }
+
+  /** v1.25 — dim what you cannot do, and say why.
+   *
+   *  Two kinds of "cannot", deliberately worded differently, because
+   *  they are not the same news:
+   *
+   *  * **No target.** REPAIR with nothing damaged, or a build that would
+   *    breach the harvester cap. Nothing you can do in this phase makes
+   *    these work — they are genuine no-ops, which is what the user
+   *    asked to have greyed.
+   *  * **No money.** You are short. That is a fact about the ORDER of
+   *    your queue as much as your wallet, so it is priced against the
+   *    PROJECTED remainder rather than the opening balance, and removing
+   *    an earlier row brings the button back.
+   *
+   *  DIMMING IS NOT GATING. The click handler deliberately no longer
+   *  refuses a dimmed button: the engine partial-fills and drops in
+   *  declared order, the queue already annotates a row it cannot pay for
+   *  (``dropped · needs 500c``), and a player must be able to queue the
+   *  expensive thing FIRST and then trim what sits above it. Refusing
+   *  the click made that ordering impossible to express.
+   */
+  function _updateOrbitAffordability(orbitView, damagedCount) {
+    const p = _orbitPrices();
+    const proj = projectOrbitBudget();
+    const crLeft = Math.max(0, Number(proj.cr) || 0);
+    const blueLeft = Math.max(0, Number(proj.blue) || 0);
+    const spent = orbitQueue.length > 0;
+    const used = Number(orbitView?.harvester_cap_used ?? 0);
+    const cap = Number(orbitView?.harvester_cap_max ?? 3);
+    const queuedHarv = orbitQueue.filter((a) => a?.a === "build_harvester")
+      .length;
+
+    /** @returns {string} empty when the action is fine */
+    const reasonFor = (action) => {
+      const each = p[action];
+      if (!each) return "";
+      if (action === "repair" && damagedCount === 0) {
+        return "nothing damaged";
+      }
+      if (action === "build_harvester" && used + queuedHarv >= cap) {
+        return `fleet at ${cap}/${cap}`;
+      }
+      // One unit is the bar, not the whole batch: a batch that only
+      // partly fits still buys something, and the queue row says how
+      // many. Only "not even one" is worth dimming for.
+      const short = [];
+      if (each.blue > blueLeft) short.push(`${each.blue - blueLeft}b`);
+      if (each.cr > crLeft) short.push(`${each.cr - crLeft}c`);
+      if (!short.length) return "";
+      return `short ${short.join(" + ")}${spent ? " after queue" : ""}`;
+    };
+
+    document.querySelectorAll(".solo-add-orbit").forEach((btn) => {
+      const action = btn.getAttribute("data-orbit-action") || "";
+      const why = reasonFor(action);
+      const act = btn.closest(".cc-orbit-act");
+      btn.classList.toggle("is-disabled", Boolean(why));
+      if (act) act.classList.toggle("cc-orbit-act--dim", Boolean(why));
+      const note = act?.querySelector(".cc-orbit-why");
+      if (note) {
+        note.textContent = why;
+        /** @type {HTMLElement} */ (note).hidden = !why;
+      }
+      // The title carries the full price at the batch size on screen,
+      // which the label cannot (it shows the UNIT price so the ladder
+      // stays legible when you spin the count up).
+      const each = p[action];
+      if (each) {
+        const n = _orbitBatchCount(action);
+        const total = _orbitPriceText({ cr: each.cr * n, blue: each.blue * n });
+        btn.title = why
+          ? `${total} for ${n} \u2014 ${why}. You can still queue it; the `
+            + "engine drops or part-fills what you cannot pay for, in the "
+            + "order you declared."
+          : `${total} for ${n}`;
+      }
+    });
   }
 
   /** v1.13 — "what your vault does when you hit TRANSMIT".
@@ -7409,29 +7696,45 @@
   function updateOrbitBudgetProjection(proj) {
     const p = proj || projectOrbitBudget();
     const queued = orbitQueue.length > 0;
-    if (orbitCreditsEl) {
-      let txt = `${p.startCr}c`;
-      if (queued && (p.cr !== p.startCr || p.overCr > 0)) {
-        txt += ` (\u2192${p.cr}c${p.overCr > 0 ? `, ${p.overCr} over` : ""})`;
+    // v1.25 — the balance and the projection are now two elements, not
+    // one string. They were concatenated (`1000c (→250c, 300 over)`),
+    // which is four numbers on one line in a readout that is supposed to
+    // be the panel's headline; at the new type size it also wrapped. The
+    // balance keeps the big type and the forecast sits under it in small.
+    const paint = (valEl, projEl, unit, start, left, over) => {
+      if (valEl) {
+        valEl.textContent = `${start}${unit}`;
+        valEl.classList.toggle(
+          "cc-orbit-readout-value--over", queued && over > 0,
+        );
       }
-      orbitCreditsEl.textContent = txt;
-      orbitCreditsEl.classList.toggle(
-        "cc-orbit-readout-value--over",
-        queued && p.overCr > 0,
-      );
-    }
-    const blueTotalEl = document.getElementById("cc-orbit-blue-total");
-    if (blueTotalEl) {
-      let txt = `${p.startBlue}`;
-      if (queued && (p.blue !== p.startBlue || p.overBlue > 0)) {
-        txt += ` \u2192${p.blue}${p.overBlue > 0 ? ` (${p.overBlue} over)` : ""}`;
-      }
-      blueTotalEl.textContent = txt;
-      blueTotalEl.classList.toggle(
-        "cc-orbit-readout-value--over",
-        queued && p.overBlue > 0,
-      );
-    }
+      if (!projEl) return;
+      const moved = queued && (left !== start || over > 0);
+      projEl.hidden = !moved;
+      if (!moved) { projEl.textContent = ""; return; }
+      // "unpaid", not "over". ``over`` accumulates the FULL cost of
+      // every action the wallet cannot cover, not the shortfall — an
+      // order for 1500c against 1000c contributes 1500, and reading
+      // that as "1500 over budget" is wrong by 500. What it really
+      // measures is how much of the queue will not be bought.
+      projEl.textContent = over > 0
+        ? `\u2192 ${left}${unit} left \u00B7 ${over}${unit} unpaid`
+        : `\u2192 ${left}${unit} left`;
+      projEl.classList.toggle("cc-orbit-readout-proj--over", over > 0);
+    };
+    paint(
+      orbitCreditsEl, document.getElementById("cc-orbit-credits-proj"),
+      "c", p.startCr, p.cr, p.overCr,
+    );
+    paint(
+      document.getElementById("cc-orbit-blue-total"),
+      document.getElementById("cc-orbit-blue-proj"),
+      // "b", not "p". Blue is quoted as purity everywhere else in the
+      // game, but on THIS panel it is a currency and sits next to costs
+      // written `200b/250c` — one letter per resource beats being
+      // faithful to a word the buttons do not use.
+      "b", p.startBlue, p.blue, p.overBlue,
+    );
     return p;
   }
 
@@ -7460,14 +7763,20 @@
         const label = document.createElement("span");
         label.className = "solo-queue-label";
         label.textContent = describeOrbitAction(a);
+        label.title = describeOrbitAction(a);
         const note = document.createElement("span");
         note.className = "solo-queue-note";
         if (flag?.note) note.textContent = `⚠ ${flag.note}`;
         const drop = document.createElement("button");
         drop.type = "button";
-        drop.className = "cli-btn cc-add-btn cc-clear-btn solo-queue-drop";
-        drop.textContent = "[ x ]";
+        // v1.25 — bare glyph, matching the ORDERS composer. `[ x ]` is
+        // 30px against a 172px row at 1024, which was enough to push it
+        // onto a line of its own under a full-width label.
+        drop.className =
+          "cli-btn cc-add-btn cc-clear-btn solo-queue-drop solo-queue-mini";
+        drop.textContent = "\u00d7";
         drop.title = "Remove this action";
+        drop.setAttribute("aria-label", "Remove this action");
         drop.addEventListener("click", () => {
           orbitQueue.splice(ix, 1);
           renderOrbitQueue();
@@ -7567,33 +7876,14 @@
       orbitHarvestersEl.textContent = `${orbitView.harvester_cap_used ?? 0}/${
         orbitView.harvester_cap_max ?? 3
       }`;
-    if (orbitGreenEl)
-      orbitGreenEl.textContent = `${orbitView.green_owned_count ?? 0} (\u03A3${
-        orbitView.green_owned_purity_total ?? 0
-      }p)`;
-    // v1.13 — the RED tier pill is now a settlement preview rather than
-    // a refine-affordance readout: these are the parcels that will ship
-    // on resolve, broken down by the tier multiplier each will score at.
+    // v1.25 — the GREEN / RED-tier / BLUE-tier readouts are gone from
+    // the top of the panel. The tier counts are still needed HERE, for
+    // the settlement preview at the foot, which is the honest home for
+    // them: it says what the vault will DO tonight rather than listing
+    // what is in it, and the VAULT tab carries the inventory itself.
     const tc = (orbitView && orbitView.tier_counts) || {};
-    const tierEl = document.getElementById("cc-orbit-tier-counts");
-    if (tierEl) {
-      tierEl.textContent =
-        `trace ${tc.trace ?? 0} \u00B7 vein ${tc.vein ?? 0} \u00B7 mass ${tc.mass ?? 0} \u00B7 pure ${tc.pure ?? 0}`;
-    }
     _updateSettlementPreview(orbitView, tc);
-    // v0.9.5 — BLUE tier readout. Engine ships the same trace/vein/
-    // mass/pure tier shape; the UI prefers the colloquial BLUE band
-    // names (shallow / mid / sink / deep) so the watcher doesn't
-    // have to remember that "blue trace" = shallow water.
-    const bc = (orbitView && orbitView.blue_tier_counts) || {};
-    const blueEl = document.getElementById("cc-orbit-blue-tier-counts");
-    if (blueEl) {
-      blueEl.textContent =
-        `shallow ${bc.trace ?? 0} \u00B7 mid ${bc.vein ?? 0} \u00B7 sink ${bc.mass ?? 0} \u00B7 deep ${bc.pure ?? 0}`;
-    }
-    const blueTotalEl = document.getElementById("cc-orbit-blue-total");
-    if (blueTotalEl)
-      blueTotalEl.textContent = String(orbitView.blue_purity_total ?? 0);
+    _renderOrbitCosts();
     // v0.9.5 — render the assets roster + repair affordance count.
     // ``assets`` shipped via unit_summary_for_owner. Each row already
     // carries ``damaged``, ``pos``, ``orbit``, ``carrying_red`` so
@@ -7621,11 +7911,6 @@
       .forEach((el) => {
         el.textContent = String(damagedCount);
       });
-    document
-      .querySelectorAll('[data-orbit-action="repair"]')
-      .forEach((b) => {
-        b.classList.toggle("is-disabled", damagedCount === 0);
-      });
     const assetsListEl = document.getElementById("cc-orbit-assets-list");
     const assetsSubEl = document.getElementById("cc-orbit-assets-sub");
     if (assetsListEl) {
@@ -7645,7 +7930,13 @@
         rows.push({
           key: h.id,
           cls: h.damaged ? "is-damaged" : "",
-          text: `X  ${h.label || h.id} \u00B7 ${loc}${tail}`,
+          // v1.25 — the unit id, not the server's display label. The
+          // label reads "Harvester `harvester_p1` (p1)", which spends
+          // most of a 200px rail restating the panel's own context
+          // (it is a harvester, in the harvester list, and it is yours)
+          // and pushed the location and the DAMAGED flag off the edge.
+          text: `X  ${h.id} \u00B7 ${loc}${tail}`,
+          title: h.label || h.id,
         });
       }
       for (const lf of lifters) {
@@ -7656,11 +7947,15 @@
         rows.push({
           key: lf.id,
           cls: "",
-          text: `\u25B2  ${lf.label || lf.id} \u00B7 ${loc}${tail}`,
+          text: `\u25B2  ${lf.id} \u00B7 ${loc}${tail}`,
+          title: lf.label || lf.id,
         });
       }
       const probeStock = Number(orbitView.probe_stock || 0);
-      if (probes.length || probeStock > 0) {
+      // v1.25 — stock is on the FLEET readout above, so this row is only
+      // worth a line when probes are actually out there (and then it is
+      // the only place the expiry warning lives).
+      if (probes.length) {
         const probeDeployed = probes.length;
         // Show per-probe expiry when lifetime knob is active.
         const minNr = probes.reduce((/** @type {number} */ m, /** @type {any} */ p) => {
@@ -7683,18 +7978,15 @@
         li.className = `cc-orbit-asset ${r.cls}`;
         li.dataset.assetId = r.key;
         li.textContent = r.text;
+        if (r.title) li.title = r.title;
         assetsListEl.appendChild(li);
       }
-      if (assetsSubEl) {
-        const pieces = [];
-        pieces.push(
-          `${harvesters.length}/${orbitView.harvester_cap_max ?? 3} harvesters`,
-        );
-        if (damagedCount) pieces.push(`${damagedCount} damaged`);
-        pieces.push(`${lifters.length} lifters`);
-        pieces.push(`${probes.length} probes deployed`);
-        assetsSubEl.textContent = pieces.join(" \u00B7 ");
-      }
+      // v1.25 — the sub-header used to count harvesters, damaged units,
+      // lifters and deployed probes, all four of which are now either on
+      // a readout tile, on the REPAIR row, or enumerated in the list
+      // directly beneath it. A summary of a list you can see is three
+      // lines of a narrow rail spent on nothing.
+      if (assetsSubEl) assetsSubEl.textContent = "";
     }
     const probeInput = document.getElementById("solo-orbit-probe-count");
     const probeChip = document.querySelector("[data-orbit-probe-count]");
@@ -7728,6 +8020,9 @@
     // based on the currently-queued orbit actions, so the seat can see
     // what they'll have left BEFORE committing.
     updateOrbitBudgetProjection();
+    // v1.25 — must run AFTER the projection: what you can afford is a
+    // question about the remainder, not the opening balance.
+    _updateOrbitAffordability(orbitView, damagedCount);
   }
 
   async function submitSoloOrbit() {
@@ -7844,21 +8139,16 @@
 
   document.querySelectorAll(".solo-add-orbit").forEach((btn) => {
     btn.addEventListener("click", () => {
-      // v0.9.1 — a disabled button (nothing affordable, 0 damaged, etc.)
-      // must not enqueue a no-op. Repair is the exception: the modal opens
-      // regardless so the player can see all harvester statuses.
-      if (btn.classList.contains("is-disabled")) {
-        const kind = btn.getAttribute("data-orbit-action") || "";
-        if (kind === "repair") {
-          openRepairSubmit();
-          return;
-        }
-        if (orbitErr) {
-          orbitErr.textContent = "! can't afford that right now";
-          orbitErr.hidden = false;
-        }
-        return;
-      }
+      // v1.25 — a dimmed button is NOT refused any more.
+      //
+      // v0.9.1 bounced the click with "! can't afford that right now".
+      // That is wrong on this panel for a reason that only shows up once
+      // you have a queue: the engine spends in DECLARED ORDER and the
+      // composer already annotates a row it cannot pay for. So "I cannot
+      // afford this" is a statement about the rows ABOVE it, and the fix
+      // is often to queue the expensive thing first and trim what sits
+      // over it — which the refusal made impossible to even express.
+      // Dimming now carries the warning and the row carries the verdict.
       const kind = btn.getAttribute("data-orbit-action") || "";
       const action = makeOrbitActionFromButton(kind);
       if (action) {
@@ -7972,6 +8262,23 @@
     // only offer an [ adopt ] that has nowhere to land.
     cancelAdvisor({ silent: true });
 
+    // v1.28 — and disarm the picker, for the same reason one line up.
+    // The path picker is STICKY: chaining re-arms after every click and
+    // only [ stop ] takes it down, so the banner is almost always still
+    // up when TRANSMIT is pressed. It blinks twice a second
+    // (`pick-blink`), so it sat flashing over the board through the whole
+    // commit — an instruction to "click neighbour to chain" addressed to
+    // a queue that has already gone.
+    //
+    // v1.26 added a disarm on the phase flip, which does eventually clear
+    // it, but that waits on the 2.5s poller: correct, and far too late to
+    // be the only one. This is deliberately placed AFTER the strand and
+    // full-vault guards, both of which bail and leave you still composing
+    // — disarming there would take the aim away as a punishment for
+    // reading a warning.
+    exitPickMode();
+    exitAssetSelect();
+
     // v0.8.1 — start the density-shade animation now that we know
     // we'll actually post to the server.
     const stopAnim = startTransmittingAnim(
@@ -8064,7 +8371,20 @@
         "ok",
         "✓",
       );
-      await pullAllMaps({ playFx: true });
+      // v1.26 — this is the NIGHT transmit, so a night is coming and its
+      // frames may still be in flight; wait for them rather than revealing
+      // the outcome and animating it afterwards.
+      //
+      // Deliberately NOT keyed off `body.night_resolved`, which was the
+      // first attempt and silently did nothing: against a bot seat the
+      // server kicks the agent in the BACKGROUND and answers before the
+      // phase moves, so a night that resolves a beat later reports
+      // `night_resolved: false` here. That is the exact case that needs
+      // the wait, so testing the flag disabled the fix precisely where it
+      // was wanted. The two paths that genuinely have no night to wait for
+      // return earlier: a multi-human / slow-agent submit hands off to the
+      // poller above, and the ORBIT transmit is a different function.
+      await pullAllMaps({ playFx: true, expectNightFrames: true });
     } catch (e) {
       errSoloEl.textContent = "! " + (e.message || e);
       errSoloEl.hidden = false;
@@ -8325,10 +8645,20 @@
       const deltas = [];
       for (const hid of harvs) {
         const seat = String(hid).split("_")[1] || "";
-        if (singleSeat && seat !== replayViewSeat) continue;
         deltas.push({
           kind: "drop_bounce", from: null, to: at, glyph: "X",
+          // v1.28 — `owner` was never set here, and station.js reads
+          // `delta.owner || "p1"`, so every bounce glyph launched off P1's
+          // platform. In a duel that meant your own bounce animated on the
+          // wrong seat's station half the time.
+          owner: seat,
           fg: ownerColor(seat), damaged: true, idx: unitOrdinal(hid),
+          // v1.28 — a rival's bounce is still not DRAWN: the contested tile
+          // is a private landing location. But the launch that produced it
+          // left a platform in plain view, so the delta now survives as a
+          // station-only event instead of being dropped here. See
+          // _emitOrbitalPlatformEvent.
+          stationOnly: singleSeat && seat !== replayViewSeat,
         });
       }
       return deltas.length ? deltas : null;
@@ -9209,6 +9539,48 @@
     }
   }
 
+  /** Announce a rival orbital movement on their PLATFORM only, with
+   *  nothing drawn on the board.
+   *
+   *  RULEBOOK §3.15 splits a harvester deployment in two. The landing
+   *  CELL is private — the orblift bends through the magnetosphere and
+   *  orbital observers lose it at the cover boundary. The platform
+   *  ACTIVITY is not: how many harvesters a House launched and recovered
+   *  on a given Nox, and whether the recovered ones came home loaded or
+   *  damaged, is already printed for every seat in the Pre-Orbital Recap
+   *  (§3.15.2, `tally_orbital_activity` / `tally_orbital_events`).
+   *
+   *  Before v1.28 the client honoured only the first half. One gate
+   *  suppressed the whole delta, so a rival's night in fog was silent on
+   *  their station too — the panels sat dead while the recap that
+   *  followed reported four launches. This is safe to show because the
+   *  station glyph takes no cell: `osOnEntityArrival` ignores its
+   *  `targetCell` argument entirely, and `_osQueueAnim` builds the arc
+   *  from the platform diamond to the board's outer edge, deliberately
+   *  hugging the gutter so craft never cross the play area.
+   *
+   *  A bounce is announced as a plain launch, not as the `✕` variant: the
+   *  observer watches it leave and loses it at the cover, so they never
+   *  learn whether it set down. A recovery keeps its cargo and damage
+   *  flags, because those are exactly the `recovered_carrying` /
+   *  `recovered_damaged` columns the recap already publishes. */
+  function _emitOrbitalPlatformEvent(d) {
+    if (typeof osOnEntityArrival !== "function") return;
+    const owner = d && d.owner;
+    if (!owner) return;
+    if (d.kind === "drop" || d.kind === "drop_bounce") {
+      osOnEntityArrival({ kind: "drop", owner }, null);
+    } else if (d.kind === "pickup") {
+      osOnEntityArrival({
+        kind: "pickup", owner,
+        loaded: d.loaded, damaged: d.damaged, emped: d.emped,
+      }, null);
+    }
+    // A `step` is surface movement with no platform event, and a `probe`
+    // never reaches here — its launch is public in full and animates
+    // through the normal path.
+  }
+
   function runReplayAnimationsTick(host, tick, beforeTickFrame) {
     cancelInflightReplayAnimations();
     let _maxLead = 0;   // longest orbit→surface sequencing lead this tick
@@ -9238,14 +9610,26 @@
       // event (e.g. a simultaneous-drop collision), an array of them.
       const list = Array.isArray(delta) ? delta : [delta];
       for (const d of list) {
-        // In a single-seat view, an ENEMY action only animates when the
-        // unit is actually visible to that seat (probe launches are the
-        // exception — the launch streak/marker is public, §3.15, so it
-        // always plays). Own-seat frames and OBS/both always animate.
-        // This replaces the old blanket "skip every non-owner frame"
-        // that made visible enemy steps / drops / pickups teleport.
-        if (isEnemyFrame && curF.tag !== "probe"
-            && !_enemyDeltaVisibleToViewer(d, prevF, curF)) {
+        // In a single-seat view, an ENEMY action only animates ON THE
+        // BOARD when the unit is actually visible to that seat (probe
+        // launches are the exception — the launch streak/marker is
+        // public, §3.15, so it always plays). Own-seat frames and
+        // OBS/both always animate. This replaces the old blanket "skip
+        // every non-owner frame" that made visible enemy steps / drops /
+        // pickups teleport.
+        //
+        // v1.28 — "not on the board" is no longer "not at all". A drop or
+        // a recovery the viewer cannot see still moved a craft off a
+        // platform they CAN see, so it is handed to the station panel
+        // alone. Deliberately routed before the `_maxLead` bookkeeping
+        // below: the station queue is an independent RAF loop that a tick
+        // advance does not cancel, so the glyph completes on its own and
+        // holding the replay for it would only buy dead air on a board
+        // where, by definition, nothing is going to happen.
+        if (d.stationOnly
+            || (isEnemyFrame && curF.tag !== "probe"
+                && !_enemyDeltaVisibleToViewer(d, prevF, curF))) {
+          _emitOrbitalPlatformEvent(d);
           continue;
         }
         // A branch that defers itself beyond its kind's nominal lead (the
@@ -10053,6 +10437,22 @@
     if (reduceMotionMq.matches) return;
     const events = Array.isArray(frame?.mine) ? frame.mine : [];
     if (!events.length) return;
+    // v1.28 — announce the minelayer on its platform. This is a SEPARATE
+    // pass, ahead of the board loop, for two reasons the board loop
+    // cannot serve: it skips a rival's lay on a fogged cell (correctly —
+    // the mine's position is private), and it also skips any cell not
+    // currently in the DOM. Both would take the launch with them.
+    //
+    // Mines were the one weapon with no station glyph at all — not even
+    // for your own — while `tally_orbital_activity` has counted `mines`
+    // as a public column beside `emps` and `chaff` since v0.9.11. So the
+    // recap has always reported a launch the platform never made.
+    if (typeof osOnEntityArrival === "function") {
+      for (const ev of events) {
+        if (ev?.kind !== "mine_lay") continue;
+        osOnEntityArrival({ kind: "mine_emit", owner: ev.owner }, null);
+      }
+    }
     for (const ev of events) {
       const xy = Array.isArray(ev?.at) ? ev.at : null;
       if (!xy) continue;
@@ -12628,6 +13028,47 @@
    *  `footprint` entry is the one that matters most — it is diffed against
    *  the engine's own AoE helpers, which is the check that catches the
    *  client's copy of a radius drifting from the rules. */
+  /** Test hook for scripts/_fx_orders.py. The ORDERS panel's own state
+   *  is the queue, so the harness composes one directly rather than
+   *  driving twenty clicks — what it is checking is the RENDER (column
+   *  alignment, the overdraft note, the stranding sticker), not the
+   *  click plumbing, which the map-click path already covers. */
+  // v1.26 — right-click menu probe. The menu is torn down by any board
+  // repaint, so a harness that opens it with a synthetic event and then
+  // reads the DOM races the poller; `model` returns what WOULD be built
+  // for a square without opening anything, which is race-free.
+  window.__SOC_MENU_DBG__ = {
+    allowed: () => _boardMenuAllowed(),
+    model: (x, y) => _boardMenuModel(x, y).map((i) => ({
+      head: i.head || null,
+      label: i.label || i.dim || null,
+      note: i.note || null,
+      actionable: Boolean(i.run),
+      warn: Boolean(i.warn),
+    })),
+    open: (x, y, cx, cy) => openBoardMenu(x, y, cx ?? 200, cy ?? 200),
+    close: () => closeBoardMenu(),
+    isOpen: () => Boolean(_boardMenuEl),
+    queue: () => soloQueue.map((m) => ({ ...m })),
+  };
+
+  window.__SOC_ORDERS_DBG__ = {
+    addQueueRow: (action, x, y, unit) => addQueueRow(action, x, y, unit),
+    rerender: () => { renderOrdersAssetRoster(); renderSoloQueue(); },
+    firstHarvester: () => {
+      for (const id of ownedAssetIds()) {
+        if (String(id).startsWith("harvester")) return String(id);
+      }
+      return null;
+    },
+    stranded: () => strandedHarvesterIds(),
+    planLine: (unit) => _ordersUnitPlanLine(unit),
+    stock: () => ({
+      probe: Number((lastOrbitView && lastOrbitView.probe_stock) || 0),
+      ...((lastOrbitView && lastOrbitView.weapon_stock) || {}),
+    }),
+  };
+
   window.__SOC_AOE_DBG__ = {
     footprint: (action, x, y, w, h) => _actionFootprint(action, x, y, w, h),
     aim: (action) => {
@@ -12674,6 +13115,19 @@
     // point of the pending/consume handover.
     source: () => (mainMapSource === "replay" && _visionFrame ? "replay" : "live"),
     tip: (c, x, y) => formatCellTip(c, x, y, undefined),
+  };
+
+  /** v1.28 — read-only view of the three things the extract strip's
+   *  visibility turns on. The strip is omniscient (seed, whole-map RED
+   *  total, every seat's take), so a harness checking it is hidden has to
+   *  prove it reached the state where it WOULD have shown — otherwise
+   *  "no data loaded yet" and "correctly suppressed" are the same PASS. */
+  window.__SOC_HEADER_DBG__ = {
+    extraction: () => replayExtraction,
+    seed: () => replaySeed,
+    mapSource: () => mainMapSource,
+    watchMode: () => WATCH_MODE,
+    livePhase: () => livePhase,
   };
 
   function paintRedsignOverlay() {
@@ -13091,7 +13545,20 @@
     // /replay for the night cinematic, so the extraction payload is sitting
     // on the client in a fogged game too, and it is omniscient — the map's
     // total RED and every seat's take.
-    const surfaceOk = WATCH_MODE || mainMapSource === "replay";
+    //
+    // v1.28 — ...except it WASN'T barred, because the night cinematic sets
+    // ``mainMapSource = "replay"``. So the strip surfaced over the board on
+    // every night of every live game, which is where it was reported. The
+    // v1.22 comment above states the rule the v1.22 code then failed to
+    // implement, which is why it survived a version.
+    //
+    // Three separate leaks, worst first: the SEED lets you regenerate the
+    // whole board offline; RED ON MAP is a total you cannot see through fog;
+    // and EXTRACTED is summed over EVERY seat, so knowing your own take
+    // subtracts to your rival's. A finished season leaks none of them —
+    // the endgame card already publishes every score — so completion, not
+    // the map source, is the gate.
+    const surfaceOk = WATCH_MODE || livePhase === "season_complete";
     const showing = surfaceOk && !!x && x.map_red_value > 0;
     if (!showing) {
       strip.hidden = true;
@@ -13826,14 +14293,17 @@
    *  session are hidden, every active seat row is updated. */
   /** v0.9.9 — Render the permanent top-right HUD scoreboard.
    *
-   *  Reads ``cumulative_shipped_score`` straight off /status (live)
-   *  or /replay (final season totals). One row per active seat; the
-   *  panel itself is hidden when no session is live or when the
-   *  status payload omits the field (legacy server / pre-v0.9.9).
+   *  Takes a seat->score map already chosen by the caller: `/status`'s
+   *  canonical ``scores`` in live play (v1.24), or the final
+   *  ``cumulative_shipped_score`` totals in replay, where the two agree
+   *  because settlement has flushed the vault. One row per active seat;
+   *  the panel hides when no session is live or the payload omits both.
    *
-   *  We deliberately do NOT walk ``shipped_squares`` here — the
-   *  engine bumps the running counter at catapult settlement time
-   *  (see ``_settle_catapult`` v0.9.9), so this is an O(1) read.
+   *  v1.24 — it used to read the shipped cache in BOTH modes. That
+   *  cache excludes GREEN still in the vault, which the scorer charges
+   *  at once, so during the ORBIT phase the HUD ran 100 high per held
+   *  parcel and then dropped when the player submitted. Nothing is
+   *  walked here either way; both are O(1) reads off the payload.
    *
    *  @param {Record<string, number> | null | undefined} scoresByPlayer
    *  @param {string[] | null | undefined} sessionPlayers
@@ -13841,9 +14311,12 @@
   /** v0.9.9 — companion stats panel pinned to the SHIPPED tab so the
    *  tab isn't just "25 empty slots" before anyone has shipped. Lists
    *  every active seat with its cumulative tier-multiplier score and
-   *  the parcel count currently in their shipped bay. Reads the same
-   *  payload as ``renderHudScoreboard`` so both surfaces stay in
-   *  sync.
+   *  the parcel count currently in their shipped bay.
+   *
+   *  Deliberately still fed ``cumulative_shipped_score`` while the HUD
+   *  moved to the canonical score in v1.24: this panel is captioned as
+   *  the SHIPPED bay, so the shipped-only figure is the right one here
+   *  and the two legitimately differ while GREEN is awaiting disposal.
    *
    *  @param {Record<string, number> | null | undefined} scoresByPlayer
    *  @param {string[] | null | undefined} sessionPlayers
@@ -15451,9 +15924,16 @@
           <span class="eg-tally-score">${p.score}</span>
         </div>
         <div class="eg-tally-rows">
-          <div class="eg-trow"><span>shipped score</span><span>${bd.shipped ?? 0}</span></div>
-          <div class="eg-trow"><span>vault red (sold at loss)</span><span>+${bd.vault_red_loss ?? 0}</span></div>
-          <div class="eg-trow eg-trow--neg"><span>green penalty</span><span>-${bd.green_penalty ?? 0}</span></div>
+          <!-- v1.24 — these three now ADD UP to the score above, and the
+               labels say which is which. 'shipped score' used to be the
+               net figure with the green charge already inside it, beside
+               a 'green penalty' line reading 0 (it counted only GREEN
+               still in the vault, and settlement empties the vault) — so
+               the card could show 900 / 0 / 0 against a score of 900 that
+               was really 1300 of red minus 400 of green. -->
+          <div class="eg-trow" title="tier-weighted RED banked at the catapult"><span>shipped red</span><span>${bd.shipped ?? 0}</span></div>
+          <div class="eg-trow" title="RED left in the vault at season end, sold off at half its raw purity"><span>vault red (sold at loss)</span><span>+${bd.vault_red_loss ?? 0}</span></div>
+          <div class="eg-trow eg-trow--neg" title="every GREEN you ended up carrying, whether dumped at settlement or still held"><span>green penalty</span><span>-${bd.green_penalty ?? 0}</span></div>
           <div class="eg-trow eg-trow--sep"><span>credits spent</span><span>${p.credits_spent}</span></div>
           <div class="eg-trow"><span>harvesters built</span><span>${p.harvesters_built}</span></div>
           <div class="eg-trow"><span>blue used</span><span>${p.blue_spent}</span></div>
@@ -17696,9 +18176,15 @@
       renderOrchLog(lastLogTail, focusDay);
       updateNowPlayingStrip();
       renderScoreboard();
-      // v0.9.9 — top-right HUD scoreboard reads ``cumulative_shipped_score``
-      // straight off /status, no extra fetch.
-      renderHudScoreboard(st.cumulative_shipped_score, st.players);
+      // v1.24 — the HUD reads the CANONICAL score (`scores`), falling
+      // back to the shipped cache on a pre-v1.24 server. The cache
+      // omits GREEN still in the vault, which is charged the moment
+      // the orbit settles — so during ORBIT the old HUD read high by
+      // 100 a parcel and then visibly dropped, while `/view` and the
+      // agent percept showed the true figure all along.
+      renderHudScoreboard(
+        st.scores || st.cumulative_shipped_score, st.players,
+      );
       // v0.9.9 — SHIPPED tab companion stats panel. Reads the
       // viewer's shipped count off the cached inventory (set by
       // pullAllMaps' /view round-trip) so the "your bay X/Y" line
@@ -18057,8 +18543,41 @@
     } catch (_e) { /* non-fatal cosmetic drive */ }
   }
 
+  /** v1.24 — is there a resolved night this seat still owes an animation?
+   *
+   *  Read AFTER ``refreshStatus`` (it keys off ``liveSyncDay``). Returns
+   *  false whenever a cinematic could not play anyway — FX off,
+   *  prefers-reduced-motion, or the board already belongs to a running
+   *  cinematic or the scrubber — because in those cases holding the live
+   *  paint back would buy nothing and risk a stale board.
+   */
+  function _nightAwaitingCinematic() {
+    if (!replayLastTurnFx) return false;
+    if (reduceMotionMq.matches) return false;
+    if (_liveFxPlaying || replayTicker) return false;
+    return Number(liveSyncDay || 0) > _lastCinematicDay;
+  }
+
+  /** v1.26 — how long a pull that MEANS to animate will wait for a
+   *  resolved night's frames to appear before giving up and painting the
+   *  end state anyway.
+   *
+   *  There is a bound at all because "the frames have not arrived" and
+   *  "there are no frames" look identical on the wire: the status payload
+   *  counts frames that are already WRITTEN, so a night mid-write is
+   *  indistinguishable from a night that emits nothing. Waiting forever
+   *  on the wrong guess freezes the board, so the wait always terminates
+   *  and a late reveal is the worst case.
+   *
+   *  Sized against the measured Snowflake write path (~10s per seat per
+   *  turn is the agent round-trip; the frame write is well inside that).
+   *  Re-checks often because the common case is that they land early. */
+  const _FRAME_WAIT_MS = 9000;
+  const _FRAME_WAIT_POLL_MS = 900;
+
   async function pullAllMaps({
     playFx = false, stageOrbitBeat = false, claimCinematic = false,
+    expectNightFrames = false,
   } = {}) {
     // v1.21 — never take the board off a running cinematic. This line used
     // to be unconditional, which made ANY concurrent refresh a kill switch
@@ -18082,15 +18601,112 @@
     // ``refreshNightReplay`` because it seeds ``replayWindowCount``.
     _suppressLiveReveal = !!playFx;
     let info;
+    let _heldForPendingNight = false;
+    // v1.26 — how long this pull spent waiting for a resolved night's
+    // frames, and whether they turned up. Recorded on the diagnostic
+    // entry: a wait that times out is the signature of a night whose
+    // frames never arrived, which reads identically on screen to the
+    // old bug and would otherwise be indistinguishable in a report.
+    let _framesWaitedMs = 0;
+    let _framesArrived = null;
     try {
+      // v1.24 — status is fetched ALONE and FIRST, not in the Promise.all.
+      // The map fetch decides whether to paint by reading
+      // ``_suppressLiveReveal``, and that flag can only be set correctly
+      // once we know which night the server is on — running the two
+      // concurrently made it a race, and the race is the bug below.
+      await refreshStatus();
+      // v1.24 — A NIGHT THAT HAS RESOLVED BUT NOT YET ANIMATED OWNS THE
+      // BOARD, whether or not THIS call is the one that will animate it.
+      //
+      // The symptom was "the board shows the full resolved end state, and
+      // only THEN does PRAXIS BEGINS play and step through the night".
+      // ``_suppressLiveReveal`` was ``!!playFx``, so only the pull that
+      // intended to animate held the reveal back. An INCIDENTAL refresh —
+      // closing the orbit report is the known one — arrives with
+      // playFx false, paints the resolved board, and the poller animates a
+      // beat later. The v1.17 note right below already worked out that such
+      // a refresh must leave a pending night PENDING; it only made it stop
+      // CLAIMING the night, not stop PAINTING it.
+      //
+      // ``claimCinematic`` is excluded because those calls (fresh load,
+      // joining a seat, opening a saved season) are the ones DEFINING the
+      // baseline — nothing is pending relative to a baseline you are about
+      // to set, and holding there would leave a blank map on load.
+      if (!playFx && !claimCinematic && _nightAwaitingCinematic()) {
+        _suppressLiveReveal = true;
+        _heldForPendingNight = true;
+      }
       await Promise.all([
-        refreshStatus(),
         refreshObserverMap(),
         refreshSoloPlayerMap(),
       ]);
       info = await refreshNightReplay({ playFx: false });
+      // v1.26 — THE END STATE MUST NEVER PRECEDE THE ANIMATION.
+      //
+      // The complaint, and it is a mood one rather than a correctness
+      // one: the board shows how the night ended, and THEN PRAXIS BEGINS
+      // plays it out. Knowing the result drains the replay of everything
+      // it is for.
+      //
+      // How it happens: the server flips the status to "night resolved"
+      // the instant the engine finishes, but the night's FRAMES are still
+      // being written. We fetch the replay a beat later, get a day that
+      // is still behind, conclude there is nothing new to animate, and
+      // fall through to the branch that paints the resolved board. The
+      // frames land seconds afterwards and the next pull animates a night
+      // whose outcome is already on screen.
+      //
+      // So when the caller expects frames and ours are behind the status,
+      // WAIT for them rather than concluding there is no cinematic. The
+      // reveal stays suppressed for the duration because this sits inside
+      // the try — the board holds its pre-night state, which is exactly
+      // the frame the animation wants to start from.
+      //
+      // `expectNightFrames` comes from the caller because the payload
+      // cannot answer it: an ORBIT settle resolves with no night frames
+      // at all, and is otherwise identical here, so without the hint every
+      // orbit would eat this wait for frames that are never coming. The
+      // poller knows which transition it saw.
+      if (playFx && expectNightFrames && _nightAwaitingCinematic()
+          && Number(info?.lastDay || 0) < Number(liveSyncDay || 0)) {
+        const _until = performance.now() + _FRAME_WAIT_MS;
+        while (
+          performance.now() < _until
+          && Number(info?.lastDay || 0) < Number(liveSyncDay || 0)
+        ) {
+          await new Promise((r) => window.setTimeout(r, _FRAME_WAIT_POLL_MS));
+          // Someone else took the board while we waited (a scrubber, or a
+          // cinematic from an overlapping pull). Stop: they own the reveal
+          // now, and continuing would race them.
+          if (_liveFxPlaying || replayTicker) break;
+          info = await refreshNightReplay({ playFx: false });
+          _framesWaitedMs = Math.round(
+            _FRAME_WAIT_MS - (_until - performance.now()),
+          );
+        }
+        _framesArrived =
+          Number(info?.lastDay || 0) >= Number(liveSyncDay || 0);
+      }
     } finally {
       _suppressLiveReveal = false;
+    }
+    // Deliberately NOT repainted here. Holding the board and then painting
+    // it at the end of this call would reproduce the exact bug one tick
+    // later. The pre-night board stays up and the poller's next playFx pull
+    // animates into it — and if FX are off or the frames never arrive, that
+    // pull lands in the `else if (playFx)` branch below, which paints.
+    if (_heldForPendingNight) {
+      (window._socCinematicLog ||= []).push({
+        at: new Date().toISOString(),
+        held: true,
+        statusDay: liveSyncDay,
+        lastCinematicDay: _lastCinematicDay,
+        note: "held the live board for a night not yet animated",
+      });
+      if (window._socCinematicLog.length > 40) {
+        window._socCinematicLog.shift();
+      }
     }
     // v1.17 — a load that isn't meant to animate (new game, joining a seat,
     // opening a saved season) claims whatever night it finds as already
@@ -18146,6 +18762,12 @@
         statusFrames: replayWindowCount,
         played: wantCinematic,
         skippedBecause: why,
+        // v1.26 — did this pull hold the reveal back waiting for frames,
+        // and did they come? `framesArrived: false` means the wait timed
+        // out and the paint below is a deliberate fallback, not the bug.
+        expectNightFrames,
+        framesWaitedMs: _framesWaitedMs,
+        framesArrived: _framesArrived,
       };
       (window._socCinematicLog ||= []).push(entry);
       if (window._socCinematicLog.length > 40) {
@@ -18162,11 +18784,32 @@
       // mid-play must not queue a second run of the same night.
       _lastCinematicDay = _infoDay;
       await _playNightCinematic(findFirstCinematicTickOfDay(_infoDay));
-    } else if (playFx && _cinematicOwnsBoard) {
-      // A cinematic was already mid-play when this refresh arrived, so the
-      // night IS being shown — just not by us. Repainting the resolved board
-      // here is the visible "it jumped to the end state" half of the bug.
-      // Leave the board alone and let the running cinematic finish.
+    } else if (playFx && (_cinematicOwnsBoard || _liveFxPlaying)) {
+      // A cinematic is mid-play, so the night IS being shown — just not by
+      // us. Repainting the resolved board here is the visible "it jumped to
+      // the end state" half of the bug. Leave it alone and let it finish.
+      //
+      // v1.26 — THE SECOND TERM IS THE LOAD-BEARING ONE, and its absence was
+      // the bug the diagnostic finally caught. `_cinematicOwnsBoard` is
+      // sampled at the top of this function, which is right for the
+      // assignment it guards up there (same tick, no await between) and
+      // WRONG here: four awaits separate the two, ~1.1s of them against
+      // Snowflake. So a cinematic started by an OVERLAPPING pull during our
+      // fetch window is invisible to the stale snapshot, and this call
+      // walked into the paint branch below and killed it.
+      //
+      // Recorded shape of the failure, for the next person: pull A plays
+      // day 1 and parks in its dusk hold; pull B — which entered a beat
+      // BEFORE A began, so its snapshot reads false — lands mid-hold,
+      // paints the live end state, and A then bails at `after-dusk-hold`
+      // with `map source is "live" (wanted "replay")`. Three log entries,
+      // 1.6s apart, and the middle one is the culprit.
+      //
+      // Reading `_liveFxPlaying` LIVE is the whole fix; the stale term is
+      // kept beside it so this stays a strict superset of the old guard
+      // (a cinematic that started before us and finished during our awaits
+      // keeps its existing "leave the board" behaviour rather than
+      // re-painting and risking a second orbit-report pop).
     } else if (playFx) {
       // No cinematic to play, but we suppressed the reveal above — surface
       // the live end-state + any orbit report now (e.g. an orbit settle
@@ -19885,10 +20528,21 @@
         // resolved board. Run the same day-closing beat the resolving seat
         // runs, in the same order (card + sunset, then the pull), so both
         // seats watch the same turn.
-        if (prevPhase === "orbit" && liveSyncPhase !== "orbit") {
+        const _orbitSettle = prevPhase === "orbit" && liveSyncPhase !== "orbit";
+        if (_orbitSettle) {
           await playOrbitNightOpening(liveSyncDay);
         }
-        await pullAllMaps({ playFx: true, stageOrbitBeat: true });
+        // v1.26 — every resolve EXCEPT the orbit settle is a night, and a
+        // night owes the player an animation. Saying so lets the pull wait
+        // for frames still being written instead of painting the outcome
+        // first (see `_FRAME_WAIT_MS`). The orbit settle is excluded on the
+        // authority of the comment right above: it emits no night frames,
+        // so a wait there would be for something that never arrives.
+        await pullAllMaps({
+          playFx: true,
+          stageOrbitBeat: true,
+          expectNightFrames: !_orbitSettle,
+        });
         // Safety net: the cinematic's reveal drops the resolving overlay on
         // the happy path (idempotent here); this covers an interrupted /
         // FX-off cinematic so a committed-wait frame can't get stuck up.
@@ -20814,6 +21468,28 @@
     // view-only), and snap off either command tab.
     const locked = WATCH_MODE || livePhase === "season_complete";
     const isOrbit = !locked && livePhase === "orbit";
+    // v1.26 — AN ARMED AIM DOES NOT SURVIVE LOSING ITS COMPOSER.
+    //
+    // `enterAssetSelect` / `enterPickMode` raise the pick banner and put
+    // the board in pick-mode, and nothing ever took them back on a phase
+    // change — only an explicit [stop], Escape, or completing the order.
+    // So a chain armed during PLANNING was still armed after the night
+    // resolved: banner up over the board reading "click neighbour to
+    // chain", pick-mode cursor live, for a queue whose panel this very
+    // function has just hidden. Since v1.24 the banner also occupies a
+    // real grid row rather than floating, so a stale one permanently
+    // shortens the map.
+    //
+    // The test is deliberately `locked || isOrbit` — the same expression
+    // that hides the ORDERS tab two lines down, so the aim and the panel
+    // it belongs to can never disagree about whether ordering is open.
+    // The board menu goes with them for the same reason (`_boardMenuAllowed`
+    // refuses in both states, but one already open predates the flip).
+    if (locked || isOrbit) {
+      if (assetSelect) exitAssetSelect();
+      if (pickMode) exitPickMode();
+      closeBoardMenu();
+    }
     if (orbitTab) {
       orbitTab.classList.toggle("cc-tab--hidden", locked || !isOrbit);
     }
@@ -21249,6 +21925,24 @@
   });
 
   window.addEventListener("keydown", (ev) => {
+    // v1.26 — the board menu takes the key first while it is open: it is
+    // the frontmost thing on screen, and Escape has to dismiss it before
+    // it reaches the report or the picker underneath.
+    if (_boardMenuEl) {
+      const opts = /** @type {HTMLElement[]} */ (
+        Array.from(_boardMenuEl.querySelectorAll(".board-menu-item"))
+      );
+      const at = opts.indexOf(/** @type {HTMLElement} */ (document.activeElement));
+      if (ev.key === "Escape") { closeBoardMenu(); ev.preventDefault(); return; }
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        if (opts.length) {
+          const step = ev.key === "ArrowDown" ? 1 : -1;
+          opts[(at + step + opts.length) % opts.length].focus();
+        }
+        ev.preventDefault();
+        return;
+      }
+    }
     if (ev.key === "Escape") {
       if (reportEl && !reportEl.hidden) {
         closeReport();
@@ -21369,6 +22063,37 @@
     exitPickMode();
     exitAssetSelect();
   });
+
+  // v1.26 — right-click a square to act on it. Deliberately does NOT
+  // preventDefault when we decline to open (replay, watcher, finished
+  // season): swallowing the native menu everywhere on the board would
+  // take away save-image / inspect for no gain.
+  mapPlayer?.addEventListener("contextmenu", (ev) => {
+    const target = /** @type {HTMLElement | null} */ (ev.target);
+    const cell = target && target.closest ? target.closest(".cell") : null;
+    if (!cell) return;
+    if (!_boardMenuAllowed()) return;
+    const xAttr = cell.getAttribute("data-x");
+    const yAttr = cell.getAttribute("data-y");
+    const x = xAttr != null ? parseInt(xAttr, 10) : NaN;
+    const y = yAttr != null ? parseInt(yAttr, 10) : NaN;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    openBoardMenu(x, y, ev.clientX, ev.clientY);
+  });
+
+  // Dismissal. `mousedown` rather than `click` so the menu is gone
+  // before the board's own click handler can see the press, and capture
+  // so a stopPropagation elsewhere cannot strand it open.
+  document.addEventListener("mousedown", (ev) => {
+    if (!_boardMenuEl) return;
+    const t = /** @type {Node|null} */ (ev.target);
+    if (t && _boardMenuEl.contains(t)) return;
+    closeBoardMenu();
+  }, true);
+  window.addEventListener("resize", closeBoardMenu);
+  window.addEventListener("scroll", closeBoardMenu, true);
 
   syncExpertPanel();
   renderSoloQueue();

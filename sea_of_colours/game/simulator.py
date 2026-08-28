@@ -267,17 +267,20 @@ class NightSimulator:
                 if handled_simul_drop:
                     continue
 
-            # v0.9.17 — hour-start visibility snapshot for live-only drops.
-            # Captured AFTER the pre-hour phase (EMP tick / chaff pre-empt)
-            # but BEFORE any seat acts this hour, so a beacon a rival
-            # destroys later this same hour still validates this hour's
-            # landing (parallel resolution, §3.10). Only computed when the
-            # mode is on — default drops keep their resolve-time LOS.
-            live_snapshot: Dict[str, set] = {}
-            if live_only_drops():
-                live_snapshot = {
-                    p: sess.tiles_visible_now(cast_player(p)) for p in seats
-                }
+            # v0.9.17 — hour-start visibility snapshot for live-only drops,
+            # so a beacon a rival destroys later this same hour still
+            # validates this hour's landing (parallel resolution, §3.10).
+            # Only populated when the mode is on — default drops keep their
+            # resolve-time LOS.
+            #
+            # v1.28 — TAKEN INSIDE ``_pre_hour_phase`` and merely read here.
+            # Recomputing it at this point is the bug that shipped: this
+            # line sits after the pre-hour phase, which is where this hour's
+            # EMP salvos fly, so the "hour-start" snapshot was taken with
+            # the rival's beacons already fried. Do not move it back.
+            live_snapshot: Dict[str, set] = getattr(
+                sess, "_live_snapshot_this_hour", {},
+            ) or {}
 
             preempted = getattr(sess, "_preempted_seats_this_hour", set())
             for p in seats:
@@ -449,6 +452,11 @@ class NightSimulator:
         if hasattr(sess, "_emp_established_cells_this_hour"):
             try:
                 delattr(sess, "_emp_established_cells_this_hour")
+            except AttributeError:
+                pass
+        if hasattr(sess, "_live_snapshot_this_hour"):
+            try:
+                delattr(sess, "_live_snapshot_this_hour")
             except AttributeError:
                 pass
 
@@ -858,6 +866,29 @@ class NightSimulator:
         # from the following hour on.
         established_cloud_cells = sess.cells_in_any_emp_cloud()
 
+        # v1.28 — the hour-start LIVE snapshot for live-only drops is taken
+        # HERE, at the same instant as the established-cloud snapshot above
+        # and for the same reason: this is the moment §4.9.3 already calls
+        # "going into the hour", after this hour's decay/sweep and before
+        # any of this hour's own weapons fly.
+        #
+        # It used to be taken in the main hour loop, AFTER this whole
+        # function returned. That reads like "hour start" and is not:
+        # step 2 below FIRES this hour's EMP salvos, and a salvo kills
+        # probes. So a rival's missile fried the beacon and only then did
+        # the engine record what that seat could "see at hour start",
+        # blanking a landing §3.9.7 explicitly protects — "a beacon a rival
+        # destroys, supersedes, or EMPs LATER in the same hour still
+        # validates that hour's landing". Supersede obeyed the rule and EMP
+        # did not, purely because supersede resolves in normal dispatch
+        # (after the old snapshot) while a launch is pre-empted (before it).
+        # Seen in the wild: Terra_Kestrel day 6 hour 1.
+        live_snapshot: Dict[str, set] = {}
+        if live_only_drops():
+            live_snapshot = {
+                p: sess.tiles_visible_now(cast_player(p)) for p in seat_list
+            }
+
         # 2. Peek + pre-empt chaff / EMP for each seat.
         #
         #    v1.19 — chaff now goes FIRST and can veto this hour's EMP
@@ -990,6 +1021,7 @@ class NightSimulator:
         #    Both are cleared at end of night.
         sess._preempted_seats_this_hour = preempted  # type: ignore[attr-defined]
         sess._emp_established_cells_this_hour = established_cloud_cells  # type: ignore[attr-defined]
+        sess._live_snapshot_this_hour = live_snapshot  # type: ignore[attr-defined]
 
         return disabled
 

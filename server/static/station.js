@@ -804,6 +804,15 @@
     } else if (delta.kind === "emp_launch") {
       const yOff = (Math.random() - 0.5) * 90;
       _osQueueAnim(seat, "■", "#00ffff", side, "out", { dur: 2200, ease: "in", size: 8, yOff, label: "emp" });
+    } else if (delta.kind === "mine_emit") {
+      // v1.28 — the minelayer had no station glyph, so a seat could lay
+      // mines all night with its platform showing nothing. Carries the
+      // ◆ of the board's minelayer arc and the magenta of the mine order
+      // marker, so the weapon reads the same in all three places; the
+      // slower 2800ms sits between the EMP dart and the harvester lift,
+      // which is where a laying run belongs.
+      const yOff = (Math.random() - 0.5) * 90;
+      _osQueueAnim(seat, "◆", "#ff5fd7", side, "out", { dur: 2800, ease: "in", size: 11, yOff, label: "minelayer" });
     } else if (delta.kind === "chaff_flare") {
       const BURST = [
         { ch: "░", yOff: -80, delay:   0, dur: 750, col: "#cccccc" },

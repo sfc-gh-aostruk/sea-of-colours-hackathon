@@ -1,182 +1,200 @@
 #!/usr/bin/env python3
-"""Time the probe vision reveal, ring by ring.
+"""Scratch harness — the resolved board must never appear before the
+animation that explains it.
 
-The disc used to lift in a single frame. It now lifts as a wavefront out
-from the landing square, so the thing worth measuring is no longer "did it
-lift" but "did it lift in distance order" — centre, then the four
-orthogonals, then the diagonals, then outward.
+THE BUG THIS PINS (v1.26). The server flips the status to "night
+resolved" the moment the engine finishes, but the night's FRAMES are
+still being written. A pull that means to animate fetches the replay a
+beat later, gets a day that is still behind, concludes there is nothing
+new to play, and paints the resolved board. The frames land seconds
+afterwards and the NEXT pull animates a night whose outcome is already
+on screen. Reported as "PRAXIS BEGINS still triggers after showing the
+full board end state ... it kills the mood".
 
-Samples which cells still carry `.cell--probe-pending` and reports, per
-Euclidean distance band from the origin, the moment that band cleared.
+HOW IT IS REPRODUCED. The lag is a property of the STORE, so a
+memory-backed game never shows it and a Snowflake one shows it only
+sometimes — neither is testable. Instead the replay RESPONSE is
+intercepted in the browser and the newest night's frames are stripped
+out of it, which is exactly the shape the client sees mid-write. The
+strip is then lifted, standing in for the frames landing.
 
-Usage: python scripts/_fx_reveal.py <tick> <ox> <oy> [base] [slug]
+TWO SESSIONS, because an assertion about the lagged run is worthless
+without evidence the harness can see a cinematic at all: CONTROL runs a
+night untouched, LAGGED runs the same night behind the strip. Both must
+animate; only the lagged one should have waited.
+
+WHY THE SUBMIT IS A CLICK. `startLiveSync` — the poller that spots a
+resolve — is only started for multi-human or joined sessions, so a
+solo game driven by HTTP posts never animates anything and every
+assertion here passes or fails for the wrong reason. Clicking TRANSMIT
+goes through the submit path, which against a fast bot resolves the
+night in the response.
+
+WHAT IS ASSERTED. That the lagged pull WAITED and then PLAYED rather
+than skipping. `played: true` is sufficient to prove the reveal did not
+come first: the paint lives in the `else` of the same branch, so one
+pull cannot both animate and pre-reveal.
+
+Run against a scratch server you own:
+    python run_web.py --port 8022 --replace &
+    python scripts/_fx_reveal.py --base http://127.0.0.1:8022
 """
 from __future__ import annotations
 
-import math
+import argparse
+import json
 import sys
+import urllib.request
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-TICK = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-OX = int(sys.argv[2]) if len(sys.argv) > 2 else 10
-OY = int(sys.argv[3]) if len(sys.argv) > 3 else 10
-BASE = sys.argv[4] if len(sys.argv) > 4 else "http://127.0.0.1:8013"
-SLUG = sys.argv[5] if len(sys.argv) > 5 else "probe-fx-reel"
-SEAT = sys.argv[6] if len(sys.argv) > 6 else "p1"
+OUT = Path(__file__).resolve().parents[1] / "reports" / "reveal"
 
-SAMPLE_JS = """() => {
-  const out = [];
-  for (const c of document.querySelectorAll('#map-player .cell--probe-pending')) {
-    out.push([Number(c.dataset.x), Number(c.dataset.y)]);
-  }
-  return {t: performance.now(), pending: out};
-}"""
+
+def _post(base: str, path: str, body: dict) -> dict:
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())
+
+
+def _new_game(base: str) -> str:
+    game = _post(base, "/api/game/new", {
+        "width": 30, "height": 20, "season_day_cap": 6,
+        "players": ["p1", "p2"],
+        "agents": {"p1": "human", "p2": "red_harvest"},
+        "visibility_mode": "hidden",
+    })
+    return game["session_id"]
+
+
+def _summarise(log: list[dict]) -> list[str]:
+    out = []
+    for e in log:
+        keep = {
+            k: e.get(k) for k in (
+                "replayLastDay", "statusDay", "played", "expectNightFrames",
+                "framesWaitedMs", "framesArrived", "skippedBecause", "stage",
+                "detail",
+            )
+            if e.get(k) not in (None, "")
+        }
+        out.append(json.dumps(keep))
+    return out
+
+
+def _run_night(base: str, br, lag_ms: int, label: str) -> dict:
+    """Play one night and return what the cinematic recorder saw.
+
+    ``lag_ms`` > 0 strips the newest night's frames out of every replay
+    response for that long, then lets the real payload through.
+    """
+    sid = _new_game(base)
+    lagging = {"on": lag_ms > 0, "hits": 0}
+
+    def handle_replay(route) -> None:
+        if not lagging["on"]:
+            route.continue_()
+            return
+        try:
+            resp = route.fetch()
+            body = resp.json()
+        except Exception:
+            route.continue_()
+            return
+        frames = body.get("frames") or []
+        if frames:
+            newest = max(int(f.get("day") or 0) for f in frames)
+            body["frames"] = [
+                f for f in frames if int(f.get("day") or 0) < newest
+            ]
+            lagging["hits"] += 1
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps(body))
+
+    pg = br.new_page(viewport={"width": 1280, "height": 900})
+    pg.route("**/replay*", handle_replay)
+    pg.goto(f"{base}/?session={sid}&player=p1", wait_until="networkidle")
+    pg.wait_for_timeout(2000)
+    pg.evaluate("() => { window._socCinematicLog = []; }")
+
+    pg.locator("#solo-commit-night").click()
+    if lag_ms:
+        pg.wait_for_timeout(lag_ms)
+        lagging["on"] = False
+    # Long enough for the frame wait (<=9s) plus the cinematic itself.
+    pg.wait_for_timeout(22000)
+
+    log = pg.evaluate("() => window._socCinematicLog || []")
+    pg.screenshot(path=str(OUT / f"{label}.png"))
+    pg.close()
+    return {"sid": sid, "log": log, "stripped": lagging["hits"]}
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default="http://127.0.0.1:8022")
+    ap.add_argument("--lag-ms", type=int, default=3000)
+    args = ap.parse_args()
+    base = args.base.rstrip("/")
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    fails: list[str] = []
     with sync_playwright() as p:
-        br = p.chromium.launch(channel="chrome")
-        pg = br.new_page(viewport={"width": 1600, "height": 1000})
-        pg.goto(f"{BASE}/watch.html?season={SLUG}",
-                wait_until="networkidle", timeout=60_000)
-        pg.wait_for_timeout(2500)
-        pg.evaluate("""() => {
-          for (const id of ['cc-victor', 'cc-endgame', 'cc-report',
-                            'cc-resolving-overlay']) {
-            const el = document.getElementById(id);
-            if (el) { el.style.display = 'none'; el.hidden = true; }
-          }
-        }""")
-        # The watcher opens on OBS, which sees the whole board — so no cell
-        # is ever fogged and nothing is ever masked. Take a seat's own
-        # fog-of-war view or there is no reveal to measure.
-        seat_btn = pg.query_selector(
-            f'.cc-replay-view-btn--seat[data-seat="{SEAT}"]'
-        )
-        if seat_btn is None:
-            print(f"! no seat button for {SEAT} — is this a replay?")
-            br.close()
-            return 1
-        seat_btn.click()
-        pg.wait_for_timeout(600)
+        br = p.chromium.launch()
 
-        pg.evaluate(
-            "() => { const s = document.getElementById('replay-scrub');"
-            " if (s) { s.value = '0';"
-            " s.dispatchEvent(new Event('input', {bubbles: true})); } }"
-        )
-        pg.wait_for_timeout(1200)
+        control = _run_night(base, br, 0, "control")
+        print(f"CONTROL {control['sid'][:8]} — no lag")
+        for line in _summarise(control["log"]):
+            print("   " + line)
+        if not [e for e in control["log"] if e.get("played")]:
+            fails.append(
+                "the CONTROL night did not animate with nothing injected, "
+                "so this harness cannot observe a cinematic and the lagged "
+                "result below means nothing"
+            )
 
-        nxt = pg.query_selector("#replay-next")
-        for _ in range(TICK):
-            nxt.click()
-            pg.wait_for_timeout(1500)
-        pg.wait_for_timeout(2000)
-
-        nxt.click()
-        t0 = None
-        # cell -> first sample time at which it was no longer pending
-        cleared: dict[tuple[int, int], float] = {}
-        seen: set[tuple[int, int]] = set()
-        prev: set[tuple[int, int]] = set()
-        shape: list[tuple[float, set[tuple[int, int]]]] = []
-        for _ in range(90):
-            s = pg.evaluate(SAMPLE_JS)
-            if t0 is None:
-                t0 = s["t"]
-            now = s["t"] - t0
-            cur = {(int(x), int(y)) for x, y in s["pending"]}
-            seen |= cur
-            shape.append((now, cur))
-            for cell in prev - cur:
-                cleared.setdefault(cell, now)
-            prev = cur
-            pg.wait_for_timeout(40)
-
-        if not seen:
-            print("! no masked cells seen — wrong tick, or nothing revealed")
-            br.close()
-            return 1
-
-        bands: dict[float, list[float]] = {}
-        never = 0
-        for cell in seen:
-            d = round(math.hypot(cell[0] - OX, cell[1] - OY) * 2) / 2
-            if cell in cleared:
-                bands.setdefault(d, []).append(cleared[cell])
-            else:
-                never += 1
-
-        print(f"origin ({OX},{OY}) · {len(seen)} masked cells")
-        print(f"{'dist':>5}  {'cells':>5}  {'cleared at':>11}")
-        base = None
-        for d in sorted(bands):
-            ts = bands[d]
-            at = sum(ts) / len(ts)
-            if base is None:
-                base = at
-            print(f"{d:>5}  {len(ts):>5}  {at:>8.0f}ms  (+{at - base:.0f}ms)")
-        if never:
-            print(f"! {never} cell(s) never cleared")
-
-        # The numbers say the rings lift in order. This says what shape the
-        # front actually is: `#` still fogged, `.` lifted.
-        first = min(bands[min(bands)])
-        lo_x = min(c[0] for c in seen)
-        hi_x = max(c[0] for c in seen)
-        lo_y = min(c[1] for c in seen)
-        hi_y = max(c[1] for c in seen)
-        for want in (first - 40, first + 60, first + 140, first + 220):
-            t, cur = min(shape, key=lambda s: abs(s[0] - want))
-            print(f"\n  t{t - first:+.0f}ms  ({len(cur)} still fogged)")
-            for y in range(lo_y, hi_y + 1):
-                row = "".join(
-                    "#" if (x, y) in cur else "."
-                    for x in range(lo_x, hi_x + 1)
-                )
-                print(f"    {row}")
-
-        # Numbers say the rings lift in order; they don't say the front
-        # reads as round. Replay the same tick and contact-sheet the disc
-        # across the sweep.
-        first = min(bands[min(bands)])
-        pg.evaluate(
-            "() => { const s = document.getElementById('replay-scrub');"
-            " if (s) { s.value = '0';"
-            " s.dispatchEvent(new Event('input', {bubbles: true})); } }"
-        )
-        pg.wait_for_timeout(1200)
-        for _ in range(TICK):
-            nxt.click()
-            pg.wait_for_timeout(1500)
-        pg.wait_for_timeout(2000)
-        box = pg.evaluate(
-            """([ox, oy]) => {
-                 const e = document.querySelector(
-                   `#map-player [data-x="${ox}"][data-y="${oy}"]`);
-                 if (!e) return null;
-                 const r = e.getBoundingClientRect();
-                 return {x: r.left - r.width * 4, y: r.top - r.height * 4,
-                         width: r.width * 9, height: r.height * 9};
-               }""",
-            [OX, OY],
-        )
-        if box:
-            nxt.click()
-            t_click = pg.evaluate("() => performance.now()")
-            shots = []
-            for i in range(8):
-                target = first - 60 + i * 55
-                while pg.evaluate("() => performance.now()") - t_click < target:
-                    pg.wait_for_timeout(8)
-                path = f"/tmp/reveal_{i:02d}.png"
-                pg.screenshot(path=path, clip=box)
-                shots.append((round(target - first), path))
-            print("frames: " + ", ".join(f"{d:+}ms {p}" for d, p in shots))
+        lagged = _run_night(base, br, args.lag_ms, "lagged")
+        print(f"\nLAGGED  {lagged['sid'][:8]} — "
+              f"{lagged['stripped']} replay responses stripped")
+        for line in _summarise(lagged["log"]):
+            print("   " + line)
         br.close()
+
+    log = lagged["log"]
+    if not lagged["stripped"]:
+        fails.append(
+            "no replay response was stripped, so the lag was never "
+            "simulated — check the route glob"
+        )
+    if not [e for e in log if (e.get("framesWaitedMs") or 0) > 0]:
+        fails.append(
+            "no pull waited for the withheld frames — the reveal-order "
+            "guard did not engage (expectNightFrames unset, or the replay "
+            "was never behind the status)"
+        )
+    if not [e for e in log if e.get("played")]:
+        fails.append(
+            "the lagged night never animated: the board was revealed and "
+            "PRAXIS BEGINS was skipped — the reported bug"
+        )
+    bailed = [e for e in log if e.get("stage")]
+    if bailed:
+        fails.append(f"a cinematic bailed mid-play: {bailed[0].get('detail')}")
+
+    print()
+    if fails:
+        for f in fails:
+            print(f"FAIL: {f}")
+        return 1
+    print(f"shots in {OUT}")
+    print("PASS")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

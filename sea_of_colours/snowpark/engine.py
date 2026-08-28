@@ -1598,6 +1598,20 @@ def get_replay(
         # Drives the animated "+red fire-sale" / "-green penalty" delta lines
         # in the closing DUSK RESOLVE beat, and lets the station readouts fold
         # from shipped-only up/down to the canonical final score.
+        # NOTE (v1.24) — deliberately NOT switched to
+        # ``compute_score_breakdown``, though it looks like the same
+        # thing. These four numbers drive station.js's RESOLVE animation,
+        # which TWEENS the already-displayed running score by each line,
+        # so they must be the deltas NOT yet reflected on the scoreboard —
+        # not the season's totals. Disposed GREEN was debited from
+        # ``cumulative_shipped_score`` when it was disposed, so feeding
+        # the card's (correct) whole-season green figure in here would
+        # subtract it a second time on screen. The results card in
+        # ``get_endgame_summary`` is the one that wants totals.
+        # (Related: ``vault_green_count`` is 0 once settlement has
+        # flushed the vault, so the green delta line effectively never
+        # fires today. Left alone — it is cosmetic and unverified without
+        # a full season in a browser.)
         "settlement": (
             {
                 p: {
@@ -1803,29 +1817,81 @@ def get_endgame_summary(store: SocStore, session_id: str) -> Dict[str, Any]:
         GREEN_ENDGAME_PENALTY,
         RED_QUALITY_MULTIPLIER,
         SEASON_DAY_CAP,
+        compute_score_breakdown,
         owner_color_css,
     )
     from sea_of_colours.game.player_names import SEAT_LABEL
 
-    def _parcel_score_value(parcel: Mapping[str, Any]) -> tuple[int, int, str]:
-        """Per-parcel shipped score (matches ``compute_player_score``).
+    def _parcel_is_green(parcel: Mapping[str, Any]) -> bool:
+        """Is this SHIPPED row an auto-disposed GREEN parcel?
 
-        Returns ``(value, effective_purity, tier)``. The value is the
-        tier-weighted effective purity — NOT the parcel's stale ``score``
-        field, which can sit at 0 even for a scoring parcel.
+        Mirrors ``compute_player_score`` exactly, including its fallback:
+        prefer the origin tile, and only if that is unreadable fall back
+        to the ``score_tier`` label.
         """
+        origin = parcel.get("tile_at_harvest")
+        if origin is None:
+            origin = parcel.get("origin_tile")
+        try:
+            return int(origin) == int(Tile.GREEN)
+        except (TypeError, ValueError):
+            return parcel.get("score_tier") == "green"
+
+    def _parcel_score_exact(parcel: Mapping[str, Any]) -> tuple[float, int, str]:
+        """Per-parcel score contribution, UNROUNDED.
+
+        v1.24 — this is the same term ``compute_player_score`` sums, and
+        it now agrees with it on both counts it used to get wrong:
+
+        * **GREEN is a charge, not a zero.** Auto-disposed GREEN is
+          appended to ``shipped_squares`` carrying its GREEN origin tile
+          (``OrbitResolver._dispose_green_auto``) and the scorer subtracts
+          ``GREEN_ENDGAME_PENALTY`` for it. This helper had no GREEN
+          branch, so it priced a disposed parcel at
+          ``effective_purity 0 x mult = 0`` — which is why the cumulative
+          shipped curve ran ABOVE the final score by exactly 100 per
+          disposed GREEN (Nubes_Fissure: Piotr's curve ended 1289 against
+          a true 900, and 4 of that 389 gap was 4 greens).
+        * **Rounding happens ONCE, at the end.** The scorer accumulates
+          floats and rounds the total; this rounded every parcel, so a
+          seat carrying many ``trace`` rows (x0.75, i.e. rarely an
+          integer) drifted a point or two. Florian's manifest came to 624
+          against a true 626 for exactly that reason.
+        """
+        if _parcel_is_green(parcel):
+            return -float(GREEN_ENDGAME_PENALTY), 0, "green"
         eff = parcel.get("effective_purity")
         if eff is None:
             eff = sess._parcel_purity(parcel)
         eff = max(0, int(eff))
         tier = parcel.get("score_tier") or sess._tier_for_purity(eff)
-        value = int(round(eff * RED_QUALITY_MULTIPLIER.get(tier, 1.0)))
-        return value, eff, tier
+        return eff * RED_QUALITY_MULTIPLIER.get(tier, 1.0), eff, tier
+
+    def _parcel_score_value(parcel: Mapping[str, Any]) -> tuple[int, int, str]:
+        """Rounded per-parcel score, for a single manifest row's display."""
+        value, eff, tier = _parcel_score_exact(parcel)
+        return int(round(value)), eff, tier
 
     sess = _hydrate_session(store, session_id)
     seats: List[str] = list(sess.players)
     cap = int(getattr(sess, "season_day_cap", None) or SEASON_DAY_CAP)
-    days = list(range(1, cap + 1))
+    # v1.24 — the axis has to reach the SETTLEMENT day, which is cap + 1.
+    # The terminal orbit resolves after the last played night and stamps
+    # ``shipped_day = cap + 1`` on everything it ships, so an axis of
+    # 1..cap silently dropped the whole final settlement off the
+    # cumulative-shipped curve — Lucas banked 429 points on day 8 of a
+    # 7-night season and the chart's last point still read 1840 against a
+    # final 2069. Derived from the parcels rather than assumed, so a
+    # season that settles some other way still charts completely.
+    last_shipped_day = cap
+    for _seat_parcels in (sess.shipped_squares or {}).values():
+        for _p in _seat_parcels or []:
+            try:
+                _d = int(_p.get("shipped_day") or _p.get("shipped_on_day") or 0)
+            except (TypeError, ValueError):
+                continue
+            last_shipped_day = max(last_shipped_day, _d)
+    days = list(range(1, last_shipped_day + 1))
 
     def _tile_of(parcel: Mapping[str, Any]) -> Optional[int]:
         t = parcel.get("tile_at_harvest")
@@ -1915,13 +1981,27 @@ def get_endgame_summary(store: SocStore, session_id: str) -> Dict[str, Any]:
                 green_jettisoned += len(parcels)
 
         # Score breakdown.
-        shipped_score = float(sess.cumulative_shipped_score.get(seat, 0.0) or 0.0)
-        green_penalty = GREEN_ENDGAME_PENALTY * sess.vault_green_count(seat)
-        vault_red_loss = (
-            sess.vault_red_loss_value(seat)
-            if sess.is_season_complete()
-            else 0.0
+        #
+        # v1.24 — decomposed off the parcels so the three lines actually
+        # ADD UP to the score on the card. It used to read ``shipped`` off
+        # ``cumulative_shipped_score`` and ``green_penalty`` off
+        # ``vault_green_count``, and those two describe different worlds:
+        # GREEN is auto-disposed into SHIPPED at settlement, so by the
+        # time the card renders the vault holds no GREEN (penalty line
+        # reads 0) while its cost is already buried inside the shipped
+        # figure. A seat could pay 400 in GREEN charges and the card would
+        # say "shipped 900, green 0" with nothing to explain the gap —
+        # which is exactly the "the end score doesn't match" report.
+        # Now: shipped is RED only, and green_penalty is every GREEN
+        # charged, wherever the parcel currently sits.
+        _bd = compute_score_breakdown(
+            sess.shipped_squares.get(seat, []),
+            sess.hoard_squares.get(seat, []),
+            is_complete=sess.is_season_complete(),
         )
+        shipped_score = _bd["shipped"]
+        green_penalty = _bd["green_penalty"]
+        vault_red_loss = _bd["vault_red_loss"]
 
         stats = sess.season_stats.get(seat) or {}
         credits_spent = int(
@@ -2039,15 +2119,18 @@ def get_endgame_summary(store: SocStore, session_id: str) -> Dict[str, Any]:
         # parcel landed in day 0: the cumulative-shipped chart drew a
         # flat zero line and every manifest row said "day 0". The test
         # missed it by hand-building a parcel with the phantom key.
-        shipped_per_day: Dict[int, int] = {}
+        shipped_per_day: Dict[int, float] = {}
         for parcel in sess.shipped_squares.get(seat, []) or []:
-            value, eff, tier = _parcel_score_value(parcel)
+            exact, eff, tier = _parcel_score_exact(parcel)
+            value = int(round(exact))
             ship_day = int(
                 parcel.get("shipped_day")
                 or parcel.get("shipped_on_day")
                 or 0
             )
-            shipped_per_day[ship_day] = shipped_per_day.get(ship_day, 0) + value
+            # Accumulate the UNROUNDED term; the series rounds once per
+            # point below, so the last point equals the final score.
+            shipped_per_day[ship_day] = shipped_per_day.get(ship_day, 0.0) + exact
             # Emit the FULL shipped parcel (paint, coords, purity, transit
             # charge, tier, lineage, …) so the results screen can render
             # it with the same vault/shipping squares + hover tooltip the
@@ -2066,11 +2149,11 @@ def get_endgame_summary(store: SocStore, session_id: str) -> Dict[str, Any]:
                 "catapult_shipped": True,
             })
             manifest.append(row)
-        running_ship = 0
+        running_ship = 0.0
         ship_series: List[int] = []
         for d in days:
-            running_ship += shipped_per_day.get(d, 0)
-            ship_series.append(running_ship)
+            running_ship += shipped_per_day.get(d, 0.0)
+            ship_series.append(int(round(running_ship)))
         shipped_by_day[seat] = ship_series
 
     # Rank by final score (desc); stable on seat order for ties.
@@ -2301,6 +2384,25 @@ def get_session_status(
             p: float(sess.cumulative_shipped_score.get(p, 0.0) or 0.0)
             for p in sess.players
         },
+        # v1.24 — the CANONICAL running score, for the HUD scoreboard.
+        #
+        # ``cumulative_shipped_score`` above is a SHIPPED-bay cache and
+        # stays as it is, because the SHIPPED tab is genuinely about that
+        # bay. But it is the wrong number to headline as "your score",
+        # for a reason that is only visible in the ORBIT phase: GREEN
+        # harvested tonight sits in the vault until settlement runs, and
+        # ``compute_player_score`` charges it immediately while the cache
+        # does not. Measured: 3 GREEN held ->  HUD 765 vs scorer 465, and
+        # the player's number then falls 300 the instant they submit.
+        # Worse, ``/view`` and the agent percept already use the scorer,
+        # so a human and a bot in the same seat were shown different
+        # running scores for the same position.
+        #
+        # GREEN is not a decision the player can still avoid — disposal
+        # is mandatory (§4.5, "green can never be displaced out of a
+        # vault"), so the uncharged figure was one that could not
+        # survive the next few seconds.
+        "scores": {p: int(sess.score_for(p)) for p in sess.players},
         "latest_catapult": latest_catapult,
         "latest_station_obs": latest_station_obs,
     }

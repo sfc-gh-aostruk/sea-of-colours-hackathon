@@ -334,6 +334,13 @@ _INDEX_HTML = _STATIC_DIR / "index.html"
 _EVALS_HTML = _STATIC_DIR / "evals.html"
 _LANDING_HTML = _STATIC_DIR / "landing.html"
 
+# v1.26 — identity for `run_web.py --replace`. Read the note on
+# ``/api/meta/whoami`` before changing either value: the launcher decides
+# whether it is allowed to kill the process on the port by asking the
+# port itself, so this string is a contract, not a label.
+_APP_IDENT = "sea_of_colours"
+_STARTED_AT = time.time()
+
 # ── Boot banner ────────────────────────────────────────────────────────
 # Resolve and OPEN the store here, before serving. Building the Snowpark
 # session lazily meant a bad key or an undeployed schema surfaced as a
@@ -1965,6 +1972,34 @@ def api_meta_agents() -> dict[str, Any]:
     from sea_of_colours.orchestrator_2.binding_registry import selectable_agents
 
     return {"agents": selectable_agents()}
+
+
+@app.get("/api/meta/whoami")
+def api_meta_whoami() -> dict[str, Any]:
+    """Who is serving this port — for ``run_web.py --replace`` (v1.26).
+
+    The launcher needs to answer "may I kill whatever owns 8000?", and
+    the honest form of that question is asked of the *port*, not of the
+    process table: matching on a command line guesses at identity, while
+    an answer on the socket proves it. So this returns the one thing
+    that makes the kill safe (``app``) and the one thing that makes it
+    precise (``pid`` — no ``lsof``, no ambiguity about which of several
+    python processes is the listener).
+
+    ``root`` is here so a replace can *say* which checkout it is about to
+    stop, which matters on a machine running two of them.
+
+    Deliberately unauthenticated and deliberately dull: it discloses a
+    pid and a path to anyone who can already reach the server, which on
+    a ``--lan`` bind is the same set of people who can take a seat.
+    """
+    return {
+        "app": _APP_IDENT,
+        "pid": os.getpid(),
+        "root": str(_REPO_ROOT),
+        "started_at": _STARTED_AT,
+        "uptime_s": round(time.time() - _STARTED_AT, 1),
+    }
 
 
 @app.get("/api/meta/backend")

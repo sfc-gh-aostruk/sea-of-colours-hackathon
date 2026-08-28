@@ -74,11 +74,22 @@ pytest                   # tests/ (pythonpath=. via pytest.ini)
     may restart or kill **a server that agent started**. Background it and
     keep the port off 8000 if a human server might be there.
 
-  The one hard rule: **whoever started it, owns it.** Never restart or kill
-  a server you did not start — restarting someone's server mid-game drops
-  their turn and blanks the page with "Failed to fetch". Check the
-  terminals folder first: if a server is already up and you did not launch
-  it, use it read-only and **ask** before bouncing it.
+ The one hard rule: **whoever started it, owns it.** Never restart or kill
+ a server you did not start — restarting someone's server mid-game drops
+ their turn and blanks the page with "Failed to fetch". Check the
+ terminals folder first: if a server is already up and you did not launch
+ it, use it read-only and **ask** before bouncing it.
+
+ **`--replace` does not change that rule** (v1.26). The flag stops the
+ Sea of Colours server already on the port and takes over, which is
+ there so a *human* can restart after a Python change without hunting a
+ pid. It is a convenience for the person at the keyboard, not a licence:
+ an agent still may not point it at a server it did not start. For an
+ agent's own scratch server, `--port 8022 --replace` is the tidy way to
+ relaunch one you already own. It refuses anything that does not
+ identify itself as ours via `/api/meta/whoami` — see
+ `server/portguard.py`, and note that a pre-v1.26 server has no such
+ route and is matched on its command line instead.
 
   Two traps, both learned the hard way. An agent-launched server is a child
   of that shell, so it dies when the shell does — to a player that looks

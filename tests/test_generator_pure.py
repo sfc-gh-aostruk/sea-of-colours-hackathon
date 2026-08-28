@@ -4,6 +4,13 @@ Natural pures only form in thick seam cores, so many seeds produce none. The
 ``ensure_pure_red`` guard (default ON) deterministically promotes the strongest
 RED core to pure. These tests lock that guarantee and prove the guard is
 non-destructive (seeds that already have a pure are untouched) and seed-stable.
+
+**Scope (v1.24).** Every board is built with ``spread_pure_red=False`` via
+:func:`_params`, so these measure the ``ensure_pure_red`` guard ALONE. The
+v1.24 spread rule (§2.2) guarantees two pures in its own right, which would
+make a "pureless" baseline impossible to construct and would silently turn
+the tests below into tests of the wrong layer. Spread has its own module,
+``test_generator_pure_spread.py``.
 """
 
 from __future__ import annotations
@@ -19,6 +26,12 @@ from sea_of_colours.generator import (
 _W, _H = 40, 28
 
 
+def _params(seed, **kw):
+    """Params with the v1.24 spread rule off — see the module docstring."""
+    kw.setdefault("spread_pure_red", False)
+    return GenerationParams(width=_W, height=_H, seed=seed, **kw)
+
+
 def _pure_cells(grid):
     return [
         (x, y)
@@ -30,7 +43,7 @@ def _pure_cells(grid):
 
 def test_every_seed_has_at_least_one_pure_red():
     for seed in range(60):
-        grid = generate_grid(GenerationParams(width=_W, height=_H, seed=seed))
+        grid = generate_grid(_params(seed))
         assert _pure_cells(grid), f"seed {seed} produced no pure RED"
 
 
@@ -40,7 +53,7 @@ def test_guard_actually_promotes_on_a_pureless_seed():
     pureless = None
     for seed in range(60):
         raw = generate_grid(
-            GenerationParams(width=_W, height=_H, seed=seed, ensure_pure_red=False)
+            _params(seed, ensure_pure_red=False)
         )
         if not _pure_cells(raw):
             pureless = seed
@@ -48,7 +61,7 @@ def test_guard_actually_promotes_on_a_pureless_seed():
     assert pureless is not None, "no pure-less seed found in range — widen the scan"
 
     guarded = generate_grid(
-        GenerationParams(width=_W, height=_H, seed=pureless, ensure_pure_red=True)
+        _params(pureless, ensure_pure_red=True)
     )
     assert _pure_cells(guarded), f"guard failed to add a pure on seed {pureless}"
 
@@ -59,7 +72,7 @@ def test_guard_is_noop_when_a_natural_pure_exists():
     natural = None
     for seed in range(60):
         raw = generate_grid(
-            GenerationParams(width=_W, height=_H, seed=seed, ensure_pure_red=False)
+            _params(seed, ensure_pure_red=False)
         )
         if _pure_cells(raw):
             natural = (seed, raw)
@@ -67,7 +80,7 @@ def test_guard_is_noop_when_a_natural_pure_exists():
     assert natural is not None, "no naturally-pure seed found in range"
     seed, raw = natural
     guarded = generate_grid(
-        GenerationParams(width=_W, height=_H, seed=seed, ensure_pure_red=True)
+        _params(seed, ensure_pure_red=True)
     )
     assert [[(c.tile, c.purity) for c in row] for row in guarded] == [
         [(c.tile, c.purity) for c in row] for row in raw
@@ -76,14 +89,14 @@ def test_guard_is_noop_when_a_natural_pure_exists():
 
 def test_promotion_is_deterministic():
     # Same seed → same promoted pure set (no RNG in the guard).
-    a = generate_grid(GenerationParams(width=_W, height=_H, seed=123))
-    b = generate_grid(GenerationParams(width=_W, height=_H, seed=123))
+    a = generate_grid(_params(123))
+    b = generate_grid(_params(123))
     assert sorted(_pure_cells(a)) == sorted(_pure_cells(b))
 
 
 def test_no_red_board_is_a_noop():
     # A board with no RED at all can't be promoted — must not crash or fabricate.
     grid = generate_grid(
-        GenerationParams(width=_W, height=_H, seed=5, red_coverage=0.0)
+        _params(5, red_coverage=0.0)
     )
     assert not _pure_cells(grid)

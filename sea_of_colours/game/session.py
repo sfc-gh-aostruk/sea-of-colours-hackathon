@@ -29,7 +29,14 @@ from sea_of_colours.game.tuning import (
     probe_lifetime_nights,
     probe_vision_radius,
 )
-from sea_of_colours.generator import Cell, GenerationParams, Grid, Tile, generate_grid
+from sea_of_colours.generator import (
+    Cell,
+    GenerationParams,
+    Grid,
+    Tile,
+    generate_grid,
+    pure_count_range,
+)
 from sea_of_colours.render import (
     BLUE_LEVEL_NAMES,
     RED_LEVEL_NAMES,
@@ -417,6 +424,90 @@ def compute_player_score(
     if is_complete:
         total += red_loss
     return int(round(total))
+
+
+def compute_score_breakdown(
+    shipped_parcels: Sequence[Mapping[str, Any]],
+    hoard_parcels: Sequence[Mapping[str, Any]],
+    *,
+    is_complete: bool,
+) -> Dict[str, int]:
+    """The three lines that ADD UP to :func:`compute_player_score`.
+
+    v1.24 — the results card used to assemble these itself from two
+    sources that describe different moments, and so could not be made to
+    reconcile: ``shipped`` came off ``cumulative_shipped_score`` (which
+    already has the GREEN debit folded in) while ``green_penalty`` came
+    off ``vault_green_count`` (which is ZERO once settlement has disposed
+    the vault's GREEN into SHIPPED). A seat that paid 400 in GREEN
+    charges therefore saw "shipped 900 · green 0" with no line accounting
+    for the 400 — the "end score doesn't match" report.
+
+    Splitting it here, beside the scorer, is the point: there is one
+    definition of each term and the card cannot drift from the total
+    again.
+
+    Returns ``{"shipped", "green_penalty", "vault_red_loss", "final"}``
+    where ``shipped - green_penalty + vault_red_loss == final`` exactly.
+    ``shipped`` is RED only; ``green_penalty`` is every GREEN charged,
+    whether it is still hoarded or was disposed into SHIPPED.
+    """
+    final = compute_player_score(
+        shipped_parcels, hoard_parcels, is_complete=is_complete
+    )
+
+    shipped_red = 0.0
+    green_count = 0
+    for parcel in shipped_parcels or []:
+        origin = parcel.get("tile_at_harvest")
+        if origin is None:
+            origin = parcel.get("origin_tile")
+        try:
+            is_green = int(origin) == int(Tile.GREEN)
+        except (TypeError, ValueError):
+            is_green = parcel.get("score_tier") == "green"
+        if is_green:
+            green_count += 1
+            continue
+        eff = parcel.get("effective_purity")
+        if eff is None:
+            eff = GameSession._parcel_purity(parcel)
+        eff = max(0, int(eff))
+        tier = parcel.get("score_tier") or GameSession._tier_for_purity(eff)
+        shipped_red += eff * RED_QUALITY_MULTIPLIER.get(tier, 1.0)
+
+    red_loss = 0.0
+    for parcel in hoard_parcels or []:
+        tile = parcel.get("tile_at_harvest")
+        if tile is None:
+            tile = parcel.get("origin_tile")
+        try:
+            t = int(tile)
+        except (TypeError, ValueError):
+            continue
+        if t == int(Tile.GREEN):
+            green_count += 1
+        elif t == int(Tile.RED):
+            red_loss += 0.5 * max(0, GameSession._parcel_purity(parcel))
+
+    green_penalty = int(GREEN_ENDGAME_PENALTY * green_count)
+    vault_red_loss = int(round(red_loss)) if is_complete else 0
+    # ``final`` rounds the WHOLE sum once, so rounding each line
+    # separately can leave the three a point adrift. Settle that residue
+    # on the RED line (much the largest term, and the only one that is
+    # a sum of fractional products) so the card always adds up. The other
+    # two stay independently computed, so a genuine GREEN or fire-sale
+    # error still shows up as a wrong line rather than being absorbed.
+    shipped = final + green_penalty - vault_red_loss
+    _honest = int(round(shipped_red))
+    if abs(_honest - shipped) > 1:  # pragma: no cover — guards a real bug
+        shipped = _honest
+    return {
+        "shipped": int(shipped),
+        "green_penalty": green_penalty,
+        "vault_red_loss": vault_red_loss,
+        "final": int(final),
+    }
 
 # ── v0.9.11 — Station observation grades (RULEBOOK §3.15.x) ─────────
 # Each platform broadcasts a coarse "reading" that any seat can pick
@@ -1451,21 +1542,10 @@ class GameSession:
         visibility_mode: str = "hidden",
         player_profiles: Optional[Mapping[str, Mapping[str, str]]] = None,
     ) -> GameSession:
-        params = GenerationParams(width=width, height=height, seed=seed)
-        grid = generate_grid(params)
-        ledger = SquareLedger.from_grid(seed, grid)
-        # ``season_name`` falls back to a deterministic ``Aurora_Falcon``-style
-        # label generated from the seed (see :mod:`season_names`). Callers
-        # who want an explicit name (e.g. the CLI orchestrator stamping a
-        # tournament run with ``--name "Tempus_Vault"``) can pass it in.
-        if season_name is None:
-            from sea_of_colours.game.season_names import generate_season_name
-            season_name = generate_season_name(seed)
-        # Clamp the cap to a positive int; ``None`` falls back to the
-        # module default so existing callers keep their old behaviour.
-        cap = int(season_day_cap) if season_day_cap is not None else SEASON_DAY_CAP
-        if cap < 1:
-            cap = 1
+        # v1.28 — the seat list is normalised BEFORE the map is generated,
+        # because the pure-RED floor scales with it (below). It used to sit
+        # after, and the reorder is safe: this block reads only ``players``.
+        #
         # v0.9.6 — normalise the seat list. ``players`` may arrive as a
         # list, tuple, or ``None`` (legacy 2-seat default). Clamp to
         # ``MAX_SEATS`` and dedupe while preserving order so a UI bug
@@ -1481,6 +1561,60 @@ class GameSession:
                 if len(seen) >= MAX_SEATS:
                     break
             seat_ids = tuple(seen) if seen else ("p1", "p2")
+
+        # v1.28 — the jackpot count scales with the table (RULEBOOK §2.2).
+        #
+        # v1.24 put a flat floor of 2 under the pure count, which is right
+        # for a duel and thin for four Houses: two seats can be handed a
+        # jackpot each and two get none. But pinning the floor exactly to
+        # the seat count trades that for a worse problem — the count becomes
+        # a constant, so finding your first jackpot tells you precisely how
+        # many others exist. Hence a random band per seat count; see
+        # ``PURE_COUNT_BY_SEATS`` for the table and why four Houses are
+        # allowed to come up short of one each.
+        #
+        # Sized off the NORMALISED seats, not ``players``, so a caller
+        # passing ``["p1","p1","p2"]`` asks for a duel's board and not a
+        # three-hander's — which is why the seat block above was moved ahead
+        # of map generation. It reads nothing but its own argument, so the
+        # move is safe.
+        #
+        # Set at the CALL SITE on purpose: ``GenerationParams`` has no idea
+        # how many seats there are, and baking a seat-shaped default into
+        # the dataclass would change the meaning of every standalone
+        # generator call and every existing test. The dataclass default
+        # stays a flat floor of 2 with no draw.
+        #
+        # MEASURED before shipping, 200 seeds at 40x28 with the separation
+        # left at 12: counts of 2, 3 and 4 are met on 100% of seeds with no
+        # pair closer than 12; 5 and 6 are still always met but soften the
+        # separation on 2% and 15% of boards. Nothing in range ever drops
+        # below 9 and an r4 probe spans 8, so "no single probe lights two
+        # jackpots" — the property the 12 protects — holds across the whole
+        # table without the separation needing to scale down. Re-measure
+        # with ``scripts/_mapgen_pure_census.py`` if either dial moves.
+        pure_lo, pure_hi = pure_count_range(len(seat_ids))
+        params = GenerationParams(
+            width=width,
+            height=height,
+            seed=seed,
+            min_pure_count=pure_lo,
+            max_pure_count=pure_hi,
+        )
+        grid = generate_grid(params)
+        ledger = SquareLedger.from_grid(seed, grid)
+        # ``season_name`` falls back to a deterministic ``Aurora_Falcon``-style
+        # label generated from the seed (see :mod:`season_names`). Callers
+        # who want an explicit name (e.g. the CLI orchestrator stamping a
+        # tournament run with ``--name "Tempus_Vault"``) can pass it in.
+        if season_name is None:
+            from sea_of_colours.game.season_names import generate_season_name
+            season_name = generate_season_name(seed)
+        # Clamp the cap to a positive int; ``None`` falls back to the
+        # module default so existing callers keep their old behaviour.
+        cap = int(season_day_cap) if season_day_cap is not None else SEASON_DAY_CAP
+        if cap < 1:
+            cap = 1
         # Per-seat agent map — default any unspecified seat to "human".
         agent_map: Dict[str, str] = {}
         if agents:
@@ -6057,6 +6191,22 @@ class GameSession:
             return False, "drop: lifter unavailable (must be orbital)", False
         if hh.x is not None:
             return False, f"drop: {harvester_id} already on surface", False
+        # v1.24 (RULEBOOK §3.6.1) — a wreck may not be deployed. This is the
+        # twin of the guard in ``try_step_unit``; it was missing, so a damaged
+        # harvester sitting in orbit could be dropped straight back onto the
+        # surface, and because the landing AUTO-HARVESTS (§3.12) that single
+        # slot broke both halves of the rule at once — "cannot step or harvest
+        # until repaired" AND "must be repaired via the paid Orbit repair
+        # action before it can be deployed again". Since v0.9.18 pickup no
+        # longer clears the flag, so without this check the paid REPAIR action
+        # was entirely optional: crash, lift, re-drop, keep mining for free.
+        if bool(getattr(hh, "damaged", False)):
+            return (
+                False,
+                f"drop: {harvester_id} damaged — repair it in orbit first "
+                f"(RULEBOOK §3.6.1)",
+                False,
+            )
         # RULEBOOK §3.9.2 — ONE OUTING PER HARVESTER PER NIGHT. Even after a
         # harvester lifts back to orbit (pickup clears its position), it may not
         # be re-dropped the same night. Blocks the "pick up + re-drop to bank

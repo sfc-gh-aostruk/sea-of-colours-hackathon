@@ -1,7 +1,7 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.23
-Last updated: 2026-08-27
+Version: 1.28
+Last updated: 2026-08-28
 
 This is the single source of truth for the world, the fiction, and how
 play resolves. Every change is recorded in the [Changelog](#changelog) at
@@ -27,6 +27,9 @@ The following settings define the **canonical competitive ruleset** as of v0.9.1
 | `HOARD_CAPACITY` | `15` | Vault slots. Since v1.13 the vault empties every orbit, so this caps **one night's** haul (§3.14). |
 | `decluster_pure_red` | `True` | No two `pure` (255) cells may be 8-adjacent. Extras in a touching group are demoted to high `mass`, so a jackpot is always a single contested cell (§2.2). |
 | Pure demotion band | `220 – 254` | Where a demoted pure lands — top of `mass`, still worth combing (§2.2). |
+| `spread_pure_red` | `True` | v1.24 — every board carries ≥ `min_pure_count` pures, none closer than `min_pure_separation` (§2.2). |
+| `min_pure_count` | `max(2, seats)` | Hard floor, one jackpot per House (v1.28). One jackpot gives the opening nothing to choose between; a flat 2 on a 4-seat board leaves two Houses with nothing to contest (§2.2). The `GenerationParams` default stays `2`; `GameSession.new` raises it to the seat count. |
+| `min_pure_separation` | `12` | **Chebyshev** cells between any two pures — three probe radii, so no single probe sees both (§2.2). Best-effort on a degenerate board; the count is the guarantee. |
 
 These settings balance exploration, competition, and risk management — probes decay, drops require live intel, and damaged units cost credits to restore. Since v1.13 the strategic weight sits almost entirely in the **Nox phase**: the Orbit is where you spend, the night is where you play.
 
@@ -227,9 +230,8 @@ So, after purity is assigned:
   `mass`. The ground is still worth combing and the seam keeps its shape;
   it simply stops paying out twice.
 
-The rule is deliberately narrow: **only touching pures are thinned.** Two
-pures a few cells apart are two separate finds and both survive. After the
-rule no board has any two pures 8-adjacent, and because most boards were
+The rule is deliberately narrow: **only touching pures are thinned.** After
+it, no board has any two pures 8-adjacent, and because most boards were
 never clustered the mean pure count barely moves (1.2 → 1.1 over 500 seeds).
 It removes the pathological 7%, and leaves every other board alone.
 
@@ -237,10 +239,67 @@ The guarantee in §2.2's `ensure_pure_red` promotes the peak RED cell **only**
 (it used to promote the peak plus its two richest neighbours, which was the
 one remaining path deliberately minting a cluster).
 
+##### Two jackpots, far apart (v1.24)
+
+Not touching was not enough. It still permitted two boards that flatten the
+opening:
+
+- **One jackpot.** There is nothing to choose between, so the season's first
+  real decision — which seam do I commit to — never gets asked.
+- **Two jackpots four cells apart.** A single probe disk lights both, so
+  finding either hands you the pair. The same non-decision, dressed up.
+
+So every board now carries **at least one pure per House, and never fewer
+than two** (v1.28 — see below; v1.24 shipped this as a flat 2), and **no two
+pures stand closer than 12 cells** measured in **Chebyshev** (king-move)
+distance.
+Chebyshev because the question the metric exists to answer is *can one probe
+see both*, and probe vision is a disk in king moves; 12 is three probe radii
+at the default `r4`, so no single probe — and no plausible pair — covers
+both finds.
+
+The pass runs last, after declustering and after `ensure_pure_red`, because
+the guarantee can itself mint a pure next to a survivor. It walks pures
+row-major, keeps each one that clears the separation, demotes the rest into
+`[220, 254]` exactly as declustering does, then promotes the richest
+remaining RED cell until the count floor is met. Being a superset of the
+touching rule (distance 1 is far below 12), it does not weaken v1.21.
+
+> **The count is a floor; the distance is a strong preference.** A board
+> whose RED is one small vein cannot host two pures 12 apart. Rather than
+> spin looking for a placement that does not exist — or drop back to a
+> single jackpot — the generator takes the *furthest available* pair. Two
+> contested jackpots close together still beats one uncontested. Measured
+> over 200 seeds at 40×28 the fallback never fires: every board gets 2–3
+> pures, all pairs at least 12 apart.
+
+##### One jackpot per House (v1.28)
+
+The floor is `max(2, seats)`, not a flat 2. A four-House season on the old
+rule could be handed two jackpots for four seats, so two Houses contest a
+find and two have nothing to contest — the same flattened opening this
+section exists to prevent, only now distributed unfairly.
+
+The seat count is applied at the **call site** (`GameSession.new`), not baked
+into the generator: `GenerationParams` has no notion of seats, and a
+seat-shaped default would change the meaning of every standalone generator
+call. The parameter default stays `2`. It counts the *normalised* seat list,
+after the v0.9.6 dedupe and `MAX_SEATS` clamp, so a caller that posts
+`["p1", "p1", "p2"]` asks for two jackpots and not three.
+
+The separation does **not** scale down to pay for the extra pures, because it
+does not need to. Measured over 200 seeds at 40×28 with separation held at
+12: floors of 2, 3 and 4 are met on 100% of seeds with no pair closer than
+12 (closest-pair medians 18, 14 and 13 respectively). Only a floor of **5**
+strains the board — 2% of seeds land a pair at 10–11 — and `MAX_SEATS` is 4,
+so that case is unreachable. Re-run `scripts/_mapgen_pure_census.py` if
+either the board size or the separation moves.
+
 **Planner consequence.** A visible pure no longer implies more pure next
 door — the neighbours of a pure are now, if anything, *likelier* to be high
 `mass` than pure. Agents must not treat a found pure as evidence of a pure
-cluster.
+cluster. Note also that the number of jackpots on the board is a function of
+the seat count, so an agent must not infer map richness from it.
 
 These tier names are the canonical vocabulary across the codebase
 (`sea_of_colours.render.RED_LEVEL_NAMES`), the agent view payload
@@ -548,6 +607,13 @@ asset":
   Aurora handoff; v0.8.0 removes that sweep — the orbital phase
   must explicitly pay for the fix.
 
+> **Reading the changelog on this rule.** The v0.7.4 entry
+> *"Orbit-phase auto-repair (§3.6.1 clarified)"* describes the
+> opposite behaviour — pickup clearing the flag, with no repair
+> action. It is **superseded** by v0.9.18 above and survives only as
+> history. This section is the current rule; a top-down changelog read
+> will hit the stale entry first.
+
 ### 3.7 Tolerated underhand tactics
 
 Houses are *expected* to compete with each other. The Church tolerates
@@ -715,6 +781,11 @@ that hour's landing — mirroring the same-hour rule used for probe
 collisions (§3.16). The lore: a landing needs a live overhead beacon
 because surface visibility is poor; once down, the harvester's own
 sensors handle movement and call-home pickup anywhere — which is why
+step and pickup work in fog but the initial drop does not.
+
+The reprieve is exactly one hour wide. It validates the landing queued
+for the hour the beacon died in, and nothing later: on the next hour the
+probe is simply gone and the drop is refused like any other unlit cell.
 
 #### 3.9.8 Strategic tip — "hot-drop" probe placement (v0.9.18)
 
@@ -737,10 +808,15 @@ when:
 
 **Risk:** The probe launch reveals your target coordinates to all players. Rivals
 can counter by:
-- Superseding your probe with their own (§3.16) to deny your live coverage
-- Launching an EMP at your probe location to destroy it before your drop resolves
+- Superseding your probe with their own (§3.16), or EMPing it, to deny your live
+  coverage **from the next hour on**. Neither voids a landing already queued for
+  the hour the beacon dies — see the Timing paragraph in §3.9.7. So the counter
+  works against a hot-drop you have telegraphed and not yet made; it does not
+  reach into the same hour to cancel one.
 - Racing to harvest the same cell first if they already have live coverage
-step and pickup work in fog but the initial drop does not.
+- Landing an EMP on the target *before* the hour you drop, which does not stop
+  the landing (a harvester is not bounced, §4.9.3) but does forfeit its
+  auto-harvest, and smothers the unit from the following hour
 
 **Tunable knobs (env, read at runtime in `sea_of_colours/game/tuning.py`;
 defaults below are the canonical ruleset — override for experiments):**
@@ -1775,10 +1851,15 @@ old design and the reason scouting beats scraping:
 
 | Tier | Purity band | Multiplier |
 | ---- | ----------- | ---------- |
-| `trace` | 1–74 | **×0.75** |
-| `vein` | 75–149 | **×1.0** |
-| `mass` | 150–254 | **×1.5** |
+| `empty` | 0 | — (worthless ground, not prize) |
+| `trace` | 1–50 | **×0.75** |
+| `vein` | 51–150 | **×1.0** |
+| `mass` | 151–254 | **×1.5** |
 | `pure` | 255 | **×3.0** |
+
+The bands are the §2.2 ladder — the same cutoffs the map legend, the
+dither ramp and the vault glyphs use. There is one ladder, not a
+scoring one and a rendering one.
 
 The curve is deliberately convex: one `pure`-255 parcel scores **765**,
 while ten `trace`-25 parcels — ten nights of harvester time — score
@@ -2508,6 +2589,727 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.28 — 2026-08-28
+
+One engine bug fixed (EMP vs. the hour-start beacon snapshot, §3.9.7) and
+one generator rule changed (the pure-RED floor, §2.2). Everything else
+below is client-only: the orbital half makes the client show intel the
+Pre-Orbital Recap has always printed on the very next screen, and the
+extraction half takes away intel it was never entitled to show at all.
+
+**A same-hour EMP no longer voids a rival's landing (§3.9.7).** Reported
+from a live season (Terra_Kestrel, day 6, hour 1): p1 fired a salvo onto
+(2,14), it fried p2's probe, and p2's drop on (2,14) — queued for that
+same hour — died with "no live sensor beacon". §3.9.7 says the opposite
+in as many words: landing legality is judged against the seat's
+hour-start live snapshot, and "a beacon a rival destroys, supersedes, or
+EMPs *later in the same hour* still validates that hour's landing".
+§3.9.8 repeats it. §4.9.3 adds that a cloud spawned this same hour is not
+"established", so the landing should also have banked its parcel.
+
+The engine had the mechanism and used it a beat too late. The snapshot
+was taken in the hour loop *after* `_pre_hour_phase` returned — and
+`_pre_hour_phase` is the function that fires this hour's salvos. So
+"hour-start vision" was recorded with the rival's beacons already
+destroyed. Supersede obeyed the rule and EMP did not, for no better
+reason than where each resolves: a supersede is a normal dispatch action
+and happened after the snapshot, a launch is pre-empted and happened
+before it. The rulebook lists the two as equivalent.
+
+The snapshot now happens inside `_pre_hour_phase`, at the same instant as
+the established-cloud snapshot and immediately after the decay/sweep —
+the moment §4.9.3 already defines as "going into the hour". Choosing that
+instant rather than the very top of the hour is deliberate: a probe swept
+by a cloud that has been standing since an earlier hour is killed by a
+weapon already on the board, not by anything that happens "later in the
+same hour".
+
+Nothing about the rules moved; the engine now does what §3.9.7 has always
+said. Note that the effect had been *documented as a feature* in one
+place — §3.9.8's risk list offered "launching an EMP at your probe
+location to destroy it before your drop resolves" as a counter to the
+hot-drop, four lines under a sentence saying a same-hour EMP cannot do
+that. That bullet is corrected; the counter is real but lands from the
+next hour on.
+
+`tests/test_emp_beacon_timing.py`, four tests, all driving the real
+`NightSimulator` — the pre-existing
+`test_live_only_honours_hour_start_override` passes `try_drop_unit` an
+override by hand, so it pinned the plumbing and could never have caught a
+defect in *when* the snapshot is taken. Two tests cover the report (the
+landing, and the harvest) and fail without the fix with the user's
+error string verbatim. Two are counterweights that pass either way, and
+exist so the fix cannot be over-applied: an EMP from an *earlier* hour
+must still forfeit the landing's auto-harvest, and the one-hour reprieve
+must not persist — a beacon destroyed on hour 1 must not validate a drop
+on hour 2, which is what "cache the first snapshot" would have done.
+
+While in §3.9.7: its closing sentence had been cut in half by a section
+heading inserted mid-paragraph, stranding "step and pickup work in fog
+but the initial drop does not" at the foot of §3.9.8's risk list, where
+it read as a stray line item. Rejoined.
+
+**One jackpot per House (§2.2).** `min_pure_count` becomes
+`max(2, seats)`. v1.24 put a flat floor of 2 under the pure count, which
+is right for a duel and wrong for four Houses: two seats could be handed
+a jackpot each and two given nothing to contest, which is the same
+flattened opening §2.2 was written to prevent, only now distributed
+unfairly rather than suffered by everyone.
+
+The seat count is applied at the **call site**, in `GameSession.new`, and
+not baked into `GenerationParams` — the dataclass has no notion of seats,
+and a seat-shaped default would silently change every standalone
+generator call and every existing generator test. The parameter default
+stays 2. It reads the **normalised** seat list, after the v0.9.6 dedupe
+and `MAX_SEATS` clamp, so `["p1", "p1", "p2"]` asks for two jackpots and
+not three; the seat normalisation block was moved above the map
+generation to make that possible, which is safe because it reads nothing
+but its own argument.
+
+**The separation does not scale down to pay for it,** which was the open
+question going in. Measured over 200 seeds at 40×28 with separation held
+at 12 Chebyshev: floors of 2, 3 and 4 are met on 100% of seeds with no
+pair closer than 12 (closest-pair medians 18, 14, 13). Only a floor of 5
+strains the board, at 2% of seeds landing a pair at 10–11, and
+`MAX_SEATS` is 4 — so the tight case is unreachable and no dial needed
+retuning. `scripts/_mapgen_pure_census.py` takes a seat count now, so
+that claim is reproducible.
+
+Six tests in `tests/test_generator_pure_spread.py`, deliberately driving
+whole sessions rather than `generate_grid` because the plumbing is what
+is under test. Beyond the floor and the separation they pin the three
+ways this could go quietly wrong: a duplicated seat must not inflate the
+count, `players=None` must produce a board identical to an explicit
+two-seat game, and — the one worth keeping — adding seats may only **add**
+jackpots. A 4-seat board must be the 2-seat board plus two, with every
+other cell identical, tile and purity. If that fails, the count is being
+met by re-running the thinning pass with different survivors, which would
+mean the seat count silently re-rolls terrain the seed is supposed to
+fix. Backed out, the floor test fails with `3 seats got 2 pure cell(s)`.
+
+**The extraction strip is no longer readable during live play.**
+`SEED · RED ON MAP · EXTRACTED %` was specified for the watcher and for
+finished seasons, and v1.22's own comment says so in as many words —
+"still barred from live play, and deliberately". It was not barred. The
+gate read `WATCH_MODE || mainMapSource === "replay"`, which looks like
+"only in replay" and is not: the night cinematic sets exactly that on a
+live board, so the strip surfaced over a fogged game every night from
+the version that shipped it.
+
+Three separate disclosures, worst first. The SEED regenerates the entire
+board offline, which ends fog as a mechanic. RED ON MAP is a whole-map
+total no seat can see. EXTRACTED is summed over EVERY seat, so a player
+who knows their own take subtracts to their rival's — in a duel it is a
+live readout of the opponent's season.
+
+The gate is now `WATCH_MODE || livePhase === "season_complete"`. A
+finished season discloses none of the three, because the endgame card
+already publishes every score, so completion is the honest boundary and
+the map source is not a boundary at all.
+
+**TRANSMIT lowers the aiming banner.** The path picker is
+deliberately sticky — chaining re-arms after every click and only
+`[ stop ]` takes it down — so the banner was still up at the moment
+almost every night was committed. It carries `animation: pick-blink`, so
+it sat *flashing* over the board for the length of the commit, telling
+the player to click a neighbouring cell into a queue that had already
+gone.
+
+v1.26 added a disarm on the phase flip, which does clear it, but that
+runs off the 2.5s status poller: right, and far too late to be the only
+one. The disarm now happens in `submitSoloNight` beside the existing
+`cancelAdvisor` call and for the same stated reason — past that line the
+orders are going. It is placed deliberately AFTER the strand and
+full-vault guards, both of which bail and leave the player still
+composing; disarming there would confiscate an aim as a penalty for
+reading a warning.
+
+Why it took a user report on Snowflake: on the memory backend a night
+resolves in ~250ms, so the late phase-flip disarm is indistinguishable
+from the right one. Measured 243ms with the fix and 255ms without. The
+regression test therefore does **not** use a clock — `submitSoloNight`
+disarms before its first `await`, so `_fx_orders.py` clicks the button
+and reads the banner *synchronously in the same task*, which no
+round-trip-dependent disarm can satisfy. Backed out, that check fails;
+restored, it passes.
+
+The extraction fix has a weaker guard, and the harness says so in
+place: `_fx_orders.py` reaches the exact leaking state (map source
+`replay`, extraction payload loaded, not a watcher) and asserts the
+strip stays hidden, but backing the gate out does *not* make it fail,
+because nothing re-runs the decision in that window on the memory
+backend. It is a one-way guard — it can catch the strip appearing where
+it must not, and cannot prove the reported sighting is gone. That still
+wants one live Snowflake night.
+
+`_fx_header.py` keeps the positive case (the watcher must still show the
+figure) and gains the negative one. Two traps worth recording: a bare
+`?session=<id>` is **already watch mode** — a seat needs `&player=pN`,
+so the first cut of the check tested the watcher twice and reported the
+strip as correctly visible; and `_seed_season` plays to completion,
+which is precisely when showing the strip is correct, so it gained a
+`stop_after` to leave a season open.
+
+**A rival's launches and recoveries are visible on their platform again
+(§3.15).** A harvester deployment is two facts with two different
+visibilities. The landing CELL is private. The platform ACTIVITY is not:
+how many craft a House sent out on a Nox, how many came home, and whether
+they came home loaded or damaged, is published for every seat by
+`tally_orbital_activity`.
+
+The client honoured only the first half. One gate in
+`runReplayAnimationsTick` suppressed an entire delta when a rival's action
+fell in fog, and the call that tells the station panel to draw its ▲ lives
+*inside* the per-delta animation — so killing the board arc killed the
+platform glyph with it. A rival's station sat dead all night and the recap
+that followed then reported four launches nobody had seen. Probes were
+never affected: `probe_emit` is explicitly exempted from the gate, so the
+symptom read as "enemy platforms throw probes but their harvesters never
+leave", which is exactly how it was reported.
+
+The gate now splits the two: `_emitOrbitalPlatformEvent` fires the station
+glyph, and only the board animation is skipped. Two deliberate omissions
+in what it forwards:
+
+- **A bounce is announced as a plain launch, never the `✕` variant.** An
+  observer watches the craft leave and loses it at the cover boundary, so
+  they learn it departed and not whether it set down. `drop_bounce` also
+  gained its `owner` field here, which it had never carried — station.js
+  falls back to `"p1"`, so in a duel a bounce animated on the wrong seat's
+  platform half the time.
+- **The station hook is passed `null` for the target cell.** It ignores
+  the argument today, but a coordinate handed to a renderer is one line
+  away from being drawn.
+
+A recovery *does* keep its `loaded` and `damaged` flags, because those are
+the published `recovered_carrying` / `recovered_damaged` columns and the
+full ▲ / empty △ fill is how they are read.
+
+**Mines now announce their minelayer.** Mines were the only weapon with no
+station glyph at all — not for a rival, not even for your own — while
+`mines` has been a public column beside `emps` and `chaff` since v0.9.11,
+and the ORDERS bay tooltip has told players outright that "the minelayer's
+flight is public". EMP and chaff were already unconditional. `mine_emit`
+draws the ◆ of the board's minelayer arc in the magenta of the mine order
+marker, so the weapon reads the same in the bay, on the map and on the
+platform.
+
+It is emitted in a **separate pass ahead of `playMineFx`'s board loop**,
+which is load-bearing: that loop skips a rival's lay on a fogged cell
+(correctly — the mine's position is private) and also skips any cell not
+currently in the DOM, and both would have taken the launch with them.
+
+**Verified** by `scripts/_fx_orbitpublic.py` (new). One season, played
+twice: OBS as a control that proves an orbital arc is observable at all,
+then P1 — a human seat that orders nothing, therefore sees nothing, so
+every rival action is fogged. The oracle is deliberately *not* the OBS
+pass but the engine's own `orbital_activity_by_day`, and that distinction
+earned its keep immediately: OBS drops a recovery glyph whenever the next
+tick cancels the arc it was waiting on, which would have blamed the fogged
+seat for the observer's lost frame. Every public column is compared, P1
+must draw zero board arcs, and no station event may carry a cell.
+
+The mine branch is exercised by rewriting the `/replay` response in flight
+to carry one p2 `mine_lay` (same route-interception trick as
+`_fx_reveal.py`) — a mine costs 100 BLUE purity, which an idle fixture
+seat can never bank, so no seeded season has ever reached that code. With
+both fixes backed out the harness reproduces the report verbatim: probes
+8, launches 0, recoveries 0, mine glyphs 0.
+
+### v1.27 — 2026-08-28
+
+UI only. No mechanic, constant, formula or agent surface moved; the
+engine sees exactly the same orders as it did in v1.26.
+
+**The aiming banner no longer moves the board.** v1.24 lifted
+`.pick-mode-banner` out of `.cc-map-viewport` into its own grid row above
+the board, which stopped it swallowing clicks on the top map rows. That
+row was `auto` and the banner `display: none` when idle, so it collapsed
+to nothing — and arming an order made the whole board jump down a line,
+at the exact moment you were reaching for a square on it. The row is now
+**reserved**: hidden with `visibility` instead of `display`, so it holds
+its height whether or not anything is aiming. The cost is stated plainly
+because it was a deliberate trade — the map is permanently ~27px shorter.
+Overlaying the banner would cost nothing in height and is precisely what
+v1.24 removed; it carries `[ stop ]`, so it can never be
+`pointer-events: none`. The `[ stop ]` button was shrunk to the banner's
+own type size, which brought the reserved strip from 34px down to 27px.
+
+Note for anyone probing this in a harness: `offsetParent !== null` is no
+longer a visibility test for that element. A `visibility: hidden` element
+still has an offset parent. Ask the computed style.
+
+**ORDERS is two stacked halves.** The top half is what you can order
+(fleet, deploy, timing, and the ASK V12 card); the bottom half is what
+you have ordered, headed by `TRANSMIT`, with the slot count, then
+`[ clear queue ]` / `[ show all 21 slots ]` small, then the directives.
+Each half scrolls independently, so a long queue can no longer push the
+roster off the end of the rail and a long roster can no longer bury the
+queue.
+
+The split is a **fixed fraction**, and that is the interesting decision.
+Sizing the bottom half to its content looks tidier on an empty queue, but
+it walks `TRANSMIT` ~200px up the rail as the night fills — the button
+you press every single night moving under the cursor, in proportion to
+how much you had planned. A fixed midpoint costs some blank on a first
+screen and buys a control that is always in the same place. The harness
+pins the drift at zero between an empty queue and a full one.
+
+`TRANSMIT` had also been rendering at the wrong size since v1.25: the
+base rule is `button.cli-btn` at specificity (0,1,1), so a bare
+`.cc-transmit-btn` (0,1,0) silently lost font-size, letter-spacing and
+padding to it, and the declared values were never what shipped. Now
+qualified `button.` — the third rule in this stylesheet to need it, for
+the same reason each time. At the real size the label fitted the ~205px
+rail with nothing to spare and broke after the `/`, so it is pinned
+`nowrap` and the harness fails on overflow rather than letting it
+silently re-wrap.
+
+**ORBIT is three stacked thirds.** In order down the rail: what is
+**true** (the wallet, the fleet, the asset list, and what the vault will
+do when the orbit resolves), what you can **do** about it (the build and
+weapons blocks), and what you have **decided** — `COMMIT ORBIT PHASE`
+over the action queue. Each third scrolls on its own.
+
+The panel already ran in roughly that order, but as one undivided column,
+so the ~200px of readouts and asset list at the top pushed the first
+button off the bottom of a short rail — on a screen whose entire purpose
+is pressing buttons. Nothing has been removed. The facts simply can no
+longer displace the actions, or the queue the button.
+
+Two consequences of the split worth stating. The settlement readout
+(`// on resolve · automatic`) has left the action toolbar, where being
+the third bordered block in a row of buttons made a pure statement of
+fact look like a control; it now closes the facts third, unboxed. And
+`COMMIT` sits *outside* the queue's scrollport, so it holds one position
+however long the queue runs — the same rule, and the same reason, as
+`TRANSMIT` above.
+
+Equal thirds are equal to within ~16px rather than to the pixel, and the
+cause is worth knowing before someone "fixes" it: `flex-basis: 0` under
+`box-sizing: border-box` is clamped up to each item's own padding plus
+border, so the three panes grow by an identical share of the free space
+but start from different floors. Making them exact would mean giving all
+three the same chrome, which buys a pixel and costs either a cramped
+scrollport or a padded queue.
+
+**Scroll shadows on every pane that can hide something.** A consequence
+of fixed panes is that a pane can clip a heading mid-glyph, which reads
+as a rendering fault rather than as "there is more below" — the facts
+third does this on a fresh season, where its contents total ~40px more
+than a third and the gap widens as the fleet grows. Added to both ORBIT
+and ORDERS with no JS and no state: two gradients in the panel colour
+ride *with* the content (`background-attachment: local`) over two pinned
+to the pane, so the hint uncovers itself exactly when there is something
+to scroll to and never appears on a pane that fits.
+
+### v1.26 — 2026-08-28
+
+UI and tooling. No mechanic, constant or formula moved; no agent surface
+is affected. Nothing here is a new *power* — every order the board menu
+can place could already be placed from the ORDERS panel, and the engine
+validates identically either way.
+
+**§7 — the night cinematic no longer loses a race to a concurrent refresh.**
+Reported as "committed my policy, no PRAXIS BEGINS, board already showing
+the final state". Found from `window._socCinematicLog`, which was added in
+v1.21 for exactly this because the hard cut has eight possible causes and
+one symptom. The recording: pull A finds an un-animated night, starts the
+cinematic and parks in its dusk hold; pull B — which had entered a beat
+*earlier*, while no cinematic was running — comes back from its fetches
+1.1s later, paints the resolved board, and A then bails with
+`map source is "live" (wanted "replay")`.
+
+The v1.21 fix had put the guard in, and it was correct for the assignment
+at the top of `pullAllMaps` that it was written for. It was then reused for
+a second decision *four awaits later*, by which time the sampled value is
+a second old — the precise mistake its own comment warns about ("a guard
+tested before an await is not a guard"). The later test now reads
+`_liveFxPlaying` live. The stale term is kept beside it so the change is a
+strict superset of the old guard rather than a replacement.
+
+Two things the log also shows, both left alone deliberately: the replay was
+a full day behind the status payload (Snowflake was still writing the
+night's frames), which is real but self-heals on the next pull; and the
+seat animated day 1 while the server was on day 2, which is that same lag
+seen from the other end.
+
+**§7 — the end state never precedes the animation.** Companion to the
+race above and a *different* defect with a similar look: there the
+cinematic was killed and never played, here it played but arrived second,
+behind a board already showing how the night ended. Knowing the result
+drains the replay of its purpose, so this is treated as a rule about live
+play rather than a cosmetic nicety, and it holds for every live game.
+
+Cause: the status flips to "night resolved" the instant the engine
+finishes, but the night's frames are still being written. A pull that
+means to animate fetches the replay a beat later, still sees the previous
+day, concludes there is nothing new, and paints the resolved board. The
+frames land seconds afterwards and the next pull animates a night whose
+outcome is already on screen.
+
+Such a pull now *waits* for the frames instead. The wait is bounded
+(`_FRAME_WAIT_MS`) because "not arrived yet" and "there are none" are
+indistinguishable on the wire — the status counts frames already
+**written** — so on a wrong guess a late reveal is the worst case rather
+than a frozen board. Callers pass `expectNightFrames`, because an ORBIT
+settle resolves with no night frames at all and would otherwise eat the
+wait every time; the poller and the transmit path each know which they
+saw.
+
+One trap, recorded because it made the first attempt a silent no-op: the
+night transmit must **not** key this off `night_resolved`. Against a bot
+seat the server kicks the agent in the background and answers before the
+phase moves, so a night resolving a beat later reports `false` — exactly
+the case that needs the wait.
+
+**§7 — an armed aim is cancelled when its composer closes.** Arming a verb
+raises the pick banner and puts the board in pick-mode, and nothing took
+either back on a *phase change* — only `[stop]`, Escape, or completing the
+order. So a chain armed during PLANNING was still armed after the night
+resolved: a banner over the board reading "click neighbour to chain", for a
+queue whose panel the same code had just hidden. Since v1.24 the banner
+occupies a real grid row rather than floating, so a stale one also
+permanently shortened the map. It is now cleared on exactly the expression
+that hides the ORDERS tab, so an aim and the panel it belongs to cannot
+disagree about whether ordering is open; the board menu is closed with it.
+
+**§7 — right-click a square to act on it.** The panel flow is
+verb-then-target: arm `[WALK]`, then click a cell. The board menu is the
+inverse — the square is already chosen, so the menu is assembled from what
+that particular square affords. A harvester in orbit offers `drop here`; one
+standing on the square offers `lift`; one a cardinal step away offers
+`walk here`. Probe, EMP and mine are offered on any square, and any order
+already aimed at the square can be removed from the same menu, so the board
+can cancel as well as commit.
+
+**Why the menu is allowed to be shorter than the panel.** The standing rule
+for ORDERS is *agency preserved, clarity added* — every verb stays clickable
+and an overdraft is annotated rather than blocked. That rule is not weakened
+here, but it is worth being precise about why. The panel asks *"what do you
+want to do?"*, so withholding a verb there would be withholding a choice. The
+menu answers *"what can be done **here**?"*, and `walk` to a square six cells
+away is not an under-offered option — it is an answer to a different question.
+The rule binds unchanged wherever the constraint is a **resource**: probe, EMP
+and mine appear at zero stock, annotated, exactly as in the panel, and they
+share one `_stockNote` helper so the two surfaces cannot word the same bay
+differently. A harvester that cannot reach the square is still **listed**,
+dimmed, with its distance — a unit silently absent from a menu reads as a bug,
+not as a rule.
+
+Two details the implementation has to get right, both invisible when correct.
+The offer is computed from `projectedUnitState`, not the live snapshot, so
+right-clicking a neighbour of a *queued* landing correctly offers `walk` from
+the cell the harvester will be standing on rather than from orbit. And the
+adjacency test is **cardinal** (`dx + dy === 1`), mirroring the click path and
+the engine; a diagonal is not a step, and a menu that offered one would enqueue
+orders that die at PRAXIS.
+
+Opening the menu disarms any half-armed verb — one aiming mode at a time,
+or the next stray left-click fires an order the player has mentally moved
+on from. The menu is barred in watcher mode, on a finished season, and
+while the live page is showing a **replay** frame: a right-click on last
+night's board must not post orders against tonight's queue.
+
+Verified by `scripts/_fx_boardmenu.py`, which asserts the cell-correctness
+of every verb, that the offer follows the queue rather than the snapshot,
+that a diagonal is refused, that an out-of-reach unit is listed rather than
+dropped, and that the watcher gate holds.
+
+**Tooling — `run_web.py --replace`.** Not a rule; recorded here because
+it changes the command people are taught to type. The canonical server
+command runs `--no-reload`, which is deliberate — a file save must not
+restart the process mid-night — but it means every Python change needs a
+manual restart, and the way that goes is uvicorn's `address already in
+use`. That error names the problem and withholds the only fact needed to
+act on it, which is *whose* server holds the port. `--replace` stops the
+Sea of Colours server already there and takes over.
+
+The safety argument is the whole of it, because the cost of being wrong
+is asymmetric: failing to restart is an annoyance, killing the wrong
+process is someone's unrelated work gone with no undo. So identity is
+**proved, not guessed** — the launcher calls a new `/api/meta/whoami`
+route and only proceeds on our own marker. Asking the port is stronger
+evidence than matching a command line out of `ps`, and the route returns
+the listener's pid, so the kill needs no `lsof` and cannot pick the wrong
+one of several python processes. Anything else on the port is left alone
+and the launcher exits non-zero. The one place matching *is* trusted is a
+server that holds the port but no longer answers — a wedged worker, or
+simply a server older than this route, which is every server running on
+the day it ships — and the launcher says out loud when it fell back to
+that weaker evidence.
+
+Two failure modes worth naming, both found by testing against real
+processes rather than by reading. Under `--reload` the process answering
+HTTP is uvicorn's *worker*; killing it alone just prompts the reloader to
+spawn another and the port never frees, so the supervisor above it is
+signalled first. Choosing that supervisor is the sharp edge: the first
+implementation accepted any parent whose **command line** named our
+script, and the very first live check found that a server started as
+`zsh -c "... python run_web.py ..."` gives the *shell* a command line
+containing `run_web.py`. Every string test says shell-is-reloader, and
+that shell is the user's terminal. The discriminator is instead
+**ownership of the listening socket** — uvicorn's reloader opens it and
+hands it to the worker, so the two share it, while no wrapper shell, task
+runner or `make` target holds it however it is spelled. Second: "is the
+port free" is asked by **binding**, not by connecting, because a socket
+in `TIME_WAIT` refuses connections while still denying a plain bind —
+which would have read as "it ignored SIGTERM" and escalated to `SIGKILL`
+for nothing.
+
+`--replace` does not soften the standing ownership rule in `AGENTS.md`:
+it exists so the human at the keyboard can restart cleanly, and an agent
+still may not point it at a server it did not start.
+`tests/test_port_replace.py` weights its 24 tests towards the refusals.
+
+### v1.25 — 2026-08-28
+
+UI only — no mechanic, constant or formula moved, so no score changes and no
+agent surface is affected. Two composers were rebuilt around the same
+principle the v1.24 ORDERS work established: **the panel annotates, the engine
+decides.**
+
+**§7 — the ORDERS queue is a list again.** Each row carried two number
+spinners for its target's x and y. Nobody aimed with them, because you cannot
+tell where `(33,12)` is without looking at the board — players re-aim by
+deleting the row and clicking the cell, which is also the only path that draws
+the AoE footprint. What the spinners *did* cost was about 14ch of a 34ch rail,
+which forced the controls onto a second line and made every row 43px tall in a
+composer that can hold 21 of them. The target is now read-only text in the
+row, the movers are bare `↑ ↓ ×` glyphs boxed on hover, and a row is 23px.
+
+The wrapping had a cause worth writing down, because the obvious diagnosis was
+wrong. The rows were not too wide; they were `flex-wrap: wrap`. Flex lays items
+out at their *base* size and wraps whatever overflows, and only *then* shrinks
+what is left on each line — so `flex-wrap` never consults `flex-shrink` on the
+label at all. `nowrap` plus `min-width: 0` on the label inverts it: the label
+absorbs the shrink and ellipsises, and the controls can no longer be
+displaced. `min-width: 0` is load-bearing; a flex item defaults to
+`min-width: auto`, which is its own content width.
+
+The commit bar also moved from the foot of the panel to the head. It was
+sticky to the bottom, which kept it reachable but put the one control you press
+every night at the far end of a 21-row list, and the slot count had to be
+smuggled onto the button's own label because the real badge scrolled out of
+sight. Now: button, count beneath it, and a single scroll region under both.
+
+**§7 — the ORBIT panel leads with what you can spend.** The top of the panel
+was seven equal readouts, four of them vault bookkeeping: RED as
+trace/vein/mass/pure and BLUE as shallow/mid/sink/deep. That is the VAULT tab's
+job, and the settlement block at the foot of this same panel already states
+what the vault will *do* tonight, which is the part a buyer needs. Meanwhile
+CREDITS and BLUE — the only two figures spendable on this screen — rendered at
+the same weight as everything else. The block is now the wallet at double size
+with its projected remainder underneath, plus one line each for fleet and arms;
+219px of panel became 125px.
+
+**§7 — dimming, and what dimming is not.** Actions you cannot take now render
+dim with the reason beside them: `nothing damaged`, `fleet at 3/3`,
+`short 500c`. Two of those are different kinds of news and are worded
+differently on purpose — a no-op with no target can never work, while a
+shortfall is as much a fact about the *order* of your queue as your wallet, so
+it is priced against the projected remainder and clears when you trim a row
+above it.
+
+Dimming is **not** gating, in either panel. v0.9.1 had the ORBIT click handler
+refuse a dimmed button with *"can't afford that right now"*; that is now gone.
+The engine spends in declared order and part-fills, the composer already
+annotates a row it cannot pay for, and so "I cannot afford this" is often
+solved by queueing the expensive thing **first** — which the refusal made
+impossible to express. Empty deploy bays in ORDERS behave the same way: dim,
+annotated, and fully clickable, because buying the missing EMP in tonight's
+orbit is a legal plan.
+
+One real defect surfaced while building this: the ORBIT `is-disabled` class had
+**no CSS at all**. REPAIR had been flagged as unavailable since v0.9.1 and had
+been rendering at full brightness the whole time, so the only thing the flag
+ever did was silently block the click.
+
+A second one surfaced sideways: both composers render `.solo-queue-row`, so the
+ORDERS thinning reached the ORBIT queue, whose rows carry a long explanatory
+note the ORDERS rows do not have — under `nowrap` the label collapsed to
+`build h…` and `[ x ]` was squeezed until it stacked one glyph per line. The
+ORBIT rows now opt out by id and give the note its own line, which is the
+`.cc-orbit-why` shape anyway: control on top, reason underneath.
+
+**Fan-out, per AGENTS.md.** The six orbit prices were written as literals in
+three places — the button labels, the queue-row text, and the budget projector
+— and `weapon_prices`, which the server has always shipped, was read by nobody.
+A weapon retune would have moved the engine and left all three copies lying.
+All of them now resolve through one `_orbitPrices()` reading `ship_prices` and
+`weapon_prices` off the live view, with the canonical constants only as a
+fallback for a pre-v1.25 payload.
+
+Verified by two scratch harnesses, `scripts/_fx_orders.py` (extended) and the
+new `scripts/_fx_orbit.py`, at 1280 and 1024. Both assert the property that
+matters rather than a class name: a dimmed control is checked for computed
+opacity **and** for `pointer-events` and `disabled`, because the tempting fix
+for how it looks is exactly the one that breaks the rule.
+
+### v1.24 — 2026-08-27
+
+**§7 — ORDERS is organised by what you can do, not by what you own.** The
+panel rendered `assets_by_status`' three buckets — in orbit / on surface /
+destroyed — through the *same builder the VAULT uses on the same three
+buckets*. It was not accidentally similar to the vault; it was a second copy
+of it with click handlers bolted onto the harvesters, and every complaint
+about it followed from that one decision. Destroyed assets and deployed
+probes were listed because they are inventory buckets, not because you can
+order them. The verbs had nowhere to live, so DROP and PICKUP were parked on
+a global orblift pod — making it verb → unit → target, three clicks and a
+mode, for what is one instruction to one harvester. `probe stock: 3` read as
+a noun with a count, with the word "deploy" only in a tooltip. The weapons
+came last because they arrive on a different payload. And nothing lined up,
+because content-sized chips wrapped in a flex row while only *some* of them
+grew a plan annotation underneath.
+
+It is now one row per thing you can act on: `glyph · name · state · stickers`
+with DROP / WALK / LIFT on the row itself, in a fixed grid so the action
+column lands at the same place on every unit, and the unit's orders folded
+into one indented continuation line inside its own row (`01 drop (12,4) ·
+02-05 walk → (15,7) · 06 lift`, consecutive steps collapsed to a range).
+Probe and the three weapons sit together under one **deploy** heading, verb
+first, because launching a probe and launching an EMP are the same kind of
+act from where the player sits. The orblift loses its chip — the engine's
+pickup names the *harvester*, never the lifter — and instead greys the verbs
+when you have none, which is the one thing the pod was really telling you.
+
+**The panel annotates; it does not gate.** Over-ordering is legal and stays
+legal: ten steps, two drops, four probes against a stock of three. What was
+missing was being able to *see* it, so a deploy verb whose queue exceeds its
+stock now reads `4 queued · only 2 held` in amber and stays clickable. The
+sole hard guard is unchanged — TRANSMIT still warns about a harvester you
+have not lifted — and a unit in that state now carries a red **stranded**
+sticker in the panel as well, since the planet destroys surface units at
+Aurora (§3.11.2) and until now nothing said so before you committed.
+
+`scripts/_fx_orders.py` pins the parts that are easy to regress silently:
+that every row's verb block starts at the same pixel, that the three verbs
+stay on one line and never shrink below their own labels, that nothing
+overruns the rail, that the overdraft note appears, that the stranded
+sticker appears, and that clicking a verb arms the picker *for that unit*.
+
+**§4 / §7 — the results screen now agrees with the scorer.** Reported live:
+"the end score is different from the game running score, something is going
+on with how we count green". It was three defects, all in the *reporting*
+path — `compute_player_score` was right the whole time, so **no score
+changed and no season's outcome moves**; what changes is that the chart and
+the card now show the score the engine actually computed.
+
+1. **Disposed GREEN was priced at zero.** Settlement moves GREEN out of the
+   vault and appends it to the seat's *shipped* parcels, carrying its GREEN
+   origin tile. The scorer charges −100 for such a row (§4.7); the endgame's
+   own per-parcel helper had no GREEN branch and valued it at
+   `effective_purity 0 × multiplier = 0`. A seat that dumped four GREEN
+   charted 400 points above its true score.
+2. **The settlement night fell off the chart.** The cumulative-shipped axis
+   ran `1 … season_day_cap`, but the terminal orbit resolves *after* the
+   last played night and stamps its shipments `cap + 1`. The single biggest
+   banking event of the season — the vault going up the catapult — was
+   charted nowhere, so the curve ended *below* the final score.
+3. **Rounding per parcel instead of once.** The scorer sums and rounds the
+   total; the chart rounded every parcel. `trace` is ×0.75 and so rarely
+   lands on an integer, and a seat holding a dozen of them drifted a point
+   or two.
+
+Together those explain the whole gap exactly, in both directions: a seat
+that banked late read *low*, a seat that dumped GREEN read *high*.
+
+The score **breakdown** on the results card is also decomposed properly now.
+It used to take `shipped` from the running shipped total (which already has
+the GREEN debit inside it) and `green penalty` from *GREEN still in the
+vault* — which is zero the moment settlement flushes the vault. So a seat
+could be shown "shipped 900 · green 0" against a real 1300 of RED minus 400
+of GREEN, with no line accounting for the difference. The three lines now
+read **shipped red − green penalty + vault red** and add up to the total,
+with GREEN counted wherever the parcel ended up. A new
+`compute_score_breakdown` sits beside `compute_player_score` so the two
+cannot drift apart again.
+
+One consequence is worth stating plainly because it is *not* a bug and will
+still look like one: **the final score legitimately jumps at season end.**
+RED left in the vault is sold off at half its raw purity (§4), and that
+credit only exists once the season is complete. If you are hoarding, your
+running score is understating you on purpose.
+
+**§4.5 / §7 — the running scoreboard charges GREEN the moment you hold it.**
+A second, independent half of the same report, found by re-checking the live
+HUD rather than the results screen. The top-right scoreboard read
+`cumulative_shipped_score`, a *shipped-bay* accumulator, whereas
+`compute_player_score` charges GREEN sitting in the vault **immediately** —
+that debit is deliberately outside its "season complete" guard, because
+disposal is mandatory (§4.5: green can never be displaced out of a vault) and
+so it is a liability no further play can avoid.
+
+Those two only differ in the window between harvesting GREEN and the orbit
+settling it — but settlement runs at *every* orbit, not just the last, so that
+window is the ORBIT phase of **every night of the season**, which is precisely
+when the player is sitting looking at the number deciding what to buy. Holding
+three GREEN, the HUD read 765 against a true 465 and then visibly dropped 300
+the instant the player submitted. Worse, `/view` and the agent percept had
+always used the scorer, so a human and a bot in the same seat were shown
+different running scores for the same position.
+
+`/status` now carries a canonical `scores` field and the HUD reads it. The
+`cumulative_shipped_score` cache is unchanged and still feeds the SHIPPED tab,
+which is captioned as that bay and wants exactly the shipped-only figure; the
+two legitimately disagree while GREEN awaits disposal.
+
+**§2.2 — two jackpots, far apart.** v1.21 stopped pures *touching*, which
+turned out to be the wrong bar. It still allowed a board with a single pure
+(nothing to choose between, so the opening's one real decision never gets
+asked) and a board with two pures four cells apart (one probe disk lights
+both, so finding either hands you the pair — the same non-decision). Every
+board now carries **at least 2 pures**, and **no two pures stand closer than
+12 Chebyshev cells**. Chebyshev because the question is "can one probe see
+both", and probe vision is a disk in king moves; 12 is three probe radii at
+the default `r4`. New `spread_pure_red` / `min_pure_count` /
+`min_pure_separation` params, default on. The pass runs *after* declustering
+and *after* `ensure_pure_red`, since the guarantee can itself mint a pure
+beside a survivor. Being a superset of the touching rule, it does not weaken
+v1.21. The **count is a hard floor and the distance is best-effort**: a board
+whose RED is one small vein takes the furthest available pair rather than
+spinning or falling back to one jackpot — over 200 seeds at 40×28 that
+fallback never fires (every board: 2–3 pures, all pairs ≥ 12).
+
+**§3.6.1 — damaged harvesters can no longer be deployed.** `try_step_unit`
+had the damage guard; `try_drop_unit` never did. Since v0.9.18 pickup does
+not clear the flag, so the paid Orbit `repair` action was effectively
+optional: crash, lift the wreck, drop it again, keep mining. Worse, a landing
+auto-harvests (§3.12), so one illegal drop broke both halves of §3.6.1 in a
+single slot. A symmetrical guard now rejects the drop. §3.6.1 also gains a
+note that the v0.7.4 changelog entry ("Orbit-phase auto-repair") describes
+superseded behaviour — reading the changelog top-down is what made this easy
+to miss for as long as it was.
+
+**§4.4 — tier band table corrected.** The settlement table read `trace 1–74 /
+vein 75–149 / mass 150–254`. The engine has always used `trace 1–50 / vein
+51–150 / mass 151–254` (`session._tier_for_purity`, and
+`render.RED_LEVEL_CUTOFFS = (0, 51, 151, 255)` — two implementations that
+already agreed with each other). §4.4 was the only wrong copy: §2.2's ladder,
+the §3.1 code block and the client were all correct, so no behaviour changed
+and no score moved. The `empty` tier (purity 0) is now stated explicitly. Both
+worked examples in §4.4 survive unchanged — 25 is `trace` and 255 is `pure`
+under either reading.
+
+**§7 — the aiming bar no longer covers the squares you are aiming at.** The
+"pick a cell for …" bar was painted *over* the top of the board rather than
+above it, and because it carries the `[ stop ]` button it could not be made
+transparent to the pointer. It therefore swallowed every click in the strip
+it covered — and it is only on screen *while* you are aiming, which is
+exactly when those squares are targets. It now sits in the layout above the
+board and displaces it, so arming an order shifts the board down a line
+once, before you start aiming, instead of stealing the top rows during.
+
+**§7 — a resolved night no longer shows its ending before it plays.** A
+refresh that merely *happened* during a pending night — closing the orbit
+report is the reliable way to cause one — painted the resolved board, and
+the poller then played `PRAXIS BEGINS` and stepped through the night a beat
+later, over an ending the player had already been shown. The hold-back on
+the live board was conditioned on *that particular* refresh intending to
+animate; it is now conditioned on **a night being owed an animation at all**,
+whoever is fetching and why.
 
 ### v1.23 — 2026-08-27
 

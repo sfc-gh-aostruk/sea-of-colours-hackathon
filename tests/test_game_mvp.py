@@ -1189,6 +1189,59 @@ def test_pickup_extracts_damaged_harvester_without_repair() -> None:
     assert "DAMAGED — requires REPAIR" in msg
 
 
+def test_damaged_harvester_cannot_be_dropped() -> None:
+    """v1.24 (§3.6.1) — a wreck in orbit may not be deployed.
+
+    The twin of ``test_damaged_harvester_cannot_step``. ``try_drop_unit``
+    had no damage guard, so the loop crash → pickup → re-drop skipped the
+    paid REPAIR action entirely. Worse, the landing auto-harvests (§3.12),
+    so one illegal drop broke both halves of §3.6.1 in a single slot —
+    hence the tile assertion below, not just the rejection.
+    """
+    sess = GameSession.new(20, 14, seed=707)
+    h1 = sess.entities["harvester_p1"]
+    h1.x, h1.y = None, None  # in orbit
+    h1.damaged = True
+    before = sess.grid[6][6].tile
+
+    ok, msg, harvested = sess.try_drop_unit("p1", "harvester_p1", 6, 6)
+
+    assert not ok
+    assert "damaged" in msg
+    assert not harvested, "a rejected drop must not auto-harvest (§3.12)"
+    assert h1.x is None and h1.y is None, "the wreck stays in orbit"
+    assert sess.grid[6][6].tile == before, "the landing cell is untouched"
+    assert banked_parcels(sess, "p1") == []
+
+
+def test_repair_restores_the_right_to_deploy() -> None:
+    """v1.24 (§3.6.1) — REPAIR is what lifts the deploy ban.
+
+    Pins the guard as a *gate*, not a permanent ban: the same unit, on the
+    same night, drops fine once the paid Orbit action has run. Without this
+    the guard could regress to "damaged units are dead forever" and the
+    tests above would still pass.
+    """
+    from sea_of_colours.game.session import REPAIR_COST
+
+    sess = GameSession.new(20, 14, seed=708)
+    h1 = sess.entities["harvester_p1"]
+    h1.x, h1.y = None, None
+    h1.damaged = True
+    sess.credits["p1"] = REPAIR_COST
+
+    ok, _msg, _ = sess.try_drop_unit("p1", "harvester_p1", 6, 6)
+    assert not ok, "damaged: refused"
+
+    ok, msg = sess.apply_repair("p1", "harvester_p1")
+    assert ok, msg
+    assert h1.damaged is False
+
+    ok, msg, _ = sess.try_drop_unit("p1", "harvester_p1", 6, 6)
+    assert ok, msg
+    assert (h1.x, h1.y) == (6, 6)
+
+
 def test_pass_through_swap_damages_both() -> None:
     """A↔B same-round step swap (A:(5,7)→(6,7), B:(6,7)→(5,7))
     resolves as collision. Both harvesters abort steps (stay at origin),

@@ -346,6 +346,20 @@ Add `--lan` to host others on the same Wi-Fi (it turns reload off for
 you), or see [`docs/MULTIPLAYER.md`](docs/MULTIPLAYER.md) for the tunnel
 route, which works on locked-down networks where `--lan` cannot.
 
+Because `--no-reload` means you restart by hand to pick up a Python
+change, the second thing you'll meet is `address already in use` from
+the server you forgot was up. Add `--replace`:
+
+```bash
+SOC_BACKEND=snowflake python run_web.py --no-reload --replace
+```
+
+It stops the Sea of Colours server on that port and takes over. It
+asks the port who it is (`/api/meta/whoami`) rather than guessing from
+the process list, and if the answer is anything else — the other web
+app you had on 8000 — it refuses and exits without signalling
+anything. Use `--port 8001` if you'd rather have both.
+
 > **Start it yourself; don't let an AI coding agent run it.** A server
 > an agent launches belongs to that agent's shell session and dies when
 > the session does — mid-night, looking exactly like a crash. This is

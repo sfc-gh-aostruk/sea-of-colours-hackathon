@@ -36,7 +36,9 @@ def _post(base: str, path: str, body: dict) -> dict:
         return json.loads(r.read().decode())
 
 
-def _seed_season(base: str, nights: int = 3, bots: int = 1) -> str:
+def _seed_season(
+    base: str, nights: int = 3, bots: int = 1, stop_after: int = 0,
+) -> str:
     """Spawn a season and play it to the end, so the watcher has real frames.
 
     p1 is a *human* seat that submits nothing each night. That is the only
@@ -72,6 +74,13 @@ def _seed_season(base: str, nights: int = 3, bots: int = 1) -> str:
             print(f"  seeding: day {day} {phase}")
             last = (day, phase)
         if phase == "season_complete":
+            return sid
+        # v1.28 — `stop_after` leaves the season OPEN with real frames in
+        # it. The extract-strip check needs that: the strip is SUPPOSED to
+        # appear once a season is over (nothing left to leak — the endgame
+        # card publishes every score), so a played-out fixture cannot tell
+        # a correct gate from an absent one.
+        if stop_after and int(day or 0) > stop_after:
             return sid
         if phase == "orbit":
             _post(base, f"/api/game/{sid}/orbit",
@@ -160,10 +169,91 @@ def main() -> int:
 
         pg.locator("#cc-extract-strip").screenshot(
             path=str(OUT / "extract_strip.png"))
+
+        # ── v1.28: the SAME season, from a LIVE SEAT, must show nothing ──
+        #
+        # The strip is omniscient three times over — the SEED regenerates
+        # the board offline, RED ON MAP is a total you cannot see through
+        # fog, and EXTRACTED is summed over every seat, so your own take
+        # subtracts to your rival's.
+        #
+        # It was gated on `mainMapSource === "replay"`, which reads like
+        # "only in replay" and is not: the night cinematic sets exactly
+        # that on a live board, and so does scrubbing your own past
+        # nights. Scrubbing is the cheaper of the two to drive, and it
+        # exercises the identical state, so that is what this does.
+        # `&player=p1` is load-bearing and not obvious: a bare
+        # `?session=<id>` is ALREADY watch mode (see JOIN_MODE / WATCH_MODE
+        # at the top of app.js — any session param without a seat is a
+        # spectator). A fixture that omits it tests the watcher twice and
+        # reports the strip as correctly visible, which is what the first
+        # cut of this check did.
+        open_sid = _seed_season(base, nights=4, stop_after=2)
+        print(f"open season     : {open_sid}")
+        pg.goto(f"{base}/play?session={open_sid}&player=p1",
+                wait_until="networkidle")
+        pg.wait_for_timeout(2500)
+        live_phase = pg.evaluate(
+            "() => document.getElementById('phase-line')?.textContent || '?'")
+        live_hidden_idle = pg.eval_on_selector(
+            "#cc-extract-strip", "el => el.hidden")
+        # PLAY the replay rather than scrubbing to it. `updateExtractStrip`
+        # only runs from `syncReplayRowOnly`, so a single scrub can set
+        # `mainMapSource = "replay"` a beat AFTER the last strip update and
+        # leave it stale-hidden — which reads as a pass and is why the
+        # first cut of this check could not fail. The tick loop re-syncs
+        # every frame, which is exactly what the live night cinematic does.
+        scrubbed = False
+        live_hidden_scrub = True
+        if pg.query_selector("#replay-scrub"):
+            # TWO scrubs, not one, and the second is the load-bearing one.
+            # `updateExtractStrip` only runs from `syncReplayRowOnly`, and
+            # the first scrub is what SETS `mainMapSource = "replay"` — so
+            # its own sync had already read the old value. One scrub leaves
+            # the strip stale-hidden, which reads as a pass however broken
+            # the gate is (the first cut of this check did exactly that).
+            for target in ("0", "max"):
+                pg.evaluate(
+                    """(t) => {
+                      const s = document.getElementById('replay-scrub');
+                      if (!s) return;
+                      s.value = (t === 'max') ? s.max : t;
+                      s.dispatchEvent(new Event('input', { bubbles: true }));
+                      s.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    target,
+                )
+                pg.wait_for_timeout(900)
+                if not pg.eval_on_selector(
+                        "#cc-extract-strip", "el => el.hidden"):
+                    live_hidden_scrub = False
+            scrubbed = True
+        live_src = pg.evaluate(
+            "() => window.__SOC_VISION_DBG__?.source?.() ?? 'unknown'")
+        pre = pg.evaluate("""() => {
+          const D = window.__SOC_HEADER_DBG__;
+          if (!D) return null;
+          const x = D.extraction();
+          return {
+            hasData: !!(x && x.map_red_value > 0),
+            mapSource: D.mapSource(),
+            watchMode: D.watchMode(),
+            livePhase: D.livePhase(),
+          };
+        }""")
+        print(f"live seat precond     : {pre}")
+        print(f"live seat phase       : {live_phase.strip()!r}")
+        print(f"live seat, idle       : hidden={live_hidden_idle} (want True)")
+        print(f"live seat, scrubbed   : hidden={live_hidden_scrub} "
+              f"(want True; scrubbed={scrubbed}, map source={live_src})")
+        pg.screenshot(path=str(OUT / "extract_live_hidden.png"))
         br.close()
 
     ok = strip_shown and not name_dupe and not fixtures_in_header \
-        and not meta_gone
+        and not meta_gone and live_hidden_idle and live_hidden_scrub
+    if not scrubbed:
+        print("WARN: no #replay-scrub on the live seat — the leak path "
+              "(map source flipping to 'replay' mid-game) went untested")
     print("PASS" if ok else "FAIL")
     print(f"shots -> {OUT}")
     return 0 if ok else 1

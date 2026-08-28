@@ -180,8 +180,11 @@ pip install -r requirements-snowflake.txt
    quietly handing you a `memory` store when something in the Snowpark
    path is broken — which otherwise surfaces an hour later as a missing
    season and absent LLM seats. `--no-reload` stops a file save from
-   restarting the process and dropping an agent turn mid-night. Run it
-   in your own terminal, not through an AI coding agent, and leave it up.
+   restarting the process and dropping an agent turn mid-night — the
+   trade is that a Python change needs a manual restart, so add
+   `--replace` to have the old server stopped for you instead of meeting
+   `address already in use`. Run it in your own terminal, not through an
+   AI coding agent, and leave it up.
    Storage is a **per-game** choice from v1.14: the New Game launcher
    offers Snowflake or Memory per season, so you can still take a fast
    throwaway game against a heuristic without a warehouse round-trip per

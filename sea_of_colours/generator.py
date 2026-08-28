@@ -155,6 +155,86 @@ class GenerationParams:
     pure_demote_min: int = 220
     pure_demote_max: int = 254
 
+    #: v1.24 — every board carries at least :attr:`min_pure_count` pures, and
+    #: no two of them stand closer than :attr:`min_pure_separation`. The
+    #: v1.21 rule only forbade *touching*, which left two legal shapes that
+    #: both spoil the contest: a board with a single jackpot (nothing to
+    #: choose between) and two jackpots four cells apart (one probe disk sees
+    #: both, so the "which seam do I commit to" decision never happens).
+    #: See :func:`_spread_pure_red`. Set False for the v1.21 behaviour.
+    spread_pure_red: bool = True
+
+    #: Minimum pures guaranteed on a board. Two, so there is always a choice.
+    #:
+    #: v1.28 — the *default* is two, but a real season sizes the count to the
+    #: table and draws at random between this and :attr:`max_pure_count`:
+    #: ``GameSession.new`` passes ``pure_count_range(len(seat_ids))``. The
+    #: seat count is applied there rather than here because the generator has
+    #: no notion of seats, and giving these fields a seat-shaped default
+    #: would change the meaning of every standalone call. Do not read this
+    #: default as "a board has two pures" — ask the caller.
+    min_pure_count: int = 2
+
+    #: Upper end of the pure count, inclusive. ``None`` (the default) means
+    #: *no draw*: :attr:`min_pure_count` is a plain floor and the board gets
+    #: whatever the terrain yields above it, which is the v1.24 behaviour
+    #: every standalone caller and generator test still expects.
+    #:
+    #: v1.28 — set it and the count becomes a uniform random draw from
+    #: ``[min_pure_count, max_pure_count]``, so the number of jackpots is not
+    #: a tell for the number of seats. The draw is a hard floor, not a cap:
+    #: a board whose terrain naturally carries more separated pures than the
+    #: draw keeps them, because demoting a legitimate jackpot to hit a
+    #: target is destroying real terrain to satisfy a statistic.
+    max_pure_count: Optional[int] = None
+
+    #: Minimum CHEBYSHEV distance between any two pures. 12 is three probe
+    #: radii at the default r4, so no single probe — and no plausible pair —
+    #: covers both. Best-effort: a board whose RED cannot host two cells this
+    #: far apart takes the furthest pair available rather than dropping to one.
+    min_pure_separation: int = 12
+
+
+#: v1.28 — how many jackpots a board carries, by seat count (RULEBOOK §2.2).
+#: Inclusive ``(low, high)``; the generator draws uniformly between them.
+#:
+#: A flat 2 was right for a duel and wrong for a full table — four Houses
+#: sharing two jackpots means two of them have nothing to contest. But a
+#: floor pinned exactly to the seat count is worse in the other direction:
+#: the count becomes a constant, and a constant is a tell. Every seat can
+#: then infer "one jackpot per House, so N-1 are out there" the moment they
+#: find their first, which turns the season's opening question — how much of
+#: this board is worth fighting for — into arithmetic.
+#:
+#: So it is a band. Note the four-seat low of 3 is deliberate and NOT a
+#: rounding of "one per House": at a full table it is allowed to come up
+#: short, so a House can find itself with no jackpot to reach. That is the
+#: scarcity the range exists to create.
+PURE_COUNT_BY_SEATS: dict[int, Tuple[int, int]] = {
+    1: (2, 3),
+    2: (2, 4),
+    3: (3, 5),
+    4: (3, 6),
+}
+
+
+def pure_count_range(seats: int) -> Tuple[int, int]:
+    """Inclusive ``(low, high)`` pure count for a season of ``seats`` Houses.
+
+    RULEBOOK §2.2. Outside the table the band is extrapolated and clamped:
+    never below 2 (one jackpot gives the opening nothing to choose between)
+    and never above 6, which is where the 12-cell separation stops being
+    reliably satisfiable on a 40x28 board. Measured over 200 seeds: counts
+    up to 6 never put two pures closer than 9, and an r4 probe spans 8, so
+    "no single probe lights two jackpots" survives the whole range. At 7 the
+    closest pair reaches 8 and that stops being true — hence the ceiling.
+    ``MAX_SEATS`` is 4, so the extrapolation is a guard, not a live path.
+    """
+    n = max(1, int(seats))
+    if n in PURE_COUNT_BY_SEATS:
+        return PURE_COUNT_BY_SEATS[n]
+    return (max(2, min(3, n)), max(2, min(6, n + 2)))
+
 
 def _percentile_threshold(field: Field, top_fraction: float) -> float:
     """Return the value above which ``top_fraction`` of cells lie."""
@@ -669,6 +749,105 @@ def _decluster_pure_red(grid: Grid, params: GenerationParams) -> None:
             grid[y][x] = Cell(Tile.RED, rng.randint(lo, hi))
 
 
+def _chebyshev(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    """King-move distance. The metric that answers "can one probe see both?"."""
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+
+
+def _spread_pure_red(grid: Grid, params: GenerationParams) -> None:
+    """Guarantee ``min_pure_count`` pures, none closer than ``min_pure_separation``.
+
+    RULEBOOK §2.2. :func:`_decluster_pure_red` (v1.21) only stopped pures
+    *touching*, which still permitted the two shapes that flatten the opening:
+    a board with exactly one jackpot, where there is nothing to choose between;
+    and two jackpots a few cells apart, where one probe disk lights both and
+    the "which seam do I commit to" decision never happens. This widens the
+    rule to a real separation, and puts a floor under the count.
+
+    Two passes, both deterministic:
+
+    1. **Thin.** Walk pures row-major, keeping one whenever it clears
+       ``min_pure_separation`` from every pure already kept; demote the rest
+       into ``[pure_demote_min, pure_demote_max]``, exactly as declustering
+       does. Subsumes the touching rule (distance 1 is far below 12), so the
+       v1.21 invariant still holds with this enabled.
+    2. **Top up.** While short of the target count, promote the best
+       remaining RED cell to 255 — preferring any cell that clears the
+       separation, richest first, ties row-major.
+
+    The target is ``min_pure_count``, or — when ``max_pure_count`` is set
+    (v1.28) — a uniform draw from that inclusive range, so a board does not
+    advertise the seat count by how many jackpots it carries. The draw comes
+    off its OWN stream, ``random.Random(seed + 6_000)``, deliberately: pass 1
+    demotes in row-major order and pass 2 promotes with no RNG at all, so
+    drawing separately means a board that lands on count N is byte-identical
+    to a board whose floor was a flat N, and raising the count only ever
+    *adds* jackpots to the same terrain.
+
+    **Best-effort separation, hard floor on count.** If no cell clears the
+    distance (a board whose RED is one small blob), the top-up takes the
+    candidate that is *furthest* from the existing pures rather than giving
+    up: two contested jackpots close together still beats one uncontested.
+    The count is the guarantee; the distance is the strong preference. A
+    board with no RED at all gets nothing, and does not spin.
+
+    Greedy, not optimal — pass 1 keeps the first legal pure in row-major
+    order, which can retain fewer than a perfect packing would. That is
+    deliberate: it is stable, cheap, and the floor in pass 2 covers the
+    shortfall.
+
+    RNG comes off a FRESH ``random.Random(seed + 5_000)`` (RED 1_000, GREEN
+    2_000, BLUE 3_000, decluster 4_000) so no existing layer's stream moves
+    and old seeds keep their terrain.
+    """
+    width, height = params.width, params.height
+    lo = max(0, min(255, int(params.pure_demote_min)))
+    hi = max(lo, min(255, int(params.pure_demote_max)))
+    sep = max(1, int(params.min_pure_separation))
+    want = max(1, int(params.min_pure_count))
+    if params.max_pure_count is not None:
+        # Own stream — see the docstring. Clamped rather than validated so a
+        # reversed range degrades to the floor instead of raising inside map
+        # generation, where the traceback would be a long way from the caller.
+        top = max(want, int(params.max_pure_count))
+        want = random.Random(params.seed + 6_000).randint(want, top)
+    rng = random.Random(params.seed + 5_000)
+
+    # ── pass 1: thin to a separated set ──────────────────────────────
+    kept: List[Tuple[int, int]] = []
+    for y in range(height):
+        for x in range(width):
+            c = grid[y][x]
+            if c.tile != Tile.RED or c.purity < 255:
+                continue
+            if all(_chebyshev((y, x), k) >= sep for k in kept):
+                kept.append((y, x))
+            else:
+                grid[y][x] = Cell(Tile.RED, rng.randint(lo, hi))
+
+    # ── pass 2: top up to the floor ──────────────────────────────────
+    while len(kept) < want:
+        best_key = None
+        best_at: Optional[Tuple[int, int]] = None
+        for y in range(height):
+            for x in range(width):
+                c = grid[y][x]
+                if c.tile != Tile.RED or c.purity >= 255:
+                    continue
+                gap = min((_chebyshev((y, x), k) for k in kept), default=sep)
+                # Clamping the gap at ``sep`` makes every legally-separated
+                # candidate tie, so the richest wins among them; only when
+                # nothing clears the bar does distance decide, which is the
+                # degenerate-board fallback.
+                key = (-min(gap, sep), -c.purity, y, x)
+                if best_key is None or key < best_key:
+                    best_key, best_at = key, (y, x)
+        if best_at is None:
+            break  # no RED left to promote — nothing more we can do
+        grid[best_at[0]][best_at[1]] = Cell(Tile.RED, 255)
+        kept.append(best_at)
+
+
 def _ensure_pure_red(grid: Grid, params: GenerationParams) -> None:
     """Guarantee at least one pure (255) RED cell on the board.
 
@@ -726,4 +905,9 @@ def generate_grid(params: GenerationParams) -> Grid:
         _decluster_pure_red(grid, params)
     if params.ensure_pure_red:
         _ensure_pure_red(grid, params)
+    # v1.24 — LAST, so it sees the final pure set: the guarantee above can
+    # mint a pure right beside a survivor of declustering, and only a pass
+    # that runs after both can enforce the separation over the whole board.
+    if params.spread_pure_red:
+        _spread_pure_red(grid, params)
     return grid

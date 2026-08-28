@@ -1589,8 +1589,12 @@ PY</pre>
             <tr>
               <td><code>Address already in use</code></td>
               <td>
-                Something is already on port 8000. Run
-                <code>uvicorn server.app:app --port 8001</code> instead.
+                Something is already on port 8000 &mdash; usually your own
+                server from earlier. Add <code>--replace</code> to stop it and
+                take over, or <code>--port 8001</code> to run both. Nothing to
+                hunt for: <code>--replace</code> refuses unless the port
+                answers as Sea of Colours, so it cannot take out the unrelated
+                thing you had there.
               </td>
             </tr>
             <tr>
@@ -1600,7 +1604,9 @@ PY</pre>
                 a hard refresh (Cmd-Shift-R). Python changes need a server
                 restart &mdash; <code>run_web.py</code> auto-reloads for you
                 unless you started it with <code>--no-reload</code>, which is
-                what the Snowflake command above recommends.
+                what the Snowflake command above recommends. Re-run that same
+                command with <code>--replace</code> and it will stop the old
+                server for you.
               </td>
             </tr>
             <tr>

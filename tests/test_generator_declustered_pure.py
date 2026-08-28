@@ -10,6 +10,13 @@ These tests pin the rule, its narrowness (only *touching* pures are
 thinned), the band a demoted cell lands in, and — the part that would be
 expensive to get wrong — that the change did not perturb any other feature
 of a given seed's terrain.
+
+**Scope (v1.24).** Everything here runs with ``spread_pure_red=False`` via
+:func:`_params`, so it measures the v1.21 layer *alone*. v1.24 widened the
+rule to a minimum count and a minimum separation, which necessarily thins
+harder than "only touching" — pinning both rules in one module would leave
+each test ambiguous about which one it caught. The spread rule has its own
+module, ``test_generator_pure_spread.py``.
 """
 
 from __future__ import annotations
@@ -33,6 +40,21 @@ _W, _H = 40, 28
 # three-in-a-row a player reported; 476 is the worst seen (8 cells).
 _SLAB_SEEDS = (126, 184, 211, 411, 425, 441, 462, 476)
 _WORST_SLAB_SEED = 476
+
+
+def _params(seed, **kw):
+    """Params for the tests below, with the v1.24 SPREAD rule off by default.
+
+    Everything in this module predates v1.24 and pins the *narrow* v1.21
+    rule — only touching pures are thinned. The spread rule (§2.2, min 2
+    pures at least ``min_pure_separation`` apart) deliberately thins harder
+    and promotes to a floor, which would mask what these tests measure: a
+    "raw" board built with ``decluster_pure_red=False`` still came out
+    de-slabbed, because spread had run over it. Tests for the spread rule
+    itself live in ``test_generator_pure_spread.py`` and opt back in.
+    """
+    kw.setdefault("spread_pure_red", False)
+    return GenerationParams(width=_W, height=_H, seed=seed, **kw)
 
 
 def _pure_cells(grid):
@@ -81,7 +103,7 @@ def _clusters(cells):
 def test_no_two_pures_are_ever_8_adjacent():
     """The headline rule, across enough seeds to be meaningful."""
     for seed in range(120):
-        grid = generate_grid(GenerationParams(width=_W, height=_H, seed=seed))
+        grid = generate_grid(_params(seed))
         touching = _touching_pairs(_pure_cells(grid))
         assert not touching, (
             f"seed {seed} has {len(touching) // 2} touching pure pair(s), "
@@ -92,7 +114,7 @@ def test_no_two_pures_are_ever_8_adjacent():
 def test_every_pure_cluster_is_a_single_cell():
     """Same rule stated the other way — no group larger than one survives."""
     for seed in range(60):
-        grid = generate_grid(GenerationParams(width=_W, height=_H, seed=seed))
+        grid = generate_grid(_params(seed))
         sizes = _clusters(_pure_cells(grid))
         assert sizes and set(sizes) == {1}, f"seed {seed} cluster sizes {sizes}"
 
@@ -109,9 +131,7 @@ def test_the_raw_generator_really_does_produce_slabs():
     worst = 0
     for seed in _SLAB_SEEDS:
         raw = generate_grid(
-            GenerationParams(
-                width=_W, height=_H, seed=seed, decluster_pure_red=False,
-            )
+            _params(seed, decluster_pure_red=False)
         )
         sizes = _clusters(_pure_cells(raw))
         worst = max([worst, *sizes])
@@ -129,11 +149,9 @@ def test_thinning_only_touches_pures_and_only_demotes_them():
     """
     for seed in (*range(40), *_SLAB_SEEDS):
         raw = generate_grid(
-            GenerationParams(
-                width=_W, height=_H, seed=seed, decluster_pure_red=False,
-            )
+            _params(seed, decluster_pure_red=False)
         )
-        fixed = generate_grid(GenerationParams(width=_W, height=_H, seed=seed))
+        fixed = generate_grid(_params(seed))
         for y in range(_H):
             for x in range(_W):
                 a, b = raw[y][x], fixed[y][x]
@@ -154,12 +172,10 @@ def test_a_pure_survives_every_cluster_that_had_one():
     """Thinning must not wipe a jackpot off the board entirely."""
     for seed in (*range(40), *_SLAB_SEEDS):
         raw = generate_grid(
-            GenerationParams(
-                width=_W, height=_H, seed=seed, decluster_pure_red=False,
-            )
+            _params(seed, decluster_pure_red=False)
         )
         raw_clusters = len(_clusters(_pure_cells(raw)))
-        fixed = generate_grid(GenerationParams(width=_W, height=_H, seed=seed))
+        fixed = generate_grid(_params(seed))
         assert len(_pure_cells(fixed)) == raw_clusters, (
             f"seed {seed}: {raw_clusters} raw cluster(s) should leave "
             f"{raw_clusters} pure(s), got {len(_pure_cells(fixed))}"
@@ -175,7 +191,7 @@ def test_pures_that_merely_sit_near_each_other_both_survive():
     seen_multi = False
     for seed in range(60):
         pures = _pure_cells(
-            generate_grid(GenerationParams(width=_W, height=_H, seed=seed))
+            generate_grid(_params(seed))
         )
         if len(pures) > 1:
             seen_multi = True
@@ -187,10 +203,7 @@ def test_pures_that_merely_sit_near_each_other_both_survive():
 
 def test_the_toggle_restores_the_raw_noise_output():
     raw = generate_grid(
-        GenerationParams(
-            width=_W, height=_H, seed=_WORST_SLAB_SEED,
-            decluster_pure_red=False,
-        )
+        _params(_WORST_SLAB_SEED, decluster_pure_red=False)
     )
     raw_clusters = _clusters(_pure_cells(raw))
     assert max(raw_clusters) == 8, (
@@ -199,7 +212,7 @@ def test_the_toggle_restores_the_raw_noise_output():
     )
     # Four separate blobs on this seed, so four surviving pures — one each.
     fixed = generate_grid(
-        GenerationParams(width=_W, height=_H, seed=_WORST_SLAB_SEED)
+        _params(_WORST_SLAB_SEED)
     )
     assert _clusters(_pure_cells(fixed)) == [1] * len(raw_clusters)
 
@@ -207,18 +220,16 @@ def test_the_toggle_restores_the_raw_noise_output():
 def test_the_reported_three_in_a_row_is_gone():
     """The shape a player actually hit: three pures side by side."""
     raw = generate_grid(
-        GenerationParams(
-            width=_W, height=_H, seed=126, decluster_pure_red=False,
-        )
+        _params(126, decluster_pure_red=False)
     )
     assert 3 in _clusters(_pure_cells(raw))
-    fixed = generate_grid(GenerationParams(width=_W, height=_H, seed=126))
+    fixed = generate_grid(_params(126))
     assert not _touching_pairs(_pure_cells(fixed))
 
 
 def test_declustering_is_deterministic_for_a_seed():
-    a = generate_grid(GenerationParams(width=_W, height=_H, seed=77))
-    b = generate_grid(GenerationParams(width=_W, height=_H, seed=77))
+    a = generate_grid(_params(77))
+    b = generate_grid(_params(77))
     assert [[(c.tile, c.purity) for c in row] for row in a] == [
         [(c.tile, c.purity) for c in row] for row in b
     ]
@@ -234,11 +245,9 @@ def test_seed_stability_every_other_layer_is_untouched():
     """
     for seed in (*range(40), *_SLAB_SEEDS):
         raw = generate_grid(
-            GenerationParams(
-                width=_W, height=_H, seed=seed, decluster_pure_red=False,
-            )
+            _params(seed, decluster_pure_red=False)
         )
-        fixed = generate_grid(GenerationParams(width=_W, height=_H, seed=seed))
+        fixed = generate_grid(_params(seed))
         assert [[c.tile for c in row] for row in raw] == [
             [c.tile for c in row] for row in fixed
         ], f"seed {seed}: tile layout moved — a shared RNG stream was consumed"
@@ -253,10 +262,7 @@ def test_the_guarantee_promotes_exactly_one_cell():
     pureless = None
     for seed in range(120):
         raw = generate_grid(
-            GenerationParams(
-                width=_W, height=_H, seed=seed,
-                ensure_pure_red=False, decluster_pure_red=False,
-            )
+            _params(seed, ensure_pure_red=False, decluster_pure_red=False)
         )
         if not _pure_cells(raw):
             pureless = seed
@@ -264,7 +270,7 @@ def test_the_guarantee_promotes_exactly_one_cell():
     assert pureless is not None, "no pure-less seed found — widen the scan"
 
     guarded = generate_grid(
-        GenerationParams(width=_W, height=_H, seed=pureless)
+        _params(pureless)
     )
     assert len(_pure_cells(guarded)) == 1, (
         "the fallback guarantee must mint a single pure, not a seam"
