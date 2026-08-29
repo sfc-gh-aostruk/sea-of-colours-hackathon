@@ -1019,20 +1019,22 @@ class PlanMatchesMaterialisedVerb(Assertion):
             "drop":    ("drop", "step"),
             "blind":   ("drop", "step"),
             "emp":     ("emp_launch",),
-            "deny":    ("emp_launch", "chaff_flare", "mine_lay"),
+            # v1.31 — the caltrop is retired, so ``mine_lay`` can never
+            # materialise: leaving it here would let a "deny" plan claim
+            # coherence against a verb the parser now refuses outright.
+            "deny":    ("emp_launch", "chaff_flare"),
             "chaff":   ("chaff_flare",),
-            "mine":    ("mine_lay",),
             "pickup":  ("pickup",),
             "recover": ("pickup",),
             "ship":    ("ship_catapult", "solar_jettison"),
             "vault":   ("ship_catapult", "solar_jettison", "pickup",
                         "refine", "refine_cascade"),
             "rebuild":       ("build_probe", "build_emp", "build_chaff",
-                              "build_mine", "build_harvester"),
+                              "build_harvester"),
             "fleet_rebuild": ("build_probe", "build_emp", "build_chaff",
-                              "build_mine", "build_harvester"),
+                              "build_harvester"),
             "build":         ("build_probe", "build_emp", "build_chaff",
-                              "build_mine", "build_harvester"),
+                              "build_harvester"),
             "refine":  ("refine", "refine_cascade"),
             "repair":  ("repair",),
         }

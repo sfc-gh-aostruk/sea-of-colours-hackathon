@@ -1,14 +1,17 @@
 """v0.9 — Weapons + WAIT tuning constants.
 
-Every numeric balance dial for the v0.9 interdiction layer (EMP
-warheads, caltrop mines, orbital chaff flares, the WAIT command)
-lives here. Engine, UI, and tests all import from this module so
-balance work is a one-file edit.
+Every numeric balance dial for the interdiction layer (EMP warheads,
+orbital chaff flares, the WAIT command) lives here. Engine, UI, and
+tests all import from this module so balance work is a one-file edit.
 
-The plan deliberately keeps the *mechanics* generalised even when
-the current launch values look like "one mine per buy" or "1-hour
-chaff" — bumping ``MINES_PER_BUY`` to 3 or ``CHAFF_DURATION_HOURS``
-to 2 should never require an engine change.
+The plan deliberately keeps the *mechanics* generalised even when the
+current launch values look like "three missiles a salvo" or "1-hour
+chaff" — bumping ``EMP_MISSILES_PER_LAUNCH`` or ``CHAFF_DURATION_HOURS``
+should never require an engine change.
+
+v1.31 — the caltrop mine's dials were the third block here and are
+gone; ``docs/ADDING_A_WEAPON.md`` uses them as the worked example of
+what a replacement weapon has to define.
 
 See RULEBOOK §5 (v0.9) for the canonical prose; the values below
 are the SHIPPED defaults at v0.9.0.

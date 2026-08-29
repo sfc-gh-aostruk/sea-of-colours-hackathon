@@ -190,8 +190,16 @@ and weapon-chip active-target states.
 - `manual/agent-data.js` — **generated**. Regenerate via
   `scripts/export_agent_guide_data.py` (needs Snowflake + a local card
   file; see the tracker).
-- `guide/index.html`, `README.md`, `docs/HACKATHON_BUILD_PLAN.md`.
-- `AGENTS.md` cites `weapons.py` as the "EMP/mine/chaff dials".
+- `guide/index.html`, `README.md`, `docs/HACKATHON_BUILD_PLAN.md`,
+  `docs/AGENT_ARCHITECTURE.md`, `manual/ANIMATION_LOOPS.md`, and the
+  harness's own `ENGINE_INTERFACE.md` (which must say which night verbs
+  the engine accepts, and which it now refuses by name).
+- `AGENTS.md` names the live dials in `weapons.py`; it reads
+  "EMP/chaff dials" since the retirement, so a third weapon puts itself
+  back in that list.
+- `snowflake/soc_schema.sql` and `soc_procedures.sql` carry comments
+  describing the columns and the accepted action list. The mine columns
+  are annotated retired-but-preserved rather than deleted.
 
 ---
 
@@ -207,9 +215,25 @@ and weapon-chip active-target states.
 - `sea_of_colours/evals/assertions.py` — weapon deny/allow tuples.
 - `sea_of_colours/evals/builder.py` — `give_weapon_stock(...)`.
 - `sea_of_colours/evals/season_metrics.py` — `kills_<name>`.
-- `scripts/fake_weapons_season.py`, `scripts/fake_graphics_season.py`,
-  `scripts/_fx_aoe.py`, `scripts/_fx_orbitpublic.py`,
-  `scripts/_fx_vision_geom.mjs`.
+- `scripts/fake_weapons_season.py` — one scripted night per weapon per
+  seat; `scripts/fake_graphics_season.py` derives its weapons half from
+  it, so adding a night there lengthens both reels automatically.
+- `scripts/_fx_aoe.py` (footprint parity vs the engine) and
+  `scripts/_fx_vision_geom.mjs` (the client's own shape maths) both
+  enumerate the area-claiming actions by name.
+- `scripts/_fx_orbitpublic.py` — the station glyph. Note it **injects**
+  the frame by rewriting the replay response, so it still covers the
+  caltrop's archived-playback path even though nothing can emit one.
+
+### What a retirement must NOT delete
+
+Learned from the caltrop, which got this right by accident more than
+design. A weapon's **replay** surface outlives the weapon: the frame
+channel, the Snowflake column, the `station.js` glyph and label, and the
+orbital activity tally all keep classifying frames recorded before the
+retirement. Strip them and every archived season that used the weapon
+plays back with holes in it. The engine, the buy, the order and the
+prompt text are what go.
 
 ---
 
@@ -225,6 +249,7 @@ unrelated to the weapon and must never be touched:
 | `probe: "mine"` | probe **owned by you** |
 | `cells_mined`, `unmined_value` | harvest statistics |
 | "mine/enemy split" | per-seat scoreboard colour |
-| "won't mine or EMP you" | English verb, in `README.md` / `guide/` |
+| "mines BLUE in even chunks", "fully mined out" | English verb, in `RULEBOOK.md` |
+| "frontier cells already mined" | English verb, in `ENGINE_INTERFACE.md` |
 
 The same trap applies to a future weapon named after a common word.

@@ -276,7 +276,7 @@ OPPONENT WEAPONS — beware_emp (vision + landing denial):
     * EMP is used for VISION DENIAL and LANDING DENIAL. It is RARELY
       aimed at a moving harvester — random hits are unlikely.
     * Manhattan-r2 blast (13 cells per missile x 3 missiles per launch).
-      Inside the blast: probes and mines are DESTROYED; harvesters are
+      Inside the blast: probes are DESTROYED; harvesters are
       DISABLED for 8 hours (or the rest of the night).
     * CRITICAL: an EMP'd harvester RETAINS its haul and can still be
       picked up. Being EMP'd is NOT death — only a dawn crash kills the

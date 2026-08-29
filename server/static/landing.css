@@ -265,3 +265,55 @@ body::before {
   color: var(--ok);
   font-weight: 700;
 }
+
+/* v1.32 — tutorial chooser, revealed under the nav by the Tutorial
+ * button. Inserted after the fact rather than sitting in the markup
+ * hidden, so the landing page's first paint is unchanged for someone
+ * who never clicks it. */
+.landing-tut {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin: 18px auto 0;
+  max-width: 720px;
+  animation: landing-tut-in 200ms ease-out both;
+}
+@keyframes landing-tut-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+.landing-tut-card {
+  flex: 1 1 200px;
+  max-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  text-align: left;
+  background: rgba(10, 10, 16, 0.72);
+  border: 1px solid rgba(140, 150, 170, 0.35);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.landing-tut-card:hover,
+.landing-tut-card:focus-visible {
+  border-color: rgba(77, 202, 94, 0.8);
+  background: rgba(14, 20, 16, 0.85);
+  outline: none;
+}
+.landing-tut-name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.landing-tut-blurb {
+  font-size: 11.5px;
+  line-height: 1.5;
+  opacity: 0.72;
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-tut { animation: none; }
+}

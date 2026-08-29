@@ -1,6 +1,6 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.30
+Version: 1.32
 Last updated: 2026-08-28
 
 This is the single source of truth for the world, the fiction, and how
@@ -1073,7 +1073,7 @@ the game's logic and its rule-enforcer:
   ``tag="damaged"`` (v0.9.10). The orchestrator eagerly fast-forwards
   past every CONSECUTIVE damaged-unit non-pickup move queued for the
   same harvester in ONE consolidated frame, so a long chain queued
-  before a caltrop hit doesn't drown the timeline in identical "X
+  before a collision doesn't drown the timeline in identical "X
   damaged — awaiting pickup" rejections. Only one hour-slot is
   burned for the whole run; pickup at the end (which extracts the
   unit to orbit, §3.6.1) still fires normally on a later hour.
@@ -1204,14 +1204,16 @@ grammar but massively simplified:
     the region boundary itself instead, because it must outline seats
     other than the recipient (whose cells carry no `vedge`); the field
     is retained for consumers that want the per-cell form.
-- **Order footprints (v1.23):** three orders cover ground beyond the
+- **Order footprints (v1.23):** two orders cover ground beyond the
   square you pick, and each draws that ground as a region outline on the
   same layer as the vision edges:
   - `probe` — Euclidean disk, radius `SOC_PROBE_RADIUS` (§3.9.7).
   - `emp_launch` — Manhattan diamond, radius `EMP_RADIUS` (§4.9), one per
     missile in the salvo rather than one blob, because that is how it
     detonates.
-  - `mine_lay` — the `MINE_BATCH_SHAPE` cluster (§5.2).
+
+  (There were three until v1.31, when the caltrop mine and its cluster
+  footprint were retired — §4.9.4.)
 
   A footprint **already in the queue** is drawn quietly in a long dash;
   the one **being aimed** follows the pointer, solid and brighter, and
@@ -1271,7 +1273,7 @@ recognised proof that this Red came from *that* square.
   Strategic intent of the v0.9.7 tightening: the §3.15 probe-launch
   broadcast still tells you WHERE an opponent put a probe, but it
   no longer reveals the terrain underneath that cell — so you can
-  react to the probe (mine it, EMP it, build a counter-probe), but
+  react to the probe (EMP it, build a counter-probe), but
   you can't piggy-back the broadcast into a free harvester drop on
   ground you've never seen. The opportunistic chain (enemy probe
   at (4,21) → my harvester lands there → my surface LoS pulse
@@ -1957,7 +1959,6 @@ Two resources flow through the Orbit phase:
 | `build_probe{count}` | `PROBE_BUILD_COST` (`250c`) each | Adds `count` to `probe_stock`. Probes are a finite resource — see §4.6. |
 | `repair{unit}` | `REPAIR_COST` (`500c`) | Clears the `damaged` flag on a harvester the seat owns. Refuses on a non-damaged target. |
 | `build_emp{count}` | BLUE | Adds EMP charges to the arsenal (§4.9.3). |
-| `build_mine{count}` | BLUE | Adds caltrop mine clusters (§4.9.4). |
 | `build_chaff{count}` | BLUE | Adds chaff flares (§4.9.5). |
 
 **There is no action cap.** (v1.13 — `MAX_ORBIT_ACTIONS = 3` is
@@ -1975,6 +1976,14 @@ afford instead of being dropped whole.
 > Orbit action any more — nothing refines, ships or burns them — so
 > there is nothing to lock. The old §4.2 rules about locked parcels,
 > committed bids and start-of-pass eligibility no longer apply.
+
+> **`build_mine` is refused by name (v1.31).** The caltrop mine was
+> retired and its buy row is gone from the table above, but a queued
+> `build_mine` is not quietly discarded: it comes back as a yellow line
+> saying the weapon was retired and to build EMP or chaff instead, the
+> same treatment `refine` and `ship_catapult` have had since v1.13. A
+> stale client or a stale model reply gets a diagnosis rather than a
+> shrug (§4.9.4).
 
 **The final orbit — nobody plays it any more (v1.30).** The terminal
 settlement orbit (`final_orbit`, `day = cap + 1`) is now resolved by the
@@ -2172,6 +2181,13 @@ The Nox phase gained three aggressive weapons and an explicit
 [`sea_of_colours/game/weapons.py`](sea_of_colours/game/weapons.py)
 so tuning them is a one-file edit.
 
+**Two of the three are still in service** — the EMP salvo (§4.9.3) and
+the orbital chaff flare (§4.9.5). The caltrop mine was retired in v1.31
+and its slot is deliberately left open for a replacement; §4.9.4 records
+what happened to it, and
+[`docs/ADDING_A_WEAPON.md`](docs/ADDING_A_WEAPON.md) maps every place a
+third weapon has to plug back in.
+
 #### 4.9.1 Blue purity — the weapons currency
 
 Weapons are funded out of the seat's vaulted **BLUE** parcels.
@@ -2181,9 +2197,9 @@ cost)` consumes parcels **lowest-purity first** until the
 running total covers `cost`; any overshoot in the final parcel is
 **wasted** (no refund). The economy intentionally rewards a seat
 that mines BLUE in even, high-purity chunks: a seat with two
-50-purity parcels is strictly worse off than one with a single
-100-purity parcel, because the second 50-parcel can fund a
-mine-lay (100) cleanly while two 60-parcels waste 20 to do the
+100-purity parcels is strictly worse off than one with a single
+200-purity parcel, because the single parcel can fund an EMP
+salvo (200) cleanly while two 120-parcels waste 40 to do the
 same job.
 
 This is the foundation under §4.6 (RED is propellant for orbital
@@ -2235,7 +2251,7 @@ seconds.
   cell was already inside an active cloud **at the start of the hour**
   (i.e. a cloud that survived this hour's decay tick, before this
   hour's own launches are resolved) still lands normally — the
-  harvester is not bounced, unlike a caltrop mine — but does **not**
+  harvester is not bounced — but does **not**
   auto-harvest that cell. It then goes `empd` from the following hour
   on, same as any other unit caught standing in a cloud. A cloud
   **freshly spawned by a launch resolved this same hour** does not
@@ -2245,11 +2261,13 @@ seconds.
   repeatedly walking fresh drops into a standing cloud, but a
   same-hour coincidence isn't retroactively punished.
 - **Cross-system kill (v0.9.x):** any **probe** caught in a cloud is
-  destroyed and any **caltrop mine** caught in a cloud is neutralized
-  — at formation AND on each subsequent hour's cloud tick (so a probe
-  or mine that moves/is laid into a standing cloud is also swept).
-  Friendly fire applies here too. Kills are logged on the launch /
-  field-sweep replay events (`destroyed_probes`, `neutralized_mines`).
+  destroyed — at formation AND on each subsequent hour's cloud tick (so
+  a probe launched into a standing cloud is also swept). Friendly fire
+  applies here too. Kills are logged on the launch / field-sweep replay
+  event (`destroyed_probes`). The sweep used to neutralize caltrop mines
+  as well; that half went with the weapon in v1.31 (§4.9.4), and the
+  `neutralized_mines` field survives only so archived seasons still read
+  back.
 - **Visibility:** open. Every seat sees the launch frame and the
   cloud cells.
 - **Order within an hour (RULEBOOK § "emp_first"):** EMP cloud
@@ -2269,31 +2287,48 @@ seconds.
   hour and takes no part in the collision pre-passes (§3.6). One applied
   action per seat per hour (§3.10), with no exception for weapons.
 
-#### 4.9.4 Caltrop mine cluster — `{"a": "mine_lay", "at": [x, y]}`
+#### 4.9.4 Caltrop mine cluster — retired (v1.31)
 
-- **Build-first (v0.9.3):** built in Orbit via
-  `{"a": "build_mine", "count": N}`; each `mine_lay` move drains
-  one from `weapon_stock["mine"]`. Empty stock → wasted move with
-  the `"no caltrop mine in stockpile"` log line.
-- **Cost (paid in Orbit, NOT at launch):** `MINE_COST_BLUE_PURITY`
-  (default 100) + `MINE_COST_CREDITS` (default 100) per lay.
-- **Cluster (v0.9.x):** one `mine_lay` arms a hidden multi-cell
-  **cluster** shaped by `MINE_BATCH_SHAPE` (default `"plus"` = center
-  + N/E/S/W = 5 cells; `"cross3x3"` = 9). Each in-bounds, not-already-
-  mined cell of the cluster gets a mine; out-of-bounds cells are
-  clipped. One lay still drains exactly one stock (`MINES_PER_BUY`
-  scales the BUILD batch, not the footprint).
-- **Behaviour:** mines persist across Nox (a mined cell from day 4
-  still bites on day 5). Stepping any harvester (own or opponent's)
-  into a mined cell **cancels the step**: the harvester stays at its
-  origin, becomes `damaged`, and that mine is consumed. No harvest
-  happens on the cancelled step.
-- **Visibility:** hidden by default — only the owner sees the mines.
-  Other seats receive a probe-witnessed echo per cell iff one of their
-  probes had line of sight at lay time. Counterplay leans on the
-  **public** "minelayer deployed" orbital observation (the minelayer's
-  flight is visible from orbit, though its drop coords are not) — and
-  on an EMP, which clears mines in its blast (§4.9.3).
+The caltrop mine was the third weapon: an Orbit buy (`build_mine`) that
+armed a hidden cluster of cells with a night order (`mine_lay`), and any
+harvester stepping into one had its step cancelled and was left
+`damaged`. It is **retired**, and the slot it occupied is deliberately
+left empty rather than back-filled in a hurry.
+
+The section number is kept so the citations elsewhere in this book, and
+in the code, still resolve.
+
+- **Both halves are refused by name, not ignored.** `build_mine` in an
+  Orbit submission and `mine_lay` in a night queue each come back as a
+  yellow line saying the weapon was retired in v1.31 and naming what is
+  left (EMP and chaff). This follows the v1.13 precedent for `refine`
+  and `ship_catapult`: a retired order that vanishes silently costs a
+  seat a slot and tells it nothing, which is worst of all for an agent —
+  it can only stop asking for a thing once it has been told why the
+  thing fails.
+- **Weapon stock is EMP and chaff only.** There is no third key in
+  `weapon_stock`, no MINE buy row in the Orbit panel, no deploy chip, no
+  board-menu entry, and no cluster preview when aiming.
+- **Collisions (§3.6) are now the only source of harvester damage.** No
+  square on the board can maim a unit that walks onto it; the repair
+  economy (§4.2) is otherwise unchanged.
+- **Archived seasons still play back in full.** The replay frame
+  channels, the Snowflake replay columns, the minelayer flight animation
+  and the orbital activity tally were all left standing on purpose — the
+  tally still counts `mine_lay` because it classifies *stored frames*,
+  and dropping the tag would silently blank the orbital silhouette of
+  every season that used caltrops.
+- **A pre-v1.31 save is migrated on load.** Armed caltrops still on the
+  board are **cleared** — a weapon that no longer exists must not go on
+  damaging harvesters in a season someone is still playing — and unspent
+  stock is **refunded as blue purity at the price originally paid**
+  (100 blue per caltrop). Credits are not refunded: the credit half was
+  the build fee, and the vault is where the loss is felt. The migration
+  writes a `[mineRetired]` log line saying how many of each it handled.
+
+[`docs/ADDING_A_WEAPON.md`](docs/ADDING_A_WEAPON.md) is the forward
+guide: every engine, view, agent, UI and doc surface a third weapon has
+to fill, with the caltrop as the worked example.
 
 #### 4.9.5 Orbital chaff flare — `{"a": "chaff_flare"}`
 
@@ -2343,7 +2378,8 @@ Each frame's optional fields gained three v0.9 channels:
 - `frame.emp` — list of `{kind, owner, at, radius, hours_remaining,
   launched_at_hour, consumed_blue, consumed_credits, waste_purity}`.
 - `frame.mine` — list of `{kind, owner, at, ...}` for both lay and
-  detonate events.
+  detonate events. No longer written since v1.31 (§4.9.4); the channel
+  and its renderer are kept so archived seasons still play.
 - `frame.chaff` — list of `{owner, from_hour, until_hour, ...}`.
 - `frame.emp_clouds` — snapshot of every active cloud at frame
   emit time (rendered as a dimmed/flashing area by the watcher).
@@ -2354,11 +2390,17 @@ frames remain in `frames[]`; the compacted view is in
 
 #### 4.9.7 Persistence
 
-`emp_clouds: List[Dict]` and `mines: Dict[str, Dict]` (keyed `"x:y"`)
-are added to `GameSession.to_dict` / `from_dict`. EMP clouds are
-intra-Nox only — the simulator zeroes the list at Aurora — so a
-mid-Nox Snowflake reload restores correctly but a cross-day
-reload finds no leftover clouds. Mines persist across Nox.
+`emp_clouds: List[Dict]` is added to `GameSession.to_dict` /
+`from_dict`. EMP clouds are intra-Nox only — the simulator zeroes the
+list at Aurora — so a mid-Nox Snowflake reload restores correctly but a
+cross-day reload finds no leftover clouds.
+
+The companion `mines: Dict[str, Dict]` (keyed `"x:y"`) used to persist
+alongside them, and mines survived across Nox. Since v1.31 nothing
+writes that key, and a save that still carries one has its caltrops
+cleared and its unspent stock refunded on load (§4.9.4). Both dicts
+tolerate being absent, which is why an old save opens without
+ceremony.
 
 ### 4.10 Blue-sign — orbital radiative signature (v0.9.x)
 
@@ -2637,7 +2679,7 @@ path; that module is heuristic-only now.)
 - **Three hardened prompt blocks.** Authored to close repeat
   failure modes observed during heuristic-vs-Cortex play:
   - **HARD RULES** — JSON move grammar for `probe` / `drop` /
-    `step` / `pickup` (plus v0.9 `wait` / `emp_launch` / `mine_lay`
+    `step` / `pickup` (plus v0.9 `wait` / `emp_launch`
     / `chaff_flare`), the "step is exactly one tile" rule, per-Nox
     caps (21 applied moves — one per planetary hour — queue ≤ 100),
     the harvester lifecycle (orbit → drop → step* → pickup,
@@ -2777,6 +2819,80 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.32 — 2026-08-28
+
+**Teaching mode: a season can run with weapons and signs switched off.**
+Three new session flags — `weapons_enabled`, `signs_enabled`, `tutorial` —
+let a game present a strict subset of the rules. Nothing here changes how a
+normal season plays: all three default to the full game, and a season that
+does not set them is bit-identical to v1.31.
+
+- **Why a flag and not a smaller ruleset.** The alternative was a separate
+  cut-down engine for onboarding, which is how rules drift starts. A first
+  night that teaches something the real game does not do is worse than no
+  tutorial. These flags subtract; they never add or alter.
+- **`weapons_enabled=False` (§4.9).** The Orbit buys and the night launches
+  refuse with a named reason, the same shape as a retired tag, and the
+  client hides the weapons bay, the stock readouts and the deploy verbs
+  outright. Hidden rather than greyed is deliberate: a disabled EMP button
+  teaches a beginner that EMPs exist, which is the thing being deferred.
+- **`signs_enabled=False` (§4.4, §4.6).** No blue sign is computed and no
+  redsign discovery is registered, so the whole signage layer — and the
+  discovery trigger that fires off it — is absent rather than empty.
+- **`tutorial`** names the preset (`basic` / `advanced` / `quick`, in
+  `game/tutorial.py`) and is published on `meta.rules` so the client can
+  put up the right films. It has no engine effect of its own.
+- **Where the values live.** `game/tutorial.py` owns the presets and the
+  server resolves them, so the client sends a preset NAME and cannot
+  disagree with the engine about what Basic means.
+
+### v1.31 — 2026-08-28
+
+**The caltrop mine is retired, and the third weapon slot is open (§4.9.4).**
+`build_mine` and `mine_lay` are gone from the game; EMP (§4.9.3) and chaff
+(§4.9.5) are the two weapons that remain.
+
+- **Why.** The slot is worth more than the weapon was. Mines were removed
+  to make room for a replacement, not because a third weapon is a mistake —
+  which is why the machinery around them was left standing rather than torn
+  out.
+- **Refused by name, not deleted.** Both halves follow the v1.13 precedent
+  set by `refine` and `ship_catapult`: a retired order comes back as a
+  yellow line naming the retirement and what to use instead. `build_mine`
+  joins `_RETIRED_ORBIT_TAGS`; a new `_RETIRED_MOVE_TAGS` is its night-move
+  mirror. This matters most to an agent — V12's sanitiser never rejected
+  `mine_lay`, so a stale model reply used to reach the engine and burn a
+  slot in silence, with nothing in the log to learn from.
+- **What went.** Every `MINE_*` dial in `weapons.py`, the mine subsystem in
+  `session.py` (armed-cell state, cluster geometry, the caltrop's step
+  damage in `try_step_unit`, probe-witnessed visibility), the third
+  `weapon_stock` key, the EMP
+  cross-kill on mines (§4.9.3), the order footprint (§3.11), the Orbit buy
+  row (§4.2), and the client's buy row, deploy chip, board-menu entry and
+  cluster preview.
+- **What deliberately stayed.** Replay frame channels (§4.9.6), the
+  Snowflake replay columns and their store round-trip, the minelayer flight
+  animation, and `mine_lay` in the orbital activity tally — the tally
+  classifies *stored frames*, so dropping the tag would blank the orbital
+  silhouette of every archived season that used caltrops. Archived seasons
+  play back exactly as they did.
+- **Loading an older save (§4.9.7).** Armed caltrops on the board are
+  **cleared**, because a weapon that no longer exists must not keep
+  damaging harvesters in a season someone is still playing, and unspent
+  stock is **refunded as blue purity at the price paid** (100 blue each)
+  rather than confiscated. Credits are not refunded — the credit half was
+  the build fee. A `[mineRetired]` log line reports both counts.
+- **Knock-on.** Collisions (§3.6) are now the only source of harvester
+  damage; the repair economy is otherwise unchanged. The §4.9.1 blue
+  worked example is restated against the EMP, the only weapon it can be
+  told with now.
+- **Forward guide.** [`docs/ADDING_A_WEAPON.md`](docs/ADDING_A_WEAPON.md)
+  maps every hole a third weapon has to plug into — engine, persistence,
+  agent view, agents, UI, docs, tests — with the caltrop as the worked
+  example, plus the standing trap that `entities.mine` is a seat's own
+  fleet and `situational.mine` is a redsign, so a find-and-replace on the
+  word will destroy the V12 agent.
 
 ### v1.30 — 2026-08-28
 

@@ -1208,7 +1208,107 @@ and leaving the old turn intact and dating it. Not a product bug either way.
 
 ---
 
-## Triage summary
+## 26. ✅ (DONE, v1.31) A stale `mine_lay` burned a slot and said nothing
+
+**Status (v1.31):** Resolved by retiring the weapon. The caltrop mine is gone
+(RULEBOOK §4.9.4) and both of its tags are now **refused by name** instead of
+falling through: `mine_lay` via the new `_RETIRED_MOVE_TAGS` in
+`game/policy.py`, `build_mine` via the existing `_RETIRED_ORBIT_TAGS`.
+
+**Symptom:** an agent that asked for a mine it could not use lost an hour and
+was told nothing it could learn from. The row resolved as a generic waste, so
+the next night's prompt carried no reason and the model asked again.
+
+**Root cause:** two gaps lined up. V12's `_v7/move_sanitizer.py` never filtered
+`mine_lay`, so a stale model reply reached engine policy intact; and policy's
+fall-through for an unrecognised tag is the bare "unknown action" waste, which
+consumes a slot (§3.10, every queued row burns one) without naming what went
+wrong. The same shape as the v1.13 `ship_catapult` problem, and it is fixed the
+same way: a dead tag maps to a *reason*, not to silence.
+
+**Fix:** `_RETIRED_MOVE_TAGS` as the night-move mirror of the orbit dict, both
+tags answering with "the caltrop mine was retired in v1.31" and what to use
+instead. The slot is still consumed — that part is the rule, not the bug — but
+the seat now sees why on the card.
+
+**Deliberately not fixed, because it is not broken:** replay frames, the
+Snowflake replay columns, the minelayer flight animation and the `mine_lay`
+entry in the orbital activity tally all stay. The tally classifies *stored
+frames*, so dropping the tag would have blanked the orbital silhouette of every
+archived season that used caltrops.
+
+**Migration:** a pre-v1.31 save has its armed caltrops cleared on load (a
+retired weapon must not keep damaging harvesters mid-season) and its unspent
+stock refunded as blue purity at the price paid, 100 each; credits are not
+refunded. A `[mineRetired]` log line reports both counts.
+
+**Tests:** `tests/test_v09_weapons.py` —
+`test_retired_mine_lay_says_why_rather_than_shrugging`,
+`test_retired_build_mine_says_why_rather_than_shrugging`, and
+`test_stale_mine_stock_refunds_as_blue_on_load`.
+`docs/ADDING_A_WEAPON.md` maps every hole the vacated slot leaves.
+
+---
+
+## 27. 🔴 (OPEN) The heuristic stopped choosing a seam in `two_seams_choose_one`
+
+**Symptom:** `pytest` is one red at HEAD —
+`tests/test_eval_scenarios.py::test_heuristic_passes_known_scenarios[two_seams_choose_one]`,
+failing `HarvesterChainHits: hit 0/1 of 3 target cells`. The agent still
+plans a sane-looking night: it walks `harvester_p1` from `[12,13]` out to
+`RED[15,15]` and drops both probes on fog clusters. It simply walks the
+*other* seam from the one the scenario is asserting on.
+
+**Not from the tutorial work (v1.32/v1.33).** Confirmed by running the file
+in a clean worktree at HEAD: it fails there too, with none of the film or
+preset changes present. Everything else is green — 1209 passed.
+
+**Where to start:** the three most recent heuristic commits are the
+suspects, and all three moved exactly the number this scenario measures —
+`9f555e5` (grade the ground around a jackpot, scale jackpots with the
+table), `d33b710` (price a blind seam from what seams actually measure),
+`92c0534` (last-night settlement). The question to answer first is whether
+the scenario's expected cells are still the *better* seam under the new
+pricing. If they are not, the fixture is stale and should be re-pinned
+with a note; if they are, the seam scorer is the bug. Do not "fix" it by
+loosening the assertion until that is settled — this scenario exists to
+catch the heuristic wandering.
+
+---
+
+## 28. ✅ (DONE, v1.33) The tutorial stopped teaching after you had played it once
+
+**Symptom:** start Basic a second time and no film modal ever appears. Nothing
+errors, the `[ TUTORIAL ]` button is still there, and the reels still resolve —
+the modal simply never opens itself. A first-timer on a borrowed laptop that
+had already been demoed would get a teaching mode with no teaching in it.
+
+**Root cause:** the auto-open is suppressed once a reel has been shown, so the
+modal does not reappear on every four-second poll. That memory
+(`soc.tutorial.seen.v1` in `localStorage`) was keyed on the **reel name
+alone** — and reel names are `basic:planning:1`, `basic:orbit:2` and so on,
+identical in every Basic game. One tutorial filled the set; every later
+tutorial read as already seen. The original comment ("keyed by reel, not by
+turn number, so replaying the tutorial does not re-nag") had it exactly
+backwards: **starting a fresh teaching game is a request to be taught.**
+
+A second, quieter half: `onState` decided "is this a new turn?" by comparing
+bare reel keys too, so a new game reached without a page reload looked like
+the same turn as before.
+
+**Fix:** `app.js` puts the session id on the `soc:tutorial-state` event, and
+`tutorial.js` scopes both the seen-set and the changed-check to
+`"<game>|<reel>"`. Mute (`soc.tutorial.muted.v1`) is untouched and is still
+the real "stop showing me these" control — it silences the auto-open without
+removing the button. Old un-scoped entries are ignored rather than migrated;
+worst case someone mid-game sees one reel a second time. The list is capped
+so a browser that plays many tutorials does not grow it forever.
+
+**Why no test caught it:** `scripts/_fx_tutorial.py` gets a clean browser
+profile on every run, and this bug only exists on the *second* game in one
+profile. It now plays a second tutorial in the same context and asserts the
+modal opens again, plus a third with mute set to assert mute still wins. Both
+were confirmed to fail against the old code before the fix went in.
 
 | # | Area | Severity | Blocking multiplayer? |
 |---|------|----------|-----------------------|
@@ -1237,3 +1337,6 @@ and leaving the old turn intact and dating it. Not a product bug either way.
 | 23 | Snowflake picker scored off a SQL view that credited disposed GREEN at +255 instead of charging −100 and applied no tier multiplier, inverting a finished season's winner | ✅ done (v1.20) | no |
 | 24 | A same-hour EMP voided a rival's queued landing: the hour-start vision snapshot was taken after the pre-hour phase had already fired the salvo and destroyed the beacon (§3.9.7 ⇄ engine) | ✅ done (v1.28) | no |
 | 25 | A jackpot sat in trace (79% had no mass within 4.5), so "richer ground means warmer" was not a readable signal — new graded-deposit pass (§2.2). **Doubles map RED: pre-v1.29 scores are not comparable.** V12's `_ASSUMED_HALO_PURITY` fallback measured (reached on only 1% of seams, so never the knock-on it looked like) and retuned 55 → 105 | ✅ done (v1.29) | no |
+| 26 | A stale `mine_lay` reached the engine unfiltered (the v7 sanitiser never rejected it) and wasted a slot as a nameless "unknown action" — resolved by retiring the caltrop and refusing both tags by name (§4.9.4); old saves clear armed caltrops and refund unspent stock as blue | ✅ done (v1.31) | no |
+| 27 | `two_seams_choose_one` red at HEAD: the heuristic walks the other seam, so `HarvesterChainHits` sees 0/1. Predates the tutorial work; suspects are the three recent seam/jackpot pricing commits | 🔴 open | no |
+| 28 | The tutorial modal never auto-opened again after one play: the shown-already set was keyed on reel names that repeat in every Basic game, so a returning player got a teaching mode that taught nothing. Now scoped per game id | ✅ done (v1.33) | no |

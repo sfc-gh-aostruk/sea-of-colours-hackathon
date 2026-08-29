@@ -13150,7 +13150,7 @@
       },
       {
         label:  "2 · EMP vs PROBES",
-        body:   "3 missiles fan across the field. Each detonation ripples out in Manhattan rings, then a pulsing cyan cloud (░▒▓) settles over the r=2 diamond. Any probe caught inside is fried — cyan X on the cell, disk drops to ECHO. Also neutralises any caltrop mine in the blast.",
+        body:   "3 missiles fan across the field. Each detonation ripples out in Manhattan rings, then a pulsing cyan cloud (░▒▓) settles over the r=2 diamond. Any probe caught inside is fried — cyan X on the cell, disk drops to ECHO. Probes are the only thing the blast sweeps.",
         cite:   "§4.9.3 · emp · cross-system kill",
         status: "# stage 2 · emp fries probes",
         run:    stage1_empVsProbes,

@@ -203,7 +203,7 @@
       // v1.14 — say what it costs as well as what it gives. Quick game
       // pins the memory backend, so it is fast and nothing is kept; the
       // launcher is where you choose an LLM agent and a saved season.
-      "btn-quick": "a fast practice game against the RED_HARVEST_LITE bot — nothing is saved",
+      "btn-quick": "learn the game in three nights against the RED_HARVEST_LITE bot — nothing is saved",
       "btn-play": "the full launcher: pick your opponent, the map, and whether the season is saved",
       "btn-multiplayer": "play with other human friends as well as agents",
       "btn-replay": "relive past games and learn new strategies"
@@ -326,10 +326,57 @@
   // v1.12 — "Quick game" spawns you vs RED_HARVEST_LITE and lands on the
   // board. "Play" still goes to the launcher for anyone who wants to
   // choose seats, map size or opponent.
-  if (btnQuick) {
-    btnQuick.addEventListener("click", function () {
-      window.location.href = "/play?new=quick";
+  // v1.32 — the three ways in. Names only: what each preset MEANS lives
+  // in sea_of_colours/game/tutorial.py, so this list can go stale on its
+  // copy but never on its rules.
+  var TUTORIAL_CARDS = [
+    {
+      preset: "tut-basic",
+      name: "Basic",
+      blurb: "three nights, small map, no weapons \u00B7 films as you go",
+    },
+    {
+      preset: "tut-advanced",
+      name: "Advanced",
+      blurb: "same board, three nights, weapons and signage switched on",
+    },
+    {
+      preset: "quick",
+      name: "Quick game",
+      blurb: "full map, full rules, three nights \u2014 skip the teaching",
+    },
+  ];
+
+  function openTutorialChooser() {
+    if (document.getElementById("landing-tut")) return;
+    var wrap = document.createElement("div");
+    wrap.id = "landing-tut";
+    wrap.className = "landing-tut";
+    TUTORIAL_CARDS.forEach(function (card) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "landing-tut-card";
+      var h = document.createElement("span");
+      h.className = "landing-tut-name";
+      h.textContent = card.name;
+      var p = document.createElement("span");
+      p.className = "landing-tut-blurb";
+      p.textContent = card.blurb;
+      b.appendChild(h);
+      b.appendChild(p);
+      b.addEventListener("click", function () {
+        window.location.href = "/play?new=" + card.preset;
+      });
+      wrap.appendChild(b);
     });
+    var nav = document.querySelector(".landing-actions");
+    if (nav && nav.parentNode) nav.parentNode.insertBefore(wrap, nav.nextSibling);
+    var first = wrap.querySelector("button");
+    if (first) first.focus();
+  }
+
+  if (btnQuick) {
+    btnQuick.addEventListener("click", openTutorialChooser);
   }
   if (btnPlay) {
     btnPlay.addEventListener("click", function () {

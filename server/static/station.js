@@ -104,6 +104,10 @@
     drop:        "orblift dropped harvester",
     drop_bounce: "orblift failed (bounce)",
     pickup:      "orblift recovered harvester",
+    // v1.31 — the caltrop is retired and no new season can emit this,
+    // but seasons recorded before v1.31 still replay through here.
+    // Deleting the entry does not tidy anything; it blanks a glyph in
+    // the archive. Same for OS_EVENT_GLYPH below and `mine_emit`.
     mine_lay:    "mine laid",
     emp_launch:  "EMP launched",
     chaff_flare: "chaff flare",

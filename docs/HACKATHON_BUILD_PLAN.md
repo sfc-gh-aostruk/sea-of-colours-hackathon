@@ -20,8 +20,8 @@ resolve it in favour of this:
 1. **Clone and play, fast.** Minutes, not an afternoon.
    `pip install -r requirements.txt` → `python run_web.py` → in a game
    against a heuristic opponent. The first opponent is
-   `RED_HARVEST_LITE` (weapons off) so a first-timer isn't being mined
-   and EMP'd while still learning what a parcel is; `RED_HARVEST`
+   `RED_HARVEST_LITE` (weapons off) so a first-timer isn't being EMP'd
+   and chaffed while still learning what a parcel is; `RED_HARVEST`
    (weapons on) is the step up.
 
    **The tutorial destination is the game running on the attendee's own
@@ -47,7 +47,7 @@ This is the hackathon's central exercise, and it is a **real, verified
 property of the code**, not a contrivance:
 
 - **V12's night planning never emits a weapon move.** The weapon action
-  tokens (`emp_launch`, `chaff_flare`, `mine_lay`) appear nowhere in
+  tokens (`emp_launch`, `chaff_flare`) appear nowhere in
   the `tabula_v12/` harness *except* `last_night.py`, which reads what
   was done **to** it. It can see it was EMP'd; it has no path to EMP
   back.
@@ -981,9 +981,10 @@ else settles automatically.
 **Keep — queued by the player, as today:**
 - `build_harvester`, `build_probe`, `repair{unit}` — the purchasing
   decisions (§4.2).
-- `build_emp`, `build_mine`, `build_chaff` — the weapons buys (§4.9).
-  Weapons stay **build-first**: bought in Orbit, fired during Nox out
-  of `weapon_stock`. That part of the loop is unchanged.
+- `build_emp`, `build_chaff` — the weapons buys (§4.9). Weapons stay
+  **build-first**: bought in Orbit, fired during Nox out of
+  `weapon_stock`. That part of the loop is unchanged. (`build_mine` was
+  on this list until the caltrop was retired in v1.31 — RULEBOOK §4.9.4.)
 
 **Remove or automate:**
 - `ship_catapult` — the per-parcel credit-bid slot draft (§4.4). RED
@@ -1892,8 +1893,8 @@ The work:
      seat actually harvests enough blue to pay for a magazine.
   4. **Inject the plays** — surface weapon moves as option-menu
      entries, teach the doctrine when each is worth firing
-     (`emp_launch` to disable a cluster, `mine_lay` to deny a seam,
-     `chaff_flare` to blank a turn), and extend the packager /
+     (`emp_launch` to disable a cluster, `chaff_flare` to blank a
+     turn), and extend the packager /
      validators to emit and accept those move shapes.
   5. Run it against `RED_HARVEST` (weapons on) and against stock V12,
      and show the score delta as the proof it worked.

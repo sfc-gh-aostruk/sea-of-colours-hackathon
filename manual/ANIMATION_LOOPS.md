@@ -193,8 +193,10 @@ stamped per-pixel via **Bresenham** into an ImageData buffer with
 additive blend; landing flash is a `0.35*cw → 0.90*cw` square that
 fades over 280ms. Trail pixels random-fade individually.
 
-Use for: any ballistic launch (probes, mines, chaff, EMP payloads).
+Use for: any ballistic launch (probes, chaff, EMP payloads).
 Vary `trailColor` per weapon (probe = white, EMP = cyan, chaff = grey).
+The minelayer arc used the same primitive; it is kept for archived
+seasons only, since the caltrop was retired in v1.31 (RULEBOOK §4.9.4).
 
 ### Orblift arc — `runOrbitalArcAnimation(board, cell, kind, seatVar, glyph, onDeposit, state)`
 
@@ -359,7 +361,7 @@ Suggested pairings:
 | §3.5 · §4.10 | Blue-sign radiative smear | new loop: pocket + orbital blue-sign heatmap on fog |
 | §4.3 | Refine trace → vein | new loop: hoard grid + refine cost animation |
 | §4.4 | RED shipping catapult | new loop: sealed-bid draft between two seats |
-| §4.9 | Weapons (EMP / chaff / mine) | new loop per weapon, each firing spawnProbeTrail with its colour |
+| §4.9 | Weapons (EMP / chaff) | new loop per weapon, each firing spawnProbeTrail with its colour |
 | §3.16 | Probe collisions | new loop: two probes contest same tile, supersede resolution |
 | §3.17 | Harvester collisions | new loop: two seats' harvesters collide, damage flag, cargo forfeit |
 | §3.12 | Square identity + Vault ledger | new loop: harvest → parcel → vault → shipped record chain |

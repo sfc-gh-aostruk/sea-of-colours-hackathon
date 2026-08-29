@@ -10,11 +10,13 @@ dist/
 venv/
 env/
 
-# Generated tutorial films. The GENERATOR is the deliverable
-# (scripts/_film_drop.py, later scripts/make_tutorial_films.py); the
-# .webm/.mp4 and extracted frames are build output and are re-shot by
-# re-running it. See docs/TUTORIAL_PLAN.md §4.1.
+# Scratch output from the film harness. The shipped films themselves
+# (server/static/films/*.webm) ARE committed — an attendee unzips this
+# repo and plays, with no build step and no ffmpeg — but the generator
+# (scripts/make_tutorial_films.py) is what you edit. See
+# docs/TUTORIAL_PLAN.md §4.1.
 reports/films/
+reports/filmsheets/
 
 # Test / tooling caches
 .pytest_cache/

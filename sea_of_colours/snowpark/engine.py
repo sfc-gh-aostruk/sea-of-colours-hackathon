@@ -410,6 +410,9 @@ def init_session(
     agents: Optional[Mapping[str, str]] = None,
     visibility_mode: str = "hidden",
     player_profiles: Optional[Mapping[str, Mapping[str, str]]] = None,
+    weapons_enabled: bool = True,
+    signs_enabled: bool = True,
+    tutorial: str = "",
 ) -> Dict[str, Any]:
     """Generate + persist a new session (mirrors POST /api/game/new).
 
@@ -435,6 +438,11 @@ def init_session(
     per-seat agent map (``agents``: ``"human"`` or ``"red_harvest"``),
     and a ``visibility_mode`` (``"hidden"`` or ``"open"``). Defaults
     keep the legacy 2-seat / human / hidden shape.
+
+    v1.32 — ``weapons_enabled`` / ``signs_enabled`` are the teaching
+    modes' rule switches and ``tutorial`` records which preset asked for
+    them. All three default to a full game, so every existing caller is
+    unaffected.
     """
     sess = GameSession.new(
         int(width),
@@ -447,6 +455,9 @@ def init_session(
         agents=agents,
         visibility_mode=visibility_mode,
         player_profiles=player_profiles,
+        weapons_enabled=bool(weapons_enabled),
+        signs_enabled=bool(signs_enabled),
+        tutorial=str(tutorial or ""),
     )
     save_session_full(store, sess)
     return {
@@ -466,6 +477,9 @@ def init_session(
         "players": list(sess.players),
         "agents": dict(sess.agents),
         "visibility_mode": str(sess.visibility_mode),
+        "weapons_enabled": bool(sess.weapons_enabled),
+        "signs_enabled": bool(sess.signs_enabled),
+        "tutorial": str(sess.tutorial or ""),
     }
 
 

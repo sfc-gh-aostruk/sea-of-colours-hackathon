@@ -282,7 +282,7 @@ def format_weapon_geometry_block(
         "WEAPON GEOMETRY (reason with the exact numbers, not vibes):\n"
         f"  EMP: an orbital salvo of {EMP_MISSILES_PER_LAUNCH} missiles; each "
         f"forms a Manhattan-radius-{EMP_RADIUS} cloud (~13 cells) that lasts "
-        f"{EMP_CLOUD_HOURS}h. Inside it: probes/mines DESTROYED, harvesters "
+        f"{EMP_CLOUD_HOURS}h. Inside it: probes DESTROYED, harvesters "
         f"DISABLED (they keep their haul — only a dawn crash kills them). It "
         f"is aimed at a CELL (usually your latest probe or a pure beacon), "
         f"reachable anywhere on the map.\n"

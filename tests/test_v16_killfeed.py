@@ -29,7 +29,7 @@ def _fresh_night_session(seed: int = 7) -> GameSession:
 
 def _stock_weapon(sess: GameSession, owner: str, kind: str, n: int = 1) -> None:
     slot = sess.weapon_stock.setdefault(
-        owner, {"emp": 0, "mine": 0, "chaff": 0},
+        owner, {"emp": 0, "chaff": 0},
     )
     slot[kind] = int(slot.get(kind, 0)) + int(n)
 

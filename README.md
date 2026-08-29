@@ -247,6 +247,46 @@ disable your harvesters, and you find out from the wreckage.
 Full rules: [RULEBOOK.md](RULEBOOK.md), or `manual/index.html` for the
 interactive version.
 
+### Never played? Start with the tutorial (v1.32)
+
+The **TUTORIAL** button on the landing page opens three presets. All
+three run on the in-memory backend against the heuristic bot, so they
+need no Snowflake and no setup.
+
+| Preset | Board | Nights | Rules |
+| --- | --- | --- | --- |
+| Basic | 24×16 | 3 | no weapons, no signs |
+| Advanced | 24×16 | 3 | everything on |
+| Quick game | full 40×28 | 3 | everything on |
+
+Basic is a genuine subset, not a simulation: the engine refuses the
+orders it hides, so nothing you learn there is wrong later. Each turn
+opens a short silent film of that turn's mechanic — probes, PRAXIS,
+orbit spending, the harvester round trip, collisions, superseding — and
+`[ TUTORIAL ]` in the top bar replays the current turn's reel any time.
+Every film also has the same lesson written out underneath it.
+
+The films are committed (`server/static/films/`), so this works from a
+fresh clone. They are **generated, not recorded** — to change one, edit
+the choreography and re-shoot rather than reaching for a screen
+recorder:
+
+```bash
+SOC_BACKEND=memory python run_web.py --no-reload --port 8022 &
+python scripts/make_tutorial_films.py --base http://127.0.0.1:8022
+python scripts/make_tutorial_films.py --list          # what there is
+python scripts/make_tutorial_films.py --only basic_drop   # just one
+```
+
+Each film drives the real UI in a real browser, so a film cannot show an
+order the engine would refuse — several assert their own outcome and
+fail the shoot if the game did not do what the caption claims. The reel
+text and the turn each reel belongs to live in
+`server/static/tutorial.js`; the presets live in
+`sea_of_colours/game/tutorial.py`. Re-shooting needs `ffmpeg` on PATH
+for the trim/compress pass, and falls back to the raw capture without
+it.
+
 ---
 
 ## How it works
@@ -283,7 +323,7 @@ If a play is not on the menu, no amount of prompting will produce it.
 ### The three agents
 
 - **`RED_HARVEST_LITE`** — the deterministic heuristic with weapons
-  switched off. Start here; it won't mine or EMP you while you're still
+  switched off. Start here; it won't EMP or chaff you while you're still
   learning what a parcel is. The default rival in the NEW GAME menu.
 - **`RED_HARVEST`** — the same pure-Python playbook with the full
   weapons economy

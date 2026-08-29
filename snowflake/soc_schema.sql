@@ -251,6 +251,11 @@ CREATE TABLE IF NOT EXISTS SOC_REPLAY_FRAME (
     --                  so the watcher can paint a persistent rhombus
     --                  on each mined cell between lay-time and the
     --                  matching detonate frame.
+    -- v1.31 — the caltrop mine was RETIRED (RULEBOOK §4.9.4). The two
+    -- mine columns are kept, and kept described above, because seasons
+    -- archived before the retirement still replay out of them. Nothing
+    -- writes them any more; a new weapon in the vacated slot should add
+    -- its own columns rather than reuse these.
     emp               VARIANT,
     mine              VARIANT,
     chaff             VARIANT,

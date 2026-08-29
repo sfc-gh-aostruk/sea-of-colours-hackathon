@@ -786,10 +786,9 @@ def _make_orbit_view(
             "hoard_parcels": hoard_parcels,
             # v0.9.9 — blue economy + weapons readouts.
             "blue_purity_total": int(blue_purity_total),
-            "weapon_stock": {"emp": int(emp_stock), "mine": 0, "chaff": 0},
+            "weapon_stock": {"emp": int(emp_stock), "chaff": 0},
             "weapon_prices": {
                 "emp": {"blue": 200, "credits": 0},
-                "mine": {"blue": 100, "credits": 0},
                 "chaff": {"blue": 50, "credits": 0},
             },
         },
@@ -991,7 +990,7 @@ def test_night_emp_falls_back_to_enemy_harvester_when_no_beacon():
     from sea_of_colours.agent.heuristic_agent import plan_moves
 
     view = _make_view_payload(red_xy=(6, 4))
-    view["orbit"] = {"weapon_stock": {"emp": 1, "mine": 0, "chaff": 0}}
+    view["orbit"] = {"weapon_stock": {"emp": 1, "chaff": 0}}
     view["competitor_intel"] = {
         "new_this_day": [
             {"kind": "enemy_harvester_trail", "owner": "p2", "at": [9, 5]},
@@ -1014,7 +1013,7 @@ def test_night_emp_targets_latest_enemy_beacon():
     from sea_of_colours.agent.heuristic_agent import plan_moves
 
     view = _make_view_payload(red_xy=(6, 4))
-    view["orbit"] = {"weapon_stock": {"emp": 1, "mine": 0, "chaff": 0}}
+    view["orbit"] = {"weapon_stock": {"emp": 1, "chaff": 0}}
     view["competitor_intel"] = {
         "new_this_day": [
             {"kind": "enemy_harvester_trail", "owner": "p2", "at": [2, 2]},
@@ -1045,7 +1044,7 @@ def test_night_harvesters_avoid_dropping_in_emp_cloud():
     )
 
     view = _make_view_payload(red_xy=(6, 4))
-    view["orbit"] = {"weapon_stock": {"emp": 1, "mine": 0, "chaff": 0}}
+    view["orbit"] = {"weapon_stock": {"emp": 1, "chaff": 0}}
     # Beacon sits right on the only RED tile's neighbourhood so the
     # cloud would otherwise be a tempting drop zone.
     view["competitor_intel"] = {
@@ -1116,7 +1115,7 @@ def test_night_schedules_chaff_in_egress_window():
     from sea_of_colours.agent.heuristic_agent import plan_moves
 
     view = _make_view_payload(red_xy=(6, 4))
-    view["orbit"] = {"weapon_stock": {"emp": 0, "mine": 0, "chaff": 1}}
+    view["orbit"] = {"weapon_stock": {"emp": 0, "chaff": 1}}
     moves, rationale = plan_moves(view)
     idxs = [i for i, m in enumerate(moves) if m.get("a") == "chaff_flare"]
     assert len(idxs) == 1, "exactly one chaff flare should be scheduled"
@@ -1131,7 +1130,7 @@ def test_night_no_chaff_when_unstocked():
     from sea_of_colours.agent.heuristic_agent import plan_moves
 
     view = _make_view_payload(red_xy=(6, 4))
-    view["orbit"] = {"weapon_stock": {"emp": 0, "mine": 0, "chaff": 0}}
+    view["orbit"] = {"weapon_stock": {"emp": 0, "chaff": 0}}
     moves, _ = plan_moves(view)
     assert all(m.get("a") != "chaff_flare" for m in moves)
 
@@ -1166,7 +1165,7 @@ def test_night_weapons_disabled_never_fires_emp_or_chaff():
     from sea_of_colours.agent.heuristic_agent import plan_moves
 
     view = _make_view_payload(red_xy=(6, 4))
-    view["orbit"] = {"weapon_stock": {"emp": 1, "mine": 0, "chaff": 1}}
+    view["orbit"] = {"weapon_stock": {"emp": 1, "chaff": 1}}
     view["competitor_intel"] = {
         "new_this_day": [
             {"kind": "enemy_harvester_trail", "owner": "p2", "at": [9, 5]},
@@ -1199,7 +1198,7 @@ def test_heuristic_agent_lite_flag_threads_through_play():
     )
 
     night_view = _make_view_payload(red_xy=(6, 4))
-    night_view["orbit"] = {"weapon_stock": {"emp": 1, "mine": 0, "chaff": 1}}
+    night_view["orbit"] = {"weapon_stock": {"emp": 1, "chaff": 1}}
     night_plan = lite.play(night_view)
     assert all(
         m.get("a") not in ("emp_launch", "chaff_flare")

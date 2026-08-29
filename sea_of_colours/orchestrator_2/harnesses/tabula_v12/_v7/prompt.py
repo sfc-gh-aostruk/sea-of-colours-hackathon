@@ -968,11 +968,12 @@ def format_opponent_weapons_block(
 ) -> str:
     """Render the per-opponent weapon-stock uncertainty ranges.
 
-    Only shows opponents where EMP or CHAFF ``max > 0``. Mine tracking
-    is dormant in the current campaign — the estimator still updates
-    ``mines_min/mines_max`` (so re-enabling is a one-line flip), but the
-    doctrine and wishlist don't act on mines yet, so we hide them here
-    to avoid signal noise.
+    Only shows opponents where EMP or CHAFF ``max > 0``.
+
+    v1.31 — this used to filter out a third, mine row that the estimator
+    tracked but the doctrine never acted on. The estimator no longer
+    tracks it, so the filter here is just "is there anything to warn
+    about", not a curation of what to hide.
 
     Each estimate carries an ``inferences`` audit trail (last few
     entries) so the LLM can see WHY we think they're armed.
@@ -990,8 +991,6 @@ def format_opponent_weapons_block(
         "OPPONENT WEAPON ESTIMATES (inferred from station_intel + activity — [min..max] ranges):",
     ]
     for est in interesting:
-        # Custom summary that hides the mines line — mines are tracked
-        # but not surfaced this campaign.
         lines.append(
             f"  {est.seat}: "
             f"emp=[{est.emps_min}..{est.emps_max}] "

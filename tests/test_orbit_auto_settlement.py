@@ -350,14 +350,21 @@ def test_orbit_accepts_more_than_three_actions() -> None:
     *kinds* of thing a seat did per orbit, never the volume of any one
     of them (every build action carries a ``count``), so it only ever
     produced a "one thing too many" refusal."""
+    from sea_of_colours.game.policy import OrbitWasteAction
+
     sess = _orbit_session()
     sess.credits = {p: 10_000 for p in sess.players}
+    # v1.31 — the fifth action used to be ``build_mine``. The caltrop is
+    # retired, so that now parses to a waste marker: the count would still
+    # have read 5 while only four real actions got through.
     ok, errs = sess.stash_orbit_actions("p1", [
         {"a": "build_probe", "count": 2},
         {"a": "build_harvester"},
         {"a": "build_emp"},
         {"a": "build_chaff"},
-        {"a": "build_mine"},
+        {"a": "repair", "unit": "harvester_p1"},
     ])
     assert ok and errs == []
-    assert len(sess.pending_orbit_actions["p1"]) == 5
+    stashed = sess.pending_orbit_actions["p1"]
+    assert len(stashed) == 5
+    assert not [a for a in stashed if isinstance(a, OrbitWasteAction)]

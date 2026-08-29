@@ -10516,3 +10516,177 @@ button.cli-btn.cc-advisor-tab[hidden] { display: none; }
   .cc-advisor-spin { animation: none; }
   .advisor-marker { animation: none; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ * v1.32 — TEACHING MODES
+ *
+ * Two unrelated things live here: hiding what a teaching preset switched
+ * off, and the film modal.
+ *
+ * On the hiding: this panel's standing rule since v1.25 is DIM, NEVER
+ * GATE — you may queue four probes on a stock of three, and the engine
+ * decides at PRAXIS. That rule is about affordability, and it does not
+ * apply here. A greyed EMP button in a game where weapons do not exist
+ * teaches a first-timer both that weapons exist and that they are
+ * broken. When the mechanic is absent, so is its control.
+ *
+ * Done in CSS off a body class rather than in each renderer because the
+ * weapons surface is spread over a dozen call sites and the one that
+ * gets missed is the one an attendee finds.
+ * ══════════════════════════════════════════════════════════════════ */
+
+.soc-weapons-off [data-orbit-block="weapons"],
+.soc-weapons-off [data-readout="weapon-stock"],
+.soc-weapons-off .cc-weapon-stock-chip,
+.soc-weapons-off .cc-weapon-bay-chip,
+.soc-weapons-off [data-vault-section="weapons"] {
+  display: none !important;
+}
+
+/* ── The film modal ───────────────────────────────────────────────────
+ * Deliberately NOT a blocking overlay. The scrim is faint and closes on
+ * click, the panel is corner-anchored rather than centred, and the board
+ * stays live behind it — this is a thing you read beside the game, not a
+ * gate in front of it. */
+.soc-tut {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+}
+.soc-tut[hidden] { display: none; }
+
+.soc-tut-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 6, 10, 0.55);
+}
+
+.soc-tut-panel {
+  position: relative;
+  /* The films are shot at the 1280x800 viewport the game actually lays
+     out at, so a narrow panel scales the UI down until its own 12px
+     labels are illegible. Stay near 1:1. */
+  /* The third term is the important one. The stage keeps the film's
+     aspect, so panel width dictates stage HEIGHT — cap the width by the
+     viewport height too, or on a laptop the film eats the panel and the
+     prose under it collapses to two clipped lines. 1.6 == 8/5. */
+  width: min(1180px, 95vw, calc(58vh * 1.6));
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg);
+  border: 1px solid var(--frame);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.7);
+}
+
+.soc-tut-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--frame);
+}
+.soc-tut-title {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.soc-tut-step {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 11px;
+}
+.soc-tut-x {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.soc-tut-x:hover { color: var(--fg); }
+
+/* 3:2 keeps the frame stable while a clip loads, so the prose below it
+ * does not jump when the video's real dimensions arrive. */
+.soc-tut-stage {
+  position: relative;
+  aspect-ratio: 8 / 5; /* == VIEWPORT in scripts/make_tutorial_films.py */
+  background: #07070b;
+  border-bottom: 1px solid var(--frame);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.soc-tut-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.soc-tut-stage-empty {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 11px;
+  text-align: center;
+  padding: 0 24px;
+}
+
+.soc-tut-body {
+  padding: 12px 14px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0; /* or the film's height wins and this never scrolls */
+}
+.soc-tut-heading {
+  margin: 0 0 8px;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.soc-tut-prose p {
+  margin: 0 0 10px;
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.62;
+}
+.soc-tut-prose p:last-child { margin-bottom: 0; }
+
+.soc-tut-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--frame);
+}
+.soc-tut-mute {
+  color: var(--dim);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.soc-tut-nav {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+.soc-tut-nav [hidden] { display: none; }
+.soc-tut-go { border-color: var(--green); color: var(--green); }
+
+.soc-tut-btn { margin-left: 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .soc-tut-video { animation: none; }
+}

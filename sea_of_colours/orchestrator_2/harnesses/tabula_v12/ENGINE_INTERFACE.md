@@ -60,7 +60,7 @@ top-level keys v12 consumes:
 | `competitor_intel` | rival probe sightings, harvester trails, `new_this_day` events |
 | `station_intel`, `opponents` | seat identities and station positions |
 | `last_night` | the engine's own recap of the resolved night |
-| `combat_events` | EMP / chaff / mine resolutions |
+| `combat_events` | EMP / chaff resolutions (an archived season may also carry mine events — see §3.1) |
 | `orbit` | ORBIT-phase economy state (credits, build options) |
 
 **Fog is respected as given.** If a cell is not in `world.live`, the harness
@@ -91,7 +91,7 @@ Per the repo's fan-out rule, tuning values are imported rather than duplicated:
 |---|---|
 | `game.tuning.probe_vision_radius` | `packager.py`, `out_of_grid.py` |
 | `game.tuning.probe_lifetime_nights` | `option_economics.py`, `supersede.py` |
-| `game.weapons` (EMP/chaff/mine dials) | `prompt.py`, `seam_control.py` |
+| `game.weapons` (EMP/chaff dials) | `prompt.py`, `seam_control.py` |
 
 If a dial moves in the engine, these follow automatically. **Adding a hardcoded
 copy of an engine constant to this package is the failure mode this table
@@ -125,6 +125,19 @@ so the packager's sequencing is part of the plan's meaning — this is why
 `_order_for_probe_support` reorders runs so a probe that grants drop legality
 lands before the drop that needs it.
 
+The wider night grammar also holds `wait`, `emp_launch` and `chaff_flare`; a
+fork that reaches for weapons emits those. It must **not** emit `mine_lay`.
+
+**Retired verbs are refused, not ignored (v1.31).** `mine_lay` — and its orbit
+half `build_mine` — are rejected by `game/policy.py` with a named reason ("the
+caltrop mine was retired in v1.31 — EMP and chaff are the remaining weapons"),
+and the row still burns one of the 21 slots. A fork that carries a stale tag
+therefore loses a slot per occurrence and sees the reason on the card, which is
+the whole point of refusing by name rather than dropping silently. Note the v7
+sanitizer never filtered `mine_lay`, so nothing upstream of the engine will
+catch it for you. RULEBOOK §4.9.4 records the retirement, and
+`docs/ADDING_A_WEAPON.md` maps what a replacement weapon has to fill.
+
 ### 3.2 The read-only path
 
 `run(..., submit=False)` runs the whole THINK → PLAN → PACKAGE → SANITIZE
@@ -146,7 +159,7 @@ game.
 | `SOC_AGENT_MEMORY` | `memory.py` (v7), `journal.py` | per session+seat+day: agent-authored `intent`/`reflection`, plus engine truth folded in (`happened`, `actual_banked`, `probe_crushes`, chosen option IDs) |
 | hazard memory | `hazard_memory.py` | the fog-surviving union of stripped/GREEN cells — monotonic, so it is a safe permanent "never drop or step here" set |
 | frontier memory | `frontier.py` | which frontier cells have already been mined for exploration probes |
-| weapon estimates | `opponent_weapons.py` (v7) | inferred rival EMP/chaff/mine stocks, in-process per session |
+| weapon estimates | `opponent_weapons.py` (v7) | inferred rival EMP/chaff stocks, in-process per session |
 | turn snapshots | `harness.py` / v7 recorder | turn-start score and probe counts, the anchor next turn's reflection is measured against |
 
 **Why hazard memory is harness-side and not a view field:** the engine tells you

@@ -1,6 +1,9 @@
 # Tutorial plan — landing menu, manual embeds, first-turn tooltips
 
-Status: **PLAN ONLY — nothing here is implemented.** Written 2026-08-28.
+Status: **BASIC SHIPPED (v1.32, 2026-08-28).** Written 2026-08-28 as a
+plan; kept as the design record, with the sections below still describing
+the intent rather than the code. Where the two disagree the code wins —
+see §9 for what actually landed and what is still open.
 
 Replaces the landing page's `Quick game` button with a `TUTORIAL` chooser
 offering three entries. Every entry runs on the memory backend and lasts
@@ -276,7 +279,10 @@ is what lets a stale tooltip be found when a control is renamed.
 ## 8. Spike result (2026-08-28)
 
 `scripts/_film_drop.py` proved the pipeline end to end. Output:
-11.6s, 1.4 MB `webm`, `reports/films/drop_a_harvester.webm`.
+11.6s, 1.4 MB `webm`. The script itself is **deleted** — everything it
+established was folded into `scripts/make_tutorial_films.py`, and a
+second, diverging copy of the cursor kit was the obvious way for the two
+to drift. This section is the record of what it taught.
 
 What it establishes:
 
@@ -300,3 +306,141 @@ What it exposed, all now folded into §4.3 above:
   film could teach an illegal move without anything complaining.
 - The picker is **sticky** — a landing chains into steps, so the blinking
   banner is still up when the film ends unless `Escape` is pressed.
+
+---
+
+## 9. What shipped (v1.32, 2026-08-28)
+
+### Landed
+
+- **Engine flags.** `weapons_enabled`, `signs_enabled`, `tutorial` on
+  `GameSession`, persisted, published on `meta.rules`, guarded at
+  `_apply_build_weapon` / `apply_emp_launch` / `apply_chaff_flare` /
+  `_compute_blue_sign` / `_register_redsign`. RULEBOOK §changelog v1.32.
+- **Presets, server-side.** `sea_of_colours/game/tutorial.py` owns
+  `basic` / `advanced` / `quick`; `server/app.py` resolves the NAME the
+  client sends and forces `memory` + `red_harvest_lite`. The client
+  cannot disagree with the engine about what Basic means.
+- **The chooser** on the landing page, replacing `Quick game`.
+- **The modal** — `server/static/tutorial.js`, ~440 lines, loaded after
+  `app.js` and coupled to it by exactly one DOM event. A missing film
+  degrades to its prose; a broken modal cannot break a season.
+- **Nine Basic films**, in `server/static/films/`, shot by
+  `scripts/make_tutorial_films.py` and committed.
+- **`scripts/_fx_tutorial.py`** — the end-to-end check. Asserts the
+  preset reaches the board, that no weapon control is *visible*, that
+  the film actually plays (rather than 404ing into the placeholder),
+  and that the reel **refreshes on the next turn**, which is the part
+  most likely to rot.
+
+### Deliberately not done
+
+- **Advanced and Quick have no reels.** Both modes run; neither opens a
+  modal, because `resolveReel` finds no key and the button hides itself.
+  The signs/EMP/chaff films in §4.3 are the remaining content.
+- **First-turn tooltips (§5)** are untouched. The films cover the same
+  ground and the tooltips would land on a UI that is still moving.
+- **The manual embed (§4.4)** is not wired. The prose under each film
+  turned out to carry the lesson on its own, and an iframe of the manual
+  is a much heavier promise to keep in sync.
+
+### Notes for the next person
+
+- **Films are build output that is checked in** (~15 MB). An attendee
+  clones and plays; nobody needs ffmpeg unless they re-shoot. The
+  `reports/films/` ignore rule is scratch space, not these.
+- **The shoot needs a running server** and takes ~6 minutes for all
+  nine, including the ffmpeg boot-trim pass.
+- **Reel keys are `<preset>:<phase>:<day>` and the day numbers bite.**
+  The night rolls the calendar before Orbit, so the first orbit anyone
+  sees is `orbit:2`. A reel written under `basic:orbit:1` never opens
+  and nothing warns you.
+- **`expect_slots`, not row counts.** The queue consolidates a walk into
+  one row, so counting `.solo-queue-row` under-reports; the films assert
+  against the `N/21 slots` counter instead.
+
+---
+
+## 10. Outcome films (v1.33, 2026-08-29)
+
+Three of the reels described a mechanic over a board where it was not
+happening. `basic_collision` talked about crashes on a quiet night;
+`basic_stranded` showed the STRANDED sticker and stopped before the
+consequence; nothing at all covered where the score comes from. These
+three now play the real thing.
+
+### The duel setup
+
+The bot in the other seat will not take direction, so a scripted crash
+was impossible. `_setup_duel` opens **both seats as human** and posts
+the rival's whole night over the API before the camera rolls, so the
+resolve is genuine simultaneous play — the explosions are the engine's.
+The film is handed the squares setup chose (`Film.plan`) rather than
+picking its own, because the rival is already committed to them.
+
+This is also why `server/app.py` honours explicit `weapons_enabled` /
+`signs_enabled` in the new-game body: the films want Basic's *look*
+without Basic's forced bot seat.
+
+- **`basic_crash`** — both shapes in one night: two Houses landing on
+  one square at H01, then a walk into an occupied square at H03. They
+  look nothing alike on screen and a player who has seen one does not
+  recognise the other.
+- **`basic_stranded`** — no lift, the guard's second-click warning
+  ignored on purpose, the dawn wave, then a close-up of the wreck with
+  its tooltip (`†` and `lost day N`).
+- **`basic_score`** — one load from ground to hold to station to
+  catapult to scoreboard, across three phases, without cutting. Runs
+  ~80s and that length is the point: the gap between harvesting and the
+  number moving is the lesson.
+
+### The camera, and why it fought back
+
+Films that turn on a collision need a close-up — a burst is a handful of
+pixels for under a second, and the product's own zoom dragger tops out
+at 127% of fit-to-width, which is a legibility control, not a camera.
+`Film.push_in` is a CSS transform on `.cc-map-viewport`. Four things
+about it are load-bearing, each learned by shooting a film that lied:
+
+1. **Frame a SET of squares and solve for the scale.** A hand-picked
+   2.1x framed two crash sites five squares apart with the second one
+   off the bottom edge, and nothing failed.
+2. **Translate explicitly; do not lean on `transform-origin`.** Origin
+   on the subject only guarantees the subject does not *move*. On a
+   board in the top half of a tall viewport that aims the close-up at
+   empty ground.
+3. **Re-aim on every hour.** The cinematic rebuilds the grid between
+   hours and the rebuilt grid can sit at a different offset; the scale
+   survives, the translate does not.
+4. **Host `#collision-fx-layer` outside the scaled subtree.** Every
+   effect in `app.js` places itself with `cellRect.left -
+   hostRect.left` — a *screen* delta written as a *local* offset. That
+   identity breaks the moment an ancestor is scaled: the first zoomed
+   crash film drew its collision X several hundred pixels off the board.
+
+`push_in` measures the result and fails if the subject is outside the
+frame or the squares did not actually grow, because a close-up is the
+one effect that fails silently — the film still runs, the caption still
+says "watch this square", and you get a wide shot with a lie over it.
+
+### Other traps paid for here
+
+- **Steps are 4-way orthogonal.** `_adj` is Manhattan. The harness had
+  a diagonal `STEP_RING`, the engine dropped the illegal steps without
+  complaint, and the film walked a harvester that never moved.
+- **A phase resolves only when EVERY seat commits.** On a duel board
+  nobody is playing the other one, so `submit_orbit(..., "p2")` is not
+  tidiness — without it the film sits on a spinning board until timeout.
+- **`park()` must land on nothing.** It used to park mid-board, which
+  left a stale cell readout sitting over the map for the whole next
+  beat. It now aims for the dead strip under the grid and asserts the
+  card actually closed.
+- **The ORDERS roster is gone once the night resolves.** Damage shows
+  up in the ORBIT panel (`[data-orbit-damaged-count]`), not on a fleet
+  row sticker.
+- **The "already shown" memory is scoped per GAME**
+  (`"<session>|<reel>"`), not per reel. Reel keys repeat in every Basic
+  game, so keying on the reel alone meant the modal auto-opened exactly
+  once per browser, ever — see issue 28. `_fx_tutorial.py` now plays a
+  second tutorial in the same profile to hold that line, because a
+  fresh Playwright context cannot see this class of bug at all.

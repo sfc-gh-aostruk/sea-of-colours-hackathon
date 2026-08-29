@@ -1024,6 +1024,29 @@ class GameSession:
     #: Replay frame snapshots also honour the same flag so a hidden
     #: game stays hidden after the season ends.
     visibility_mode: str = "hidden"
+    #: v1.32 — per-GAME rule switches, for the teaching modes.
+    #:
+    #: Same rule as the storage backend (AGENTS.md, v1.14): these live on
+    #: the SESSION, not in process config, so a tutorial and a real season
+    #: can be open in two tabs against one server. Nothing may ask "is this
+    #: process in tutorial mode?" — ask the session.
+    #:
+    #: They are also published on ``meta.rules`` (see
+    #: ``snowpark/view.py:_active_rules``) rather than being enforced by a
+    #: silent filter. An agent that is never TOLD weapons are off will
+    #: propose EMPs every turn and have them eaten by the sanitiser, which
+    #: burns its whole move budget and looks like a broken agent.
+    weapons_enabled: bool = True
+    #: Blue signs (§4.10) and discovery-triggered redsign beacons (§4.11).
+    #: Off together: a board with one and not the other teaches a signage
+    #: model that does not exist in a real season.
+    signs_enabled: bool = True
+    #: ``""`` for an ordinary season, else the teaching preset that made
+    #: this game (``"basic"`` / ``"advanced"``). The client reads it to pick
+    #: which film reel the tutorial modal opens on; the engine only stores
+    #: it. Rules are carried by the flags above, never by this string, so a
+    #: future preset cannot quietly change what is legal.
+    tutorial: str = ""
     probe_seq: Dict[str, int] = field(default_factory=lambda: {"p1": 0, "p2": 0})
     pending_policies: Dict[str, Optional[List[Move]]] = field(
         default_factory=lambda: {"p1": None, "p2": None}
@@ -1552,6 +1575,9 @@ class GameSession:
         agents: Optional[Mapping[str, str]] = None,
         visibility_mode: str = "hidden",
         player_profiles: Optional[Mapping[str, Mapping[str, str]]] = None,
+        weapons_enabled: bool = True,
+        signs_enabled: bool = True,
+        tutorial: str = "",
     ) -> GameSession:
         # v1.28 — the seat list is normalised BEFORE the map is generated,
         # because the pure-RED floor scales with it (below). It used to sit
@@ -1659,6 +1685,9 @@ class GameSession:
             players=seat_ids,
             agents=agent_map,
             visibility_mode=visibility,
+            weapons_enabled=bool(weapons_enabled),
+            signs_enabled=bool(signs_enabled),
+            tutorial=str(tutorial or ""),
         )
         # Mint Latin names for the bot / agent seats (human seats keep
         # their seat-colour label). Deterministic from the seed so a
@@ -1779,6 +1808,13 @@ class GameSession:
         ``{"id", "center": [x, y], "cells": [[x, y, intensity], ...]}``.
         """
         import math
+
+        # v1.32 — signs off is a per-GAME rule, and the cheapest honest
+        # place to honour it is here: every caller reads the returned list,
+        # so an empty one means no seat can see a signature and nothing
+        # downstream needs a second switch.
+        if not self.signs_enabled:
+            return []
 
         blue_cells: List[Tuple[int, int]] = []
         entries = getattr(self.ledger, "entries", {}) or {}
@@ -2232,6 +2268,14 @@ class GameSession:
         names the discoverer, RULEBOOK §4.11); the discoverer is recorded on
         the region ONLY so each seat can privately tell "is this mine?".
         """
+        # v1.32 — signs off (teaching mode). Return BEFORE marking anything
+        # in ``redsign_seen``: the discovery trigger must be genuinely
+        # absent, not merely silent. Consuming the discovery here would let
+        # a later game with signs on load a save whose seams are already
+        # spent, which is a much worse bug than a missing beacon.
+        if not self.signs_enabled:
+            return
+
         w, h = self.width, self.height
 
         def _is_pure(x: int, y: int) -> bool:
@@ -4708,6 +4752,11 @@ class GameSession:
         "no partial fill" guarantee so the watcher's stock readout
         never flickers mid-action.
         """
+        if not self.weapons_enabled:
+            return False, (
+                f"{player}: build_{kind} refused — weapons are disabled in "
+                "this game (teaching mode)"
+            )
         n = max(1, int(count or 1))
         blue_needed = n * int(blue_cost_each)
         credits_needed = n * int(credit_cost_each)
@@ -4917,6 +4966,12 @@ class GameSession:
             "players": list(self.players),
             "agents": dict(self.agents),
             "visibility_mode": str(self.visibility_mode),
+            # v1.32 — teaching-mode rule switches. Persisted rather than
+            # re-derived, because ``tutorial`` alone must never be what
+            # decides them (see the field docs).
+            "weapons_enabled": bool(self.weapons_enabled),
+            "signs_enabled": bool(self.signs_enabled),
+            "tutorial": str(self.tutorial or ""),
             "pending_policies": {
                 p: (moves_to_wire(self.pending_policies[p] or [])
                     if self.pending_policies.get(p) is not None else None)
@@ -5154,6 +5209,11 @@ class GameSession:
             players=seat_ids,
             agents=agent_map,
             visibility_mode=visibility,
+            # v1.32 — pre-1.32 saves have neither key and must load as full
+            # games, so both default to on.
+            weapons_enabled=bool(data.get("weapons_enabled", True)),
+            signs_enabled=bool(data.get("signs_enabled", True)),
+            tutorial=str(data.get("tutorial") or ""),
             probe_seq=probe_seq_init,
             log=_normalize_log_entries(data.get("log")),
             errors={p: list((data.get("errors") or {}).get(p, [])) for p in seat_ids},
@@ -7435,6 +7495,12 @@ class GameSession:
             EMP_MISSILES_PER_LAUNCH,
         )
 
+        if not self.weapons_enabled:
+            return False, (
+                f"{player}: emp_launch refused — weapons are disabled in "
+                "this game (teaching mode)"
+            )
+
         # Collect the salvo's target cells: primary first, then extras,
         # de-duplicated and bounds-filtered, capped at the salvo size.
         raw_targets: List[Tuple[int, int]] = [(int(x), int(y))]
@@ -7666,6 +7732,12 @@ class GameSession:
         the replay record.
         """
         from sea_of_colours.game.weapons import CHAFF_DURATION_HOURS
+
+        if not self.weapons_enabled:
+            return False, (
+                f"{player}: chaff_flare refused — weapons are disabled in "
+                "this game (teaching mode)"
+            )
 
         slot = self._ensure_weapon_stock_slot(player)
         if int(slot.get("chaff", 0)) <= 0:

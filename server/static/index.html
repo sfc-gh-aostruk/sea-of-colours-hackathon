@@ -65,6 +65,11 @@
                  gone from the header (the filter moved to SETTINGS). -->
           </div>
           <span id="phase-line" class="dim cc-status"># idle — start a session</span>
+          <!-- v1.32 — tutorial.js hangs its [ TUTORIAL ] button here in a
+               teaching game. An empty slot in an ordinary season, because
+               the reels — and the button — are that file's business, not
+               this markup's. -->
+          <span data-tutorial-slot></span>
         </div>
         <div class="cc-header-right">
           <!-- v1.20 — where THIS game is stored. Backend is a per-game
@@ -428,10 +433,6 @@
                         <span class="cc-weapon-icon cc-weapon-icon-emp" aria-hidden="true"></span>
                         <span data-weapon-stock-count="emp">0</span>
                       </span>
-                      <span class="cc-weapon-stock-chip" data-weapon="mine">
-                        <span class="cc-weapon-icon cc-weapon-icon-mine" aria-hidden="true"></span>
-                        <span data-weapon-stock-count="mine">0</span>
-                      </span>
                       <span class="cc-weapon-stock-chip" data-weapon="chaff">
                         <span class="cc-weapon-icon cc-weapon-icon-chaff" aria-hidden="true"></span>
                         <span data-weapon-stock-count="chaff">0</span>
@@ -509,7 +510,7 @@
                      REFINE and SHIPPING/JETTISON lanes went with the
                      mechanics they drove, leaving:
                        1. CONSTRUCT / REPAIR — fleet build + workshop
-                       2. WEAPONS — EMP / MINE / CHAFF stockpile -->
+                       2. WEAPONS — EMP / CHAFF stockpile -->
                 <div class="cc-queue-toolbar cc-orbit-toolbar">
                   <div class="cc-orbit-block" data-orbit-block="construct">
                     <!-- v1.25 — the verb lives on the HEADING, so the six
@@ -615,32 +616,10 @@
                         </span>
                         <span class="cc-orbit-why" data-orbit-why="build_emp" hidden></span>
                       </div>
-                      <div class="cc-orbit-act">
-                        <span class="cc-orbit-act-line">
-                          <button
-                            type="button"
-                            class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
-                            data-orbit-action="build_mine"
-                          >
-                            [
-                              <span class="cc-weapon-icon cc-weapon-icon-mine" aria-hidden="true"></span>
-                              MINE &times;<span class="cc-weapon-count" data-orbit-weapon-count="mine">1</span> ]
-                          </button>
-                          <input
-                            type="number"
-                            min="1"
-                            max="10"
-                            step="1"
-                            value="1"
-                            id="solo-orbit-mine-count"
-                            class="cc-probe-count-input"
-                            title="How many mines to build this slot"
-                            aria-label="Mine count"
-                          />
-                          <span class="cc-orbit-cost" data-orbit-cost="build_mine"></span>
-                        </span>
-                        <span class="cc-orbit-why" data-orbit-why="build_mine" hidden></span>
-                      </div>
+                      <!-- v1.31 — the MINE row stood here. The weapon is
+                           retired and its slot is vacant; see
+                           docs/ADDING_A_WEAPON.md for the markup a
+                           replacement needs. -->
                       <div class="cc-orbit-act">
                         <span class="cc-orbit-act-line">
                           <button
@@ -1083,7 +1062,7 @@
               <!-- v0.9 — Blue-purity readout. The weapons economy
                    (RULEBOOK §4.9) burns blue-purity-summed parcels,
                    lowest-first, so this number is the budget a seat
-                   has to fire EMP / mines / chaff this turn. -->
+                   has to fire EMP / chaff this turn. -->
               <div class="cc-vault-meta" data-meta="blue-purity">
                 <span class="cc-vault-meta-label">BLUE PURITY (&Sigma;p)</span>
                 <span class="cc-vault-meta-value" id="vault-meta-blue-purity">0</span>
@@ -1870,5 +1849,9 @@
          must load AFTER app.js so the window.osOnX hooks are wired before
          the first replay payload fires osOnOrbitalDataLoaded. -->
     <script src="/static/station.js"></script>
+    <!-- v1.32 — teaching-mode film modal. Self-gates on the session's
+         `tutorial` preset, so it costs an ordinary season one no-op event
+         listener. Must load AFTER app.js, which fires the state event. -->
+    <script src="/static/tutorial.js"></script>
   </body>
 </html>

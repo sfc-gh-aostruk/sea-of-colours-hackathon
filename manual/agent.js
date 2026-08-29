@@ -1700,8 +1700,8 @@
       "this whole document"],
     ["frontier.py", "Exploration probe placement — enemy-aware, edge-seeking, " +
       "and jittered so two seats do not converge on the same cell.", null],
-    ["hazard_memory.py", "Persistent hazards across nights: mines, EMP scars, " +
-      "and the trails rivals have already stripped.", null],
+    ["hazard_memory.py", "Persistent hazards across nights: EMP scars and " +
+      "the trails rivals have already stripped.", null],
     ["speculative.py", "Hot drops into fog when nothing better is lit — which " +
       "on this night it was.", null],
     ["chain_filter.py", "Dedupes candidate chains by body overlap and drops " +

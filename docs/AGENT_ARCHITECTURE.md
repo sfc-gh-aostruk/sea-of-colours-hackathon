@@ -338,7 +338,7 @@ In rough priority order:
    - branch `run_agent_turn` to invoke Cortex for orbit instead of the
      heuristic. **No orbit prompt sample exists yet because no orbit prompt is
      ever built — this is greenfield.**
-2. **Weapons.** The haiku agent has no concept of EMP / mine / chaff. The
+2. **Weapons.** The haiku agent has no concept of EMP / chaff. The
    grammar and doctrine for these would need to be added to the spec and the
    move-validation path.
 3. **Multi-harvester planning.** The PILOT turn procedure is explicitly "ONE

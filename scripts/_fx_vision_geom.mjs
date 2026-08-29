@@ -41,9 +41,9 @@ const build = new Function(
   "window",
   `${grab("_visionRings")}\n${grab("_collapseCollinear")}\n${grab("_ringsToPath")}\n` +
   `${grab("_ringIsClosed")}\n${grab("_probeRadius")}\n${grab("_empRadius")}\n` +
-  `${grab("_mineShape")}\n${grab("_actionFootprint")}\n${grab("_actionHasArea")}\n` +
+  `${grab("_actionFootprint")}\n${grab("_actionHasArea")}\n` +
   `return { _visionRings, _collapseCollinear, _ringsToPath, _ringIsClosed,` +
-  ` _probeRadius, _empRadius, _mineShape, _actionFootprint, _actionHasArea };`,
+  ` _probeRadius, _empRadius, _actionFootprint, _actionHasArea };`,
 );
 const ctx = build({});
 
@@ -277,9 +277,6 @@ console.log("\nvision border geometry\n");
     `got ${size("probe", 20, 14)}`);
   check("EMP is a 13-cell r2 manhattan diamond", size("emp_launch", 20, 14) === 13,
     `got ${size("emp_launch", 20, 14)}`);
-  check("mine is a 5-cell plus", size("mine_lay", 20, 14) === 5,
-    `got ${size("mine_lay", 20, 14)}`);
-
   // The disk really is round, not a square: r4 Chebyshev would be 81.
   const disk = ctx._actionFootprint("probe", 20, 14, W, H);
   check("disk is round, not a chebyshev square",
@@ -290,8 +287,9 @@ console.log("\nvision border geometry\n");
   // 5 + 4 + 4 + 3 + 1 along the rows the quadrant keeps.
   check("corner probe clips to 17 cells", size("probe", 0, 0) === 17,
     `got ${size("probe", 0, 0)}`);
-  check("corner mine clips to 3 cells", size("mine_lay", 0, 0) === 3,
-    `got ${size("mine_lay", 0, 0)}`);
+  // The EMP diamond loses three of its four points in a corner.
+  check("corner EMP clips to 6 cells", size("emp_launch", 0, 0) === 6,
+    `got ${size("emp_launch", 0, 0)}`);
   check("nothing lands off the board",
     ctx._actionFootprint("probe", 0, 0, W, H)
       .every(([x, y]) => x >= 0 && y >= 0 && x < W && y < H));
@@ -305,14 +303,14 @@ console.log("\nvision border geometry\n");
   check("EMP radius tracks weapon_specs",
     tuned._actionFootprint("emp_launch", 20, 14, W, H).length === 25,
     `got ${tuned._actionFootprint("emp_launch", 20, 14, W, H).length}`);
-  check("unknown mine shape degrades to the centre cell, as the engine does",
-    build({ __SOC_MINE_SHAPE__: "L3" })._actionFootprint("mine_lay", 20, 14, W, H).length === 1);
-
-  // Only the three area orders get an outline; a step/drop already carries
-  // a path badge on its single cell.
-  check("only probe/EMP/mine claim an area",
-    ["probe", "emp_launch", "mine_lay"].every(ctx._actionHasArea)
-    && !["step", "drop", "pickup", "wait", "chaff_flare"].some(ctx._actionHasArea));
+  // Only the area orders get an outline; a step/drop already carries a
+  // path badge on its single cell. v1.31 — mine_lay was the third, and
+  // must now claim nothing: a retired order that still drew a footprint
+  // would promise the player an effect the engine refuses.
+  check("only probe/EMP claim an area",
+    ["probe", "emp_launch"].every(ctx._actionHasArea)
+    && !["step", "drop", "pickup", "wait", "chaff_flare", "mine_lay"]
+      .some(ctx._actionHasArea));
 
   // And the footprint feeds the same ring builder the borders use.
   const mask = new Set(disk.map(([x, y]) => `${x},${y}`));

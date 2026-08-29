@@ -53,6 +53,7 @@ from sea_of_colours.snowpark import backend as soc_backend
 from sea_of_colours.snowpark.backend import get_store
 from sea_of_colours.snowpark import engine as soc_engine
 from sea_of_colours.game.session import MAX_SEATS, Phase
+from sea_of_colours.game import tutorial as soc_tutorial
 
 
 # v0.9.6 — N-seat games (1..MAX_SEATS) use canonical slugs ``p1`` … ``pN``.
@@ -929,6 +930,53 @@ def api_game_new(
     if isinstance(raw_agents, dict):
         for k, v in raw_agents.items():
             agents[str(k)] = str(v).strip().lower() or "human"
+    # v1.32 — teaching presets, resolved BEFORE the backend and credential
+    # preflight below, because a preset overrides both the seat agents and
+    # the store. Resolving after would let a tutorial spawned from a page
+    # with stale form state demand Cortex credentials the attendee has not
+    # set up yet — which is the exact wall the tutorial exists to avoid.
+    #
+    # The client posts a NAME, never a bag of overrides, so the landing
+    # page cannot drift from what the engine mints. Explicit body fields
+    # still win, so a caller (the film harness) can pin one dial without
+    # restating the preset.
+    weapons_enabled = True
+    signs_enabled = True
+    tutorial_name = ""
+    preset = soc_tutorial.preset_config(body.get("tutorial"))
+    if preset is not None:
+        if body.get("width") in (None, ""):
+            width = int(preset.get("width", width))
+        if body.get("height") in (None, ""):
+            height = int(preset.get("height", height))
+        if body.get("season_day_cap") in (None, ""):
+            season_day_cap = int(preset.get("season_day_cap", season_day_cap))
+        weapons_enabled = bool(preset.get("weapons_enabled", True))
+        signs_enabled = bool(preset.get("signs_enabled", True))
+        tutorial_name = (
+            soc_tutorial.normalise_preset(body.get("tutorial"))
+            if soc_tutorial.is_teaching(body.get("tutorial"))
+            else ""
+        )
+        # A teaching game is always you against the in-process heuristic,
+        # on the memory store: no credentials, no network, no warehouse.
+        players = players or ["p1", "p2"]
+        agents = {
+            "p1": "human",
+            "p2": str(preset.get("opponent") or "red_harvest_lite"),
+        }
+        body = {**body, "backend": "memory"}
+
+    # Explicit dials win over the preset, and are the only way to get a
+    # weapons-off board WITHOUT the preset's forced seat assignment. The
+    # film harness needs exactly that: the Basic look, but with both
+    # seats human so a collision can be scripted rather than hoped for
+    # from a bot. Booleans only — a missing key must not read as False.
+    if isinstance(body.get("weapons_enabled"), bool):
+        weapons_enabled = body["weapons_enabled"]
+    if isinstance(body.get("signs_enabled"), bool):
+        signs_enabled = body["signs_enabled"]
+
     # v1.14 — the backend is a per-game choice now. Resolve it before the
     # credential preflight so an unreachable store fails on the store's
     # own terms rather than as a confusing agent error.
@@ -940,8 +988,8 @@ def api_game_new(
     visibility_mode = str(body.get("visibility_mode") or "hidden").strip().lower()
     if visibility_mode not in ("hidden", "open"):
         visibility_mode = "hidden"
-    
-    # v0.9.18 — extract player_profiles from body (custom names/tags/colors)
+
+        # v0.9.18 — extract player_profiles from body (custom names/tags/colors)
     raw_profiles = body.get("player_profiles")
     player_profiles: Optional[dict[str, dict[str, str]]] = None
     if isinstance(raw_profiles, dict):
@@ -981,6 +1029,9 @@ def api_game_new(
         agents=agents or None,
         visibility_mode=visibility_mode,
         player_profiles=player_profiles,
+        weapons_enabled=weapons_enabled,
+        signs_enabled=signs_enabled,
+        tutorial=tutorial_name,
     )
     if isinstance(created, dict):
         gid = created.get("session_id")

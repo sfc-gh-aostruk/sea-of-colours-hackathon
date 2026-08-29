@@ -2,14 +2,18 @@
 
 Two jobs, and the first is the important one.
 
-**Shape parity.** The client draws a probe disk / EMP diamond / mine cluster
-from its own copy of the engine's geometry. That copy is exactly the kind of
-thing AGENTS.md warns about — a radius retuned in ``tuning.py`` or
-``weapons.py`` and the UI goes on promising a footprint the night will not
-deliver. So this diffs the SHIPPED client function, called in a real browser,
-against the engine's own ``_euclidean_disk`` / ``_manhattan_disk`` /
-``_mine_cluster_cells``, cell for cell, over every centre on a board —
-corners and edges included, where the clipping happens.
+**Shape parity.** The client draws a probe disk and an EMP diamond from its
+own copy of the engine's geometry. That copy is exactly the kind of thing
+AGENTS.md warns about — a radius retuned in ``tuning.py`` or ``weapons.py``
+and the UI goes on promising a footprint the night will not deliver. So this
+diffs the SHIPPED client function, called in a real browser, against the
+engine's own ``_euclidean_disk`` / ``_manhattan_disk``, cell for cell, over
+every centre on a board — corners and edges included, where the clipping
+happens.
+
+v1.31 — the mine cluster was the third shape here. It went with the
+caltrop; a third weapon should add its shape back to ``engine_footprint``
+and the action list in ``check_parity``.
 
 **Rendering.** Then it aims each order for real, moves the pointer, and reads
 back the drawn layer: one path per footprint, aligned to the grid, live one
@@ -116,12 +120,6 @@ def engine_footprint(action: str, x: int, y: int) -> set[tuple[int, int]]:
         return _euclidean_disk(x, y, probe_vision_radius(), W, H)
     if action == "emp_launch":
         return _manhattan_disk(x, y, weapons.EMP_RADIUS, W, H)
-    if action == "mine_lay":
-        fake = GameSession.__new__(GameSession)
-        # _mine_cluster_cells only reads the board dims off self.
-        object.__setattr__(fake, "width", W)
-        object.__setattr__(fake, "height", H)
-        return set(GameSession._mine_cluster_cells(fake, x, y))
     raise ValueError(action)
 
 
@@ -130,9 +128,9 @@ def check_parity(pg, errors: list[str]) -> None:
     print("\n── shape parity vs the engine ──")
     print(
         f"engine dials: probe r{probe_vision_radius()} \u00b7 "
-        f"EMP r{weapons.EMP_RADIUS} \u00b7 mine {weapons.MINE_BATCH_SHAPE}"
+        f"EMP r{weapons.EMP_RADIUS}"
     )
-    for action in ("probe", "emp_launch", "mine_lay"):
+    for action in ("probe", "emp_launch"):
         # Every cell on the board, so the rim cases are all covered rather
         # than sampled — 1120 centres is nothing for either side.
         centres = [[x, y] for y in range(H) for x in range(W)]
@@ -186,14 +184,13 @@ def main() -> int:
         # Pin the client's dials to the engine's, so parity is testing the
         # SHAPES rather than whether a /view happened to land first.
         pg.evaluate(
-            """([pr, er, ms]) => {
+            """([pr, er]) => {
               window.__SOC_PROBE_RADIUS__ = pr;
               window.__SOC_EMP_RADIUS__ = er;
-              window.__SOC_MINE_SHAPE__ = ms;
               window.__SOC_QUALITY_MULT__ = { trace: 0.75, vein: 1.0, mass: 1.5, pure: 3.0 };
               window.__SOC_GREEN_PENALTY__ = 100;
             }""",
-            [probe_vision_radius(), weapons.EMP_RADIUS, str(weapons.MINE_BATCH_SHAPE)],
+            [probe_vision_radius(), weapons.EMP_RADIUS],
         )
 
         check_parity(pg, errors)
@@ -238,7 +235,6 @@ def main() -> int:
             # An EMP diamond laid over two rival probes AND your own
             # harvester — the friendly-fire line is the point of the readout.
             "emp": ([], "emp_launch", (20, 14), 1),
-            "mine": ([], "mine_lay", (24, 16), 1),
             # A committed salvo plus a committed probe, with a fourth
             # footprint live under the cursor: dim vs bright in one shot.
             "queued": (
@@ -254,7 +250,7 @@ def main() -> int:
             # tooltip has to own up to the wasted missiles.
             "edge": ([], "probe", (1, 1), 1),
             # Queue only, nothing aimed: every footprint must be dashed.
-            "idle": ([{"a": "mine_lay", "x": 16, "y": 12}], None, None, 1),
+            "idle": ([{"a": "probe", "x": 16, "y": 12}], None, None, 1),
         }
 
         for name, (queue, aim, hover, want_shapes) in scenes.items():

@@ -62,12 +62,25 @@ from sea_of_colours.generator import Tile
 from sea_of_colours.render import RED_LEVEL_NAMES, red_level
 
 
-def _active_rules() -> Dict[str, Any]:
-    """Snapshot of the current runtime ruleset knobs for the view meta block."""
+def _active_rules(sess: Any = None) -> Dict[str, Any]:
+    """Snapshot of the ruleset in force, for the view meta block.
+
+    Most knobs here are process-level tuning. ``weapons_enabled`` and
+    ``signs_enabled`` (v1.32) are per-GAME, so they are read off the
+    session when one is supplied and default to on when it is not — this
+    function is also called from paths that have no session in hand.
+
+    These are published rather than silently enforced on purpose. Agents
+    are told what is legal; an agent that proposes an EMP every turn in a
+    weapons-off game and has it eaten by the sanitiser has spent its whole
+    move budget and looks broken (see ``GameSession.weapons_enabled``).
+    """
     return {
         "drop_mode": "live_only" if _live_only_drops() else "live_or_echo",
         "probe_radius": _probe_vision_radius(),
         "probe_lifetime_nights": _probe_lifetime_nights(),
+        "weapons_enabled": bool(getattr(sess, "weapons_enabled", True)),
+        "signs_enabled": bool(getattr(sess, "signs_enabled", True)),
     }
 
 
@@ -740,6 +753,10 @@ def build_agent_view(
         "players": list(sess.players),
         "agents": dict(sess.agents),
         "visibility_mode": str(sess.visibility_mode),
+        # v1.32 — which teaching preset spawned this game, "" for a real
+        # season. Presentation only: it picks the film reel the tutorial
+        # modal opens on. What is LEGAL is in ``rules`` below, never here.
+        "tutorial": str(getattr(sess, "tutorial", "") or ""),
         "policy_actions_used": policy_used,
         "policy_actions_max": MAX_MOVES,
         "policy_actions_left": max(0, MAX_MOVES - policy_used),
@@ -751,7 +768,7 @@ def build_agent_view(
         ),
         # v0.9.17 — active ruleset knobs surfaced so frontend & agents
         # can branch on the current canonical rules without reading env.
-        "rules": _active_rules(),
+        "rules": _active_rules(sess),
     }
     navigation_block = {
         "best_red_visible": best_red_visible,

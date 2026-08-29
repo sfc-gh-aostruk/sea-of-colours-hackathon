@@ -70,9 +70,11 @@ $$;
 -- ``p_actions`` is a STRING (same DDL constraint as ``p_policy`` on
 -- :sql:`SOC_SUBMIT_POLICY`); the handler parses either the canonical
 -- ``{"actions":[...]}`` envelope or the bare ``[...]`` array. Each item
--- is one of: build_harvester / build_probe / build_emp / build_mine /
--- build_chaff / repair / refine / ship_catapult / solar_jettison
--- (RULEBOOK §4). The handler validates the queue, surfaces any
+-- is one of: build_harvester / build_probe / build_emp /
+-- build_chaff / repair (RULEBOOK §4). Retired tags are still accepted
+-- by the parser and refused with a named reason rather than a shrug:
+-- refine / ship_catapult / solar_jettison (v1.13) and build_mine
+-- (v1.31, §4.9.4). The handler validates the queue, surfaces any
 -- per-item parse errors as yellow log lines, and — once every seat
 -- is ready — triggers the Orbit settlement (credits award, builds,
 -- refine, single-lane catapult shipping with row-threshold gating,

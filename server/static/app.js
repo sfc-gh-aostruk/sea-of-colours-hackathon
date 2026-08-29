@@ -1803,12 +1803,9 @@
     const cells = _actionFootprint(aim, x, y, w, h);
     if (!cells.length) return "";
 
-    const kind = aim === "emp_launch" ? "emp" : aim === "mine_lay" ? "mine" : "probe";
-    const title = kind === "emp" ? "EMP BLAST"
-      : kind === "mine" ? "MINE CLUSTER"
-      : "PROBE FIELD";
+    const kind = aim === "emp_launch" ? "emp" : "probe";
+    const title = kind === "emp" ? "EMP BLAST" : "PROBE FIELD";
     const shape = kind === "emp" ? `r${_empRadius()} diamond`
-      : kind === "mine" ? `${_mineShape()} cluster`
       : `r${_probeRadius()} disk`;
     // Same footprint centred far from any edge, so "clipped" is measured
     // rather than guessed. Cheap: the biggest shape we draw is 49 cells.
@@ -3545,6 +3542,10 @@
   function renderVaultWeaponsBay(host, counts, mode) {
     if (!host) return;
     host.textContent = "";
+    // v1.32 — in a weapons-off game there is no bay at all, and an empty
+    // one captioned "build in ORBIT phase" would send the player looking
+    // for a button that is not there.
+    if (!_weaponsOn()) return;
     const emp = Math.max(0, Number(counts?.emp || 0));
     const mine = Math.max(0, Number(counts?.mine || 0));
     const chaff = Math.max(0, Number(counts?.chaff || 0));
@@ -3583,7 +3584,10 @@
       return chip;
     };
     host.appendChild(makeChip("emp", "EMP", emp));
-    host.appendChild(makeChip("mine", "MINE", mine));
+    // v1.31 — MINE is retired, so a live bay never has one. The USED bay
+    // still reads archived seasons, where the count is real history; show
+    // the chip only when there is something to show.
+    if (mine > 0) host.appendChild(makeChip("mine", "MINE", mine));
     host.appendChild(makeChip("chaff", "CHAFF", chaff));
   }
 
@@ -4007,8 +4011,6 @@
     // about — probe radius sat wrong in prompts and UI for months.
     const empR = Number(window.__SOC_EMP_RADIUS__);
     const probeR = Number(window.__SOC_PROBE_RADIUS__);
-    const mineN = Array.isArray(window.__SOC_MINE_SHAPE__)
-      ? window.__SOC_MINE_SHAPE__.length : null;
     const specs = [
       {
         key: "probe", action: "probe", label: "LAUNCH PROBE", icon: null,
@@ -4020,29 +4022,22 @@
       },
       {
         key: "emp", action: "emp_launch", label: "EMP", icon: "emp",
+        weapon: true,
         stock: Math.max(0, Number(ws.emp || 0)), queued: qc.emp_launch,
         title: "Orbital EMP salvo \u00B7 ONE launch fires a salvo of missiles, "
           + "each a"
           + (Number.isFinite(empR) ? ` radius-${empR}` : "")
           + " cloud. Disables harvesters and destroys probes "
-          + "and mines caught in it \u2014 including yours.",
-      },
-      {
-        key: "mine", action: "mine_lay", label: "MINE", icon: "mine",
-        stock: Math.max(0, Number(ws.mine || 0)), queued: qc.mine_lay,
-        title: "Arm a hidden"
-          + (mineN ? ` ${mineN}-cell` : "")
-          + " cluster. A harvester stepping onto it is "
-          + "damaged and its step cancelled. Hidden until a probe sees it; "
-          + "the minelayer's flight is public. EMP clears mines.",
+          + "caught in it \u2014 including yours.",
       },
       {
         key: "chaff", action: "chaff_flare", label: "CHAFF", icon: "chaff",
+        weapon: true,
         stock: Math.max(0, Number(ws.chaff || 0)), queued: qc.chaff_flare,
         title: "Jams EVERY house's actions, yours included, for 3 turns. "
           + "Occupies 3 queue slots: the launch plus 2 self-jammed turns.",
       },
-    ];
+    ].filter((s) => !s.weapon || _weaponsOn());
 
     for (const s of specs) {
       // v1.25 — DIMMED, NOT DISABLED, when the bay is empty.
@@ -4407,8 +4402,7 @@
       action === "probe" ||
       action === "drop" ||
       action === "step" ||
-      action === "emp_launch" ||
-      action === "mine_lay"
+      action === "emp_launch"
     );
   }
 
@@ -4423,7 +4417,6 @@
     if (action === "pickup") return "pickup";
     if (action === "wait") return "wait";
     if (action === "emp_launch") return "EMP @";
-    if (action === "mine_lay") return "MINE @";
     if (action === "chaff_flare") return "CHAFF";
     return String(action || "?");
   }
@@ -5166,8 +5159,8 @@
   // asking "what do you want to do?"; this menu is answering "what can
   // be done HERE?", and `walk` to a square six cells from the harvester
   // is not an under-offered option, it is a different question. The
-  // rule still binds where it is about RESOURCES: probe / EMP / mine
-  // are offered at zero stock, annotated, exactly as in the panel.
+  // rule still binds where it is about RESOURCES: probe / EMP are
+  // offered at zero stock, annotated, exactly as in the panel.
   //
   // A unit with nothing to offer here is still LISTED, dimmed, with the
   // distance — otherwise a harvester silently missing from the menu
@@ -5310,15 +5303,10 @@
         stock: Math.max(0, Number(ws.emp || 0)), queued: qc.emp_launch,
         glyph: "\u25C7", tint: "#74dcff",
         title: "Add this square to an EMP salvo. Disables harvesters and "
-          + "destroys probes and mines caught in it \u2014 including yours.",
+          + "destroys probes caught in it \u2014 including yours.",
+        weapon: true,
       },
-      {
-        action: "mine_lay", label: "mine here",
-        stock: Math.max(0, Number(ws.mine || 0)), queued: qc.mine_lay,
-        glyph: "\u25A3", tint: "#ff5fd7",
-        title: "Arm a hidden cluster centred here.",
-      },
-    ];
+    ].filter((b) => !b.weapon || _weaponsOn());
     items.push({ head: "deploy" });
     for (const b of bays) {
       const s = _stockNote(b.queued, b.stock);
@@ -5719,8 +5707,6 @@
       if (!m) continue;
       if (m.a === "probe") {
         _drawOrderMarker(Number(m.x), Number(m.y), "probe", "\u25CF", hostRect); // ● circle
-      } else if (m.a === "mine_lay") {
-        _drawOrderMarker(Number(m.x), Number(m.y), "mine", "\u25C6", hostRect); // ◆ rhombus
       } else if (m.a === "emp_launch" && Array.isArray(m.ats)) {
         m.ats.forEach((t) => {
           if (Array.isArray(t)) {
@@ -7411,7 +7397,6 @@
       build_probe: { cr: Number(sp.probe_build ?? 250), blue: 0 },
       repair: { cr: Number(sp.repair ?? 500), blue: 0 },
       build_emp: w("emp", 200, 250),
-      build_mine: w("mine", 100, 100),
       build_chaff: w("chaff", 255, 0),
     };
   }
@@ -7441,13 +7426,11 @@
         return `build probes \u00D7${n} ${batch}`;
       case "repair":
         return `repair ${a.unit || "?"} ${batch}`;
-      // v0.9.3 — three build-weapons actions. Each enqueues the
-      // batch count + the per-unit blue+credit cost so the seat can
-      // eyeball the wallet hit before TRANSMIT.
+      // v0.9.3 — the build-weapons actions. Each enqueues the batch
+      // count + the per-unit blue+credit cost so the seat can eyeball
+      // the wallet hit before TRANSMIT.
       case "build_emp":
         return `build EMP \u00D7${n} ${batch}`;
-      case "build_mine":
-        return `build MINE \u00D7${n} ${batch}`;
       case "build_chaff":
         return `build CHAFF \u00D7${n} ${batch}`;
       default:
@@ -7491,7 +7474,6 @@
     const id = {
       build_probe: "solo-orbit-probe-count",
       build_emp: "solo-orbit-emp-count",
-      build_mine: "solo-orbit-mine-count",
       build_chaff: "solo-orbit-chaff-count",
     }[action];
     if (!id) return 1;
@@ -7996,11 +7978,11 @@
     }
     // v0.9.3 — render the weapon-stockpile readout and mirror each
     // build-weapon button's count chip from its numeric input. The
-    // readout carries three chips (EMP / MINE / CHAFF) so the player
-    // can see at a glance how many of each are in the magazine without
-    // opening the Orders pane.
+    // readout carries a chip per weapon so the player can see at a
+    // glance how many of each are in the magazine without opening the
+    // Orders pane.
     const ws = (orbitView && orbitView.weapon_stock) || {};
-    ["emp", "mine", "chaff"].forEach((slot) => {
+    ["emp", "chaff"].forEach((slot) => {
       const stockEl = document.querySelector(
         `[data-weapon-stock-count="${slot}"]`,
       );
@@ -8178,10 +8160,10 @@
       );
       if (chip) chip.textContent = String(v);
     });
-  // v0.9.3 — mirror the EMP / MINE / CHAFF build-count inputs into
-  // the button-label chip exactly the way probe-count does. Clamp
-  // to [1, 10] so a stray 999 doesn't accidentally drain the wallet.
-  ["emp", "mine", "chaff"].forEach((slot) => {
+  // v0.9.3 — mirror the weapon build-count inputs into the button-label
+  // chip exactly the way probe-count does. Clamp to [1, 10] so a stray
+  // 999 doesn't accidentally drain the wallet.
+  ["emp", "chaff"].forEach((slot) => {
     const input = document.getElementById(`solo-orbit-${slot}-count`);
     if (!input) return;
     input.addEventListener("input", () => {
@@ -12809,11 +12791,11 @@
 
   /* ── v1.23 — order footprints ────────────────────────────────────────
    *
-   * Three of the orders a seat can queue do not land on the cell you click:
-   * a probe lights a radius-4 disk, an EMP fills a radius-2 diamond, a mine
-   * arms a five-cell cluster. Until now the map showed only the centre
-   * glyph, so aiming any of them meant counting squares by eye and hoping —
-   * and a queued salvo gave no clue what ground it actually covered.
+   * Two of the orders a seat can queue do not land on the cell you click:
+   * a probe lights a radius-4 disk and an EMP fills a radius-2 diamond.
+   * Until now the map showed only the centre glyph, so aiming either meant
+   * counting squares by eye and hoping — and a queued salvo gave no clue
+   * what ground it actually covered.
    *
    * Drawn the same way as the vision borders (see the essay above): one SVG
    * over the board with the viewBox in CELL UNITS, boundary rings out of
@@ -12825,8 +12807,7 @@
    * The shapes MUST mirror the engine's own helpers, so each reads its dial
    * off the rules block rather than restating it: probe is
    * `_euclidean_disk` at `meta.rules.probe_radius`, EMP is `_manhattan_disk`
-   * at `weapon_specs.emp.radius`, mine is `_mine_cluster_cells` under
-   * `weapon_specs.mine.batch_shape`.
+   * at `weapon_specs.emp.radius`.
    * ──────────────────────────────────────────────────────────────────── */
 
   /** EMP blast radius (Manhattan), mirroring ``weapons.EMP_RADIUS``. */
@@ -12835,16 +12816,59 @@
     return Number.isFinite(r) && r > 0 ? r : 2;
   }
 
-  /** Mine cluster shape, mirroring ``weapons.MINE_BATCH_SHAPE``. */
-  function _mineShape() {
-    return String(window.__SOC_MINE_SHAPE__ || "plus");
-  }
-
   /** Does this action cover ground beyond the cell you click? `drop` and
    *  `step` land on exactly one square and already carry a path badge, so
    *  outlining them would just trace the hover ring a second time. */
   function _actionHasArea(action) {
-    return action === "probe" || action === "emp_launch" || action === "mine_lay";
+    return action === "probe" || action === "emp_launch";
+  }
+
+  /** v1.32 — are weapons part of THIS game? Mirrors `meta.rules`; the
+   *  default is on, so a poll that has not landed yet shows the full game
+   *  rather than briefly hiding controls from a normal season. */
+  function _weaponsOn() {
+    return window.__SOC_WEAPONS_ON__ !== false;
+  }
+
+  /* v1.32 — teaching-mode chrome.
+   *
+   * Two jobs, deliberately split. The body classes below carry the
+   * WHOLE of "hide the weapons UI" — one class, one CSS rule per
+   * surface — because the alternative is a `_weaponsOn()` guard threaded
+   * through every renderer that touches a weapon, and the one that gets
+   * missed is the one an attendee finds. The JS guards that do exist
+   * (`renderVaultWeaponsBay`, the deploy row, the board menu) are there
+   * because those build their rows from data and would otherwise emit
+   * empty containers or a bay captioned "build in ORBIT phase".
+   *
+   * The state event is the other job: `tutorial.js` owns the film modal
+   * and needs to know when the turn changed. It is a DOM event rather
+   * than a direct call so the modal stays optional — the game runs
+   * identically with tutorial.js absent, which is what keeps a teaching
+   * feature from being able to break a real season.
+   */
+  let _lastTutorialKey = "";
+
+  function _syncTutorialState(meta) {
+    const tut = String(window.__SOC_TUTORIAL__ || "");
+    const body = document.body;
+    if (body) {
+      body.classList.toggle("soc-weapons-off", !_weaponsOn());
+      body.classList.toggle("soc-signs-off", window.__SOC_SIGNS_ON__ === false);
+      body.classList.toggle("soc-tutorial", Boolean(tut));
+    }
+    const day = Number(meta?.day);
+    const phase = String(meta?.phase || "");
+    // v1.33 — the game id rides along so the modal can remember what it
+    // has shown PER GAME. Remembering it per reel meant a second
+    // tutorial never opened a single film.
+    const game = String(sessionId || "");
+    const key = `${tut}|${game}|${Number.isFinite(day) ? day : "?"}|${phase}`;
+    if (key === _lastTutorialKey) return;
+    _lastTutorialKey = key;
+    document.dispatchEvent(new CustomEvent("soc:tutorial-state", {
+      detail: { tutorial: tut, day, phase, game },
+    }));
   }
 
   /**
@@ -12871,16 +12895,6 @@
           if (Math.abs(dx) + Math.abs(dy) <= r) add(cx + dx, cy + dy);
         }
       }
-    } else if (action === "mine_lay") {
-      const shape = _mineShape();
-      // Unknown shapes fall back to the centre alone, exactly as the
-      // engine's `_mine_cluster_cells` does.
-      const offs = shape === "plus"
-        ? [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]]
-        : shape === "cross3x3"
-          ? [[-1, -1], [0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]
-          : [[0, 0]];
-      for (const [dx, dy] of offs) add(cx + dx, cy + dy);
     } else {
       add(cx, cy);
     }
@@ -12989,9 +13003,7 @@
         ), w, h),
       );
       if (!d) continue;
-      const kind = shape.action === "emp_launch" ? "emp"
-        : shape.action === "mine_lay" ? "mine"
-        : "probe";
+      const kind = shape.action === "emp_launch" ? "emp" : "probe";
       const cls = `aoe-shape aoe-shape--${kind}`
         + (shape.live ? " aoe-shape--live" : "");
       markup += `<path class="${cls}" d="${d}"></path>`;
@@ -18435,6 +18447,23 @@
       // the engine instead of leaving the UI lying.
       const pr = Number(j?.agent_view?.meta?.rules?.probe_radius);
       if (Number.isFinite(pr) && pr > 0) window.__SOC_PROBE_RADIUS__ = pr;
+      // v1.32 — per-GAME teaching switches. Mirrored onto window for the
+      // same reason as the dials above: they arrive on the view, so the
+      // UI must not carry a second opinion about them.
+      //
+      // These HIDE controls rather than dim them, which is the opposite
+      // of this panel's usual rule (v1.25 dims, never gates). Dimming is
+      // right when the thing exists and you cannot afford it. A greyed
+      // EMP button in a game where weapons do not exist teaches a
+      // first-timer that weapons exist AND that they are broken — two
+      // wrong lessons for the price of one.
+      const rulesBlock = j?.agent_view?.meta?.rules;
+      if (rulesBlock && typeof rulesBlock === "object") {
+        window.__SOC_WEAPONS_ON__ = rulesBlock.weapons_enabled !== false;
+        window.__SOC_SIGNS_ON__ = rulesBlock.signs_enabled !== false;
+      }
+      window.__SOC_TUTORIAL__ = String(j?.agent_view?.meta?.tutorial || "");
+      _syncTutorialState(j?.agent_view?.meta);
       // v0.9.x — live EMP salvo size for the targeting picker.
       const empSpec =
         j?.agent_view?.orbit?.weapon_specs?.emp
@@ -18442,18 +18471,12 @@
       if (empSpec && Number.isFinite(Number(empSpec.missiles_per_launch))) {
         window.__SOC_EMP_MISSILES__ = Number(empSpec.missiles_per_launch);
       }
-      // v1.23 — blast radius + mine cluster shape, for the order-footprint
-      // preview. Same rule as the probe radius above: mirror the engine's
-      // dials so a retune moves the drawn area instead of leaving the UI
-      // promising a shape the night will not deliver.
+      // v1.23 — blast radius, for the order-footprint preview. Same rule
+      // as the probe radius above: mirror the engine's dials so a retune
+      // moves the drawn area instead of leaving the UI promising a shape
+      // the night will not deliver.
       if (empSpec && Number.isFinite(Number(empSpec.radius))) {
         window.__SOC_EMP_RADIUS__ = Number(empSpec.radius);
-      }
-      const mineSpec =
-        j?.agent_view?.orbit?.weapon_specs?.mine
-        ?? j?.orbit?.weapon_specs?.mine;
-      if (mineSpec && mineSpec.batch_shape) {
-        window.__SOC_MINE_SHAPE__ = String(mineSpec.batch_shape);
       }
       // v0.9.x — stash the static blue-sign overlay (orbit-wide,
       // fog-independent radiative signatures) for the map painter.
@@ -19512,7 +19535,16 @@
     resetSoloFormForNewGame();
     if (errSoloEl) errSoloEl.hidden = true;
     try {
-      const body = {
+      // v1.32 — a teaching preset owns the board. The defaults below are
+      // this function's own idea of a game, and sending them would beat
+      // the preset on the server, which resolves overrides only for
+      // fields the caller left out. So a preset call sends the NAME and
+      // as little else as possible.
+      const preset = (opts && opts.tutorial) ? String(opts.tutorial) : "";
+      const body = preset ? {
+        tutorial: preset,
+        visibility_mode: "hidden",
+      } : {
         width: (opts && Number.isFinite(opts.width)) ? opts.width : 40,
         height: (opts && Number.isFinite(opts.height)) ? opts.height : 28,
         season_day_cap: (opts && Number.isFinite(opts.season_day_cap))
@@ -22063,7 +22095,7 @@
       // each click and re-arms as STEP for the next map click. So a
       // single chip-click can compose drop → step → step → step …
       // The user explicitly exits via the banner's [stop] button
-      // (or by clicking the chip a second time). Probe / mine
+      // (or by clicking the chip a second time). Probe / EMP
       // remain single-shot — they target a tile, not a chain.
       const chainable = action === "step" || action === "drop";
       addQueueRow(action, x, y, unit);
@@ -22199,6 +22231,14 @@
           agents: { p1: "human", p2: "red_harvest_lite" },
           backend: "memory",
         });
+      } else if (/^tut-/.test(String(_np || "")) && typeof newGame === "function") {
+        // v1.32 — teaching presets. Only the NAME is sent: board size,
+        // night count, opponent, backend and the weapons/signs switches
+        // are resolved server-side from `game/tutorial.py`, so this
+        // client cannot drift from what the engine actually mints. That
+        // is the opposite of the `quick` branch above, which predates
+        // the preset table and still spells its config out here.
+        newGame({ tutorial: String(_np).replace(/^tut-/, "") });
       }
     } catch (_e) { /* non-fatal */ }
   }

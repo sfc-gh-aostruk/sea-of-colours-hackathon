@@ -167,13 +167,17 @@ _RESET = """
 }
 """
 
-# A mine costs 100 BLUE purity as well as credits, and the harness's p1
-# sits idle all season precisely so that it sees nothing — so it never
-# banks the BLUE to buy one, and RED_HARVEST did not lay one either in
-# any seeded season measured. Rather than teach the fixture to play well
-# enough to afford a weapon, inject the event: the replay response is
-# rewritten in flight to carry one p2 `mine_lay`, which is exactly the
-# payload the client would receive had p2 laid one.
+# v1.31 — the caltrop is RETIRED, so no season can produce this frame
+# any more. That makes the injection below the only remaining coverage
+# of the archived-season playback path, and this block worth keeping
+# rather than deleting along with the weapon: `mine_lay` frames recorded
+# before v1.31 still arrive at the client, and `playMineFx` /
+# `station.js` still have to draw them.
+#
+# (It was already injected before the retirement, for a different
+# reason: the harness's p1 sits idle all season so it never banks the
+# BLUE to buy one, and RED_HARVEST never laid one in any seeded season
+# measured.)
 #
 # Same route-interception technique as `_fx_reveal.py`. It tests the real
 # `playMineFx` against the real `station.js` — only the provenance of the

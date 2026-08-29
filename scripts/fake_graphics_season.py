@@ -25,11 +25,14 @@ Eleven scripted nights, one effect family per night::
                                    three splashes, no ripple, nothing
                                    left standing.
     Night  6 — EMP  (p1 fires).    7×7 EMP cloud smothers p2's harvester.
-    Night  7 — MINE (p1 lays).     caltrop mine detonates under p2's step.
-    Night  8 — CHAFF (p1 fires).   orbital chaff flare smothers the hour.
-    Night  9 — EMP  (p2 fires).    mirrored: p2 deploys against p1.
-    Night 10 — MINE (p2 lays).     mirrored mine.
-    Night 11 — CHAFF (p2 fires).   mirrored chaff.
+    Night  7 — CHAFF (p1 fires).   orbital chaff flare smothers the hour.
+    Night  8 — EMP  (p2 fires).    mirrored: p2 deploys against p1.
+    Night  9 — CHAFF (p2 fires).   mirrored chaff.
+
+v1.31 — there were two caltrop nights, N7 and N10. The weapons half of
+this reel is DERIVED from ``fake_weapons_season.NIGHTS_P1_DEPLOYS``, so
+cutting the mine there shortened this reel from 11 nights to 9 on its
+own; only the prose and the tally needed a hand.
 
 Because v0.9.2+ requires a live sensor beacon over the landing cell, the
 collision nights each probe for line-of-sight *before* dropping (probe
@@ -157,8 +160,8 @@ COLLISION_NIGHTS: List[Dict[str, List[Dict[str, Any]]]] = [
 ]
 
 
-# Full 9-night choreography: 3 collision nights, then the 6 weapon
-# nights (p1 deploys EMP/mine/chaff, then the mirrored p2 half). We
+# Full choreography: the collision / probe-FX nights, then the weapon
+# nights (p1 deploys EMP + chaff, then the mirrored p2 half). We
 # skip the weapons demo's idle "setup night" — the collision nights
 # already carry us out of day-1 PLANNING.
 WEAPON_NIGHTS = list(fws.NIGHTS_P1_DEPLOYS[1:]) + [
@@ -286,8 +289,8 @@ def _print_banner(*, season_name: str, session_id: str, seed: int,
     print(f"  day cap      : {len(SCRIPTED_NIGHTS)} nights")
     print("  collisions   : N1 crush · N2 drop-on · N3 swap")
     print("  probe FX     : N4 supersede · N5 pile-up (3 dead on one cell)")
-    print("  weapons (p1) : N6 EMP · N7 MINE · N8 CHAFF")
-    print("  weapons (p2) : N9 EMP · N10 MINE · N11 CHAFF")
+    print("  weapons (p1) : N6 EMP · N7 CHAFF")
+    print("  weapons (p2) : N8 EMP · N9 CHAFF")
     print(line, flush=True)
 
 
@@ -375,7 +378,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "    events: "
             f"crush={ev['crushed_probes']}  coll={ev['collisions']}  "
             f"swap={ev['swap_frames']}  emp={ev['emp_events']}  "
-            f"mine={ev['mine_events']}  chaff={ev['chaff_events']}",
+            f"chaff={ev['chaff_events']}",
             flush=True,
         )
 

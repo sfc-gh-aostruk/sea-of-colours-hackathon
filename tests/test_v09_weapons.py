@@ -22,17 +22,20 @@ from sea_of_colours.game.policy import (
     ChaffFlareMove,
     DropMove,
     EmpLaunchMove,
-    MineLayMove,
+    OrbitWasteAction,
     PickupMove,
     ProbeMove,
     StepMove,
     WaitMove,
+    WasteMove,
     parse_moves,
+    parse_orbit_actions,
 )
 from sea_of_colours.game.session import (
     GameSession,
     PLAYERS,
     Phase,
+    _MINE_REFUND_BLUE_EACH,
 )
 from sea_of_colours.game.simulator import NightSimulator
 from sea_of_colours.game.weapons import (
@@ -44,9 +47,6 @@ from sea_of_colours.game.weapons import (
     EMP_COST_CREDITS,
     EMP_MISSILES_PER_LAUNCH,
     EMP_RADIUS,
-    MINE_BATCH_SHAPE,
-    MINE_COST_BLUE_PURITY,
-    MINE_COST_CREDITS,
 )
 from sea_of_colours.game.session import Entity
 from sea_of_colours.generator import Cell, Tile
@@ -117,7 +117,7 @@ def _stock_weapon(
     ``apply_build_*`` methods.
     """
     slot = sess.weapon_stock.setdefault(
-        owner, {"emp": 0, "mine": 0, "chaff": 0},
+        owner, {"emp": 0, "chaff": 0},
     )
     slot[kind] = int(slot.get(kind, 0)) + int(n)
 
@@ -139,13 +139,6 @@ def test_parse_emp_launch_move() -> None:
     assert moves[0].at == (5, 6)
 
 
-def test_parse_mine_lay_move() -> None:
-    moves, errors = parse_moves([{"a": "mine_lay", "at": [10, 4]}])
-    assert errors == []
-    assert isinstance(moves[0], MineLayMove)
-    assert moves[0].at == (10, 4)
-
-
 def test_parse_chaff_flare_move() -> None:
     moves, errors = parse_moves([{"a": "chaff_flare"}])
     assert errors == []
@@ -153,15 +146,58 @@ def test_parse_chaff_flare_move() -> None:
 
 
 def test_parse_aliases_accept_short_forms() -> None:
-    """Short tags (``"emp"`` / ``"mine"`` / ``"chaff"``) are accepted."""
+    """Short tags (``"emp"`` / ``"chaff"``) are accepted.
+
+    v1.31 — the third short form, ``"mine"``, went with the caltrop; its
+    refusal is pinned by the retirement tests below.
+    """
     moves, _ = parse_moves([
         {"a": "emp", "at": [1, 1]},
-        {"a": "mine", "at": [2, 2]},
         {"a": "chaff"},
     ])
     assert isinstance(moves[0], EmpLaunchMove)
-    assert isinstance(moves[1], MineLayMove)
-    assert isinstance(moves[2], ChaffFlareMove)
+    assert isinstance(moves[1], ChaffFlareMove)
+
+
+# ── v1.31 — caltrop MINE retirement ─────────────────────────────────
+
+
+def test_retired_mine_lay_says_why_rather_than_shrugging() -> None:
+    """v1.31 — persisted night queues and stale LLM replies still carry
+    ``mine_lay`` (and its ``mine`` short form). They must parse (not
+    raise) into a waste marker naming the mechanic that went away, so an
+    agent gets a diagnosis it can act on instead of the generic "unknown
+    action" shrug. Mirrors the v1.13 ship_catapult retirement in
+    :file:`tests/test_orbit_v1.py`.
+    """
+    raw = [
+        {"a": "mine_lay", "at": [10, 4]},
+        {"a": "mine", "at": [2, 2]},
+        {"a": "mine-lay", "at": [3, 3]},
+    ]
+    moves, errs = parse_moves(raw)
+    assert errs == []
+    assert len(moves) == len(raw)
+    assert all(isinstance(m, WasteMove) for m in moves)
+    assert all("v1.31" in m.reason for m in moves)
+    assert all("caltrop" in m.reason for m in moves)
+
+
+def test_retired_build_mine_says_why_rather_than_shrugging() -> None:
+    """v1.31 — the orbit-side mirror: the caltrop's buy button is gone,
+    so ``build_mine`` and its aliases waste with a named reason."""
+    raw = [
+        {"a": "build_mine", "count": 2},
+        {"a": "buildmine"},
+        {"a": "build_caltrop"},
+        {"a": "mine"},
+    ]
+    actions, errs = parse_orbit_actions(raw)
+    assert errs == []
+    assert len(actions) == len(raw)
+    assert all(isinstance(a, OrbitWasteAction) for a in actions)
+    assert all("v1.31" in a.reason for a in actions)
+    assert all("caltrop" in a.reason for a in actions)
 
 
 # ── Blue-purity economy ─────────────────────────────────────────────
@@ -289,16 +325,12 @@ def test_build_emp_batch_is_atomic() -> None:
     assert sess.credits["p1"] == EMP_COST_CREDITS * 3
 
 
-def test_build_mine_and_build_chaff_round_trip() -> None:
+def test_build_chaff_round_trip() -> None:
     sess = _fresh_night_session()
-    _stamp_blue_parcels(
-        sess, "p1", [MINE_COST_BLUE_PURITY, CHAFF_COST_BLUE_PURITY],
-    )
-    sess.credits["p1"] = MINE_COST_CREDITS + CHAFF_COST_CREDITS
-    ok1, _ = sess.apply_build_mine("p1", count=1)
-    ok2, _ = sess.apply_build_chaff("p1", count=1)
-    assert ok1 and ok2
-    assert sess.weapon_stock["p1"]["mine"] == 1
+    _stamp_blue_parcels(sess, "p1", [CHAFF_COST_BLUE_PURITY])
+    sess.credits["p1"] = CHAFF_COST_CREDITS
+    ok, _ = sess.apply_build_chaff("p1", count=1)
+    assert ok
     assert sess.weapon_stock["p1"]["chaff"] == 1
 
 
@@ -325,7 +357,7 @@ def test_emp_launch_consumes_stock_and_mints_cloud() -> None:
 def test_emp_launch_refuses_when_no_stockpile() -> None:
     """An empty EMP magazine wastes the launch with no side-effects."""
     sess = _fresh_night_session()
-    sess.weapon_stock["p1"] = {"emp": 0, "mine": 0, "chaff": 0}
+    sess.weapon_stock["p1"] = {"emp": 0, "chaff": 0}
     ok, _ = sess.apply_emp_launch("p1", 5, 5, hour=3)
     assert ok is False
     assert sess.emp_clouds == []
@@ -340,7 +372,6 @@ def test_weapons_used_counter_bumps_on_every_successful_fire() -> None:
     """
     sess = _fresh_night_session()
     _stock_weapon(sess, "p1", "emp", n=2)
-    _stock_weapon(sess, "p1", "mine", n=1)
     _stock_weapon(sess, "p1", "chaff", n=1)
 
     # Two successful EMP launches → counter at 2.
@@ -353,17 +384,14 @@ def test_weapons_used_counter_bumps_on_every_successful_fire() -> None:
     assert refused is False
     assert sess.weapons_used["p1"]["emp"] == 2
 
-    # Mine lay bumps mine counter, chaff bumps chaff counter,
-    # but the EMP counter stays put.
-    ok_m, _ = sess.apply_mine_lay("p1", 7, 7, hour=4)
+    # Chaff bumps the chaff counter, but the EMP counter stays put.
     ok_c, _ = sess.apply_chaff_flare("p1", hour=5)
-    assert ok_m and ok_c
-    assert sess.weapons_used["p1"]["mine"] == 1
+    assert ok_c
     assert sess.weapons_used["p1"]["chaff"] == 1
     assert sess.weapons_used["p1"]["emp"] == 2
 
     # Opposing seat must remain at zero — counters are per-seat.
-    assert sess.weapons_used["p2"] == {"emp": 0, "mine": 0, "chaff": 0}
+    assert sess.weapons_used["p2"] == {"emp": 0, "chaff": 0}
 
 
 def test_weapons_used_counter_round_trips_via_to_from_dict() -> None:
@@ -386,7 +414,7 @@ def test_weapons_used_counter_round_trips_via_to_from_dict() -> None:
     # still loads with zero counters rather than KeyError-ing.
     legacy = {k: v for k, v in snap.items() if k != "weapons_used"}
     legacy_revived = type(sess).from_dict(legacy)
-    assert legacy_revived.weapons_used["p1"] == {"emp": 0, "mine": 0, "chaff": 0}
+    assert legacy_revived.weapons_used["p1"] == {"emp": 0, "chaff": 0}
 
 
 def test_inventory_pack_surfaces_both_weapon_bays() -> None:
@@ -396,18 +424,18 @@ def test_inventory_pack_surfaces_both_weapon_bays() -> None:
     """
     sess = _fresh_night_session()
     _stock_weapon(sess, "p1", "emp", n=3)
-    _stock_weapon(sess, "p1", "mine", n=2)
+    _stock_weapon(sess, "p1", "chaff", n=2)
     sess.apply_emp_launch("p1", 4, 4, hour=1)
 
     pack = sess.inventory_pack("p1")
     assert "weapon_stock" in pack
     assert "weapons_used" in pack
     # After the fire: AVAILABLE drops by one (3 → 2), USED grows
-    # by one (0 → 1). Mine bay untouched.
+    # by one (0 → 1). The chaff bay is untouched by an EMP fire.
     assert pack["weapon_stock"]["emp"] == 2
-    assert pack["weapon_stock"]["mine"] == 2
+    assert pack["weapon_stock"]["chaff"] == 2
     assert pack["weapons_used"]["emp"] == 1
-    assert pack["weapons_used"]["mine"] == 0
+    assert pack["weapons_used"]["chaff"] == 0
 
 
 def test_emp_cloud_decays_each_hour() -> None:
@@ -442,52 +470,6 @@ def test_emp_cloud_cells_manhattan_disk() -> None:
     assert (5 + 1, 5 + (EMP_RADIUS - 1)) in cells
 
 
-# ── Mines ───────────────────────────────────────────────────────────
-
-
-def test_mine_lay_records_mine_and_consumes_stock() -> None:
-    """v0.9.3 — mine_lay drains weapon_stock['mine']."""
-    sess = _fresh_night_session()
-    _stock_weapon(sess, "p1", "mine", n=1)
-    pre_credits = sess.credits["p1"]
-    ok, _ = sess.apply_mine_lay("p1", 7, 8, hour=2)
-    assert ok is True
-    assert sess.mine_at(7, 8) is not None
-    assert sess.mine_at(7, 8)["owner"] == "p1"
-    assert sess.weapon_stock["p1"]["mine"] == 0
-    assert sess.credits["p1"] == pre_credits
-
-
-def test_mine_lay_refuses_when_no_stockpile() -> None:
-    sess = _fresh_night_session()
-    sess.weapon_stock["p1"] = {"emp": 0, "mine": 0, "chaff": 0}
-    ok, _ = sess.apply_mine_lay("p1", 7, 8, hour=2)
-    assert ok is False
-    assert sess.mine_at(7, 8) is None
-
-
-def test_mine_step_cancels_and_damages_stepper() -> None:
-    sess = _fresh_night_session()
-    _stock_weapon(sess, "p1", "mine", n=1)
-    h = sess.entities["harvester_p2"]
-    h.x, h.y = 6, 8
-    h.damaged = False
-    sess.apply_mine_lay("p1", 7, 8, hour=1)
-    ok, msg, harvested = sess.try_step_unit("p2", "harvester_p2", 7, 8)
-    assert ok is True
-    assert "CALTROP MINE" in msg
-    assert (h.x, h.y) == (6, 8)
-    assert h.damaged is True
-    assert sess.mine_at(7, 8) is None
-    detonations = [
-        e for e in sess.pending_mine_events
-        if e.get("kind") == "mine_detonate"
-    ]
-    assert detonations
-    assert detonations[0]["harvester_id"] == "harvester_p2"
-    _ = harvested
-
-
 # ── Chaff ───────────────────────────────────────────────────────────
 
 
@@ -511,7 +493,7 @@ def test_chaff_flare_consumes_stock() -> None:
 
 def test_chaff_flare_refuses_when_no_stockpile() -> None:
     sess = _fresh_night_session()
-    sess.weapon_stock["p1"] = {"emp": 0, "mine": 0, "chaff": 0}
+    sess.weapon_stock["p1"] = {"emp": 0, "chaff": 0}
     ok, _ = sess.apply_chaff_flare("p1", hour=4)
     assert ok is False
     assert sess.pending_chaff_events == []
@@ -742,112 +724,44 @@ def test_night_wait_consumes_a_slot_without_acting() -> None:
 # ── Persistence ─────────────────────────────────────────────────────
 
 
-def test_emp_clouds_and_mines_round_trip_via_to_dict() -> None:
+def test_emp_clouds_round_trip_via_to_dict() -> None:
     sess = _fresh_night_session()
     _stock_weapon(sess, "p1", "emp", n=1)
-    _stock_weapon(sess, "p1", "mine", n=1)
     ok_emp, msg_emp = sess.apply_emp_launch("p1", 9, 9, hour=1)
     assert ok_emp, msg_emp
-    ok_mine, msg_mine = sess.apply_mine_lay("p1", 3, 3, hour=2)
-    assert ok_mine, msg_mine
     blob = sess.to_dict()
     restored = GameSession.from_dict(blob)
     assert len(restored.emp_clouds) == 1
     assert restored.emp_clouds[0]["cx"] == 9
-    assert restored.mine_at(3, 3) is not None
-    assert restored.mine_at(3, 3)["owner"] == "p1"
 
 
 def test_weapon_stock_round_trips_via_to_dict() -> None:
     """v0.9.3 — built weapon stockpile survives JSON round-trip."""
     sess = _fresh_night_session()
-    sess.weapon_stock["p1"] = {"emp": 3, "mine": 2, "chaff": 1}
-    sess.weapon_stock["p2"] = {"emp": 0, "mine": 7, "chaff": 4}
+    sess.weapon_stock["p1"] = {"emp": 3, "chaff": 1}
+    sess.weapon_stock["p2"] = {"emp": 0, "chaff": 4}
     restored = GameSession.from_dict(sess.to_dict())
-    assert restored.weapon_stock["p1"] == {"emp": 3, "mine": 2, "chaff": 1}
-    assert restored.weapon_stock["p2"] == {"emp": 0, "mine": 7, "chaff": 4}
+    assert restored.weapon_stock["p1"] == {"emp": 3, "chaff": 1}
+    assert restored.weapon_stock["p2"] == {"emp": 0, "chaff": 4}
 
 
-# ── Mine visibility (RULEBOOK §5.2) ─────────────────────────────────
-
-
-def test_mine_visible_to_owner_always_and_opponent_via_witness() -> None:
-    """v0.9.5 — RULEBOOK §5.2: caltrop mines are owner-visible by
-    default; the opposing seat sees a mine only when a probe (or
-    harvester) of theirs gained live LOS on the cell — either at
-    lay time (recorded by :meth:`try_lay_mine`) or later via
-    fly-over (topped up by :meth:`_pulse_vision_intel`).
-
-    Asserts the four corners of the visibility matrix:
-
-    * owner queries their own mine → returns the public payload
-    * non-owner with no witness → returns ``None``
-    * non-owner added to the witness set → returns the payload
-    * the payload OMITS the witness list (one seat's intel does
-      not leak into the other's view).
+def test_stale_mine_stock_refunds_as_blue_on_load() -> None:
+    """v1.31 — a pre-retirement save can hold armed caltrops and unspent
+    mine stock. Load must disarm the board and hand the blue back rather
+    than stranding the spend, and the surviving bays must be the two
+    live weapons only.
     """
     sess = _fresh_night_session()
-    key = sess._mine_key(5, 5)
-    sess.mines[key] = {
-        "owner": "p1",
-        "laid_at_day": 1,
-        "laid_at_hour": 7,
-        "witnesses": [],
-    }
-    assert sess.mine_visible_to("p1", 5, 5) is not None
-    assert sess.mine_visible_to("p2", 5, 5) is None
-    sess.mines[key]["witnesses"] = ["p2"]
-    payload = sess.mine_visible_to("p2", 5, 5)
-    assert payload is not None
-    assert payload["owner"] == "p1"
-    assert payload["laid_at_day"] == 1
-    assert payload["laid_at_hour"] == 7
-    # Witness list must not bleed into the consumer-facing payload.
-    assert "witnesses" not in payload
+    blob = sess.to_dict()
+    blob["weapon_stock"]["p1"]["mine"] = 2
+    blob["mines"] = {"5:5": {"owner": "p1", "laid_at_day": 1,
+                             "laid_at_hour": 7, "witnesses": []}}
+    pre_blue = int(sess.blue_bank["p1"])
 
-
-def test_mine_surfaces_on_agent_dense_view_live_and_echo_rows() -> None:
-    """v0.9.5 — :meth:`agent_dense_view` exposes ``row["mine"]`` for
-    cells where the seat can lawfully see the mine. Owner gets the
-    mine on a live row (current LOS); witnessed opponent gets it on
-    an echo row even after the witnessing probe is gone.
-    """
-    sess = _fresh_night_session()
-    # Place p1's harvester on (5,5) so the cell is in p1's live LOS.
-    h = sess.entities["harvester_p1"]
-    h.x, h.y = 5, 5
-    # Lay a mine at the same cell (owner=p1).
-    sess.mines[sess._mine_key(5, 5)] = {
-        "owner": "p1",
-        "laid_at_day": 1,
-        "laid_at_hour": 7,
-        "witnesses": [],
-    }
-    adv1 = sess.agent_dense_view("p1")
-    live_with_mine = [r for r in adv1["live"] if r.get("mine")]
-    assert len(live_with_mine) == 1
-    assert live_with_mine[0]["mine"]["owner"] == "p1"
-
-    # p2 has no live LOS and no witness — mine must be hidden.
-    adv2 = sess.agent_dense_view("p2")
-    visible_for_p2 = [
-        r for r in adv2["live"] + adv2["echo"] if r.get("mine")
-    ]
-    assert visible_for_p2 == []
-
-    # Add p2 as a witness + give them probe echo for the cell. The
-    # mine must now surface on p2's echo row.
-    sess.mines[sess._mine_key(5, 5)]["witnesses"] = ["p2"]
-    from sea_of_colours.game.session import _xy_key
-    sess.probe_intel["p2"][_xy_key(5, 5)] = {
-        "tile": 0, "purity": 10,
-        "paint": {"bg": "#000", "fg": "#aaa", "ch": "░░"},
-        "occupants": [], "glyph_ch": None, "glyph_fg": None,
-    }
-    adv2b = sess.agent_dense_view("p2")
-    echo_with_mine = [r for r in adv2b["echo"] if r.get("mine")]
-    assert len(echo_with_mine) == 1
-    assert echo_with_mine[0]["mine"]["owner"] == "p1"
+    restored = GameSession.from_dict(blob)
+    assert restored.mines == {}
+    assert set(restored.weapon_stock["p1"]) == {"emp", "chaff"}
+    assert restored.blue_bank["p1"] == pre_blue + 2 * _MINE_REFUND_BLUE_EACH
 
 
 def test_player_dense_view_surfaces_active_emp_cloud_on_cell() -> None:
@@ -881,67 +795,21 @@ def test_player_dense_view_surfaces_active_emp_cloud_on_cell() -> None:
     assert emp["cx"] == cx and emp["cy"] == cy
 
 
-def test_observer_cells_surface_mine_and_emp_cloud() -> None:
+def test_observer_cells_surface_emp_cloud() -> None:
     """v0.9.5 — observer view is omniscient by definition. The
-    "obs" replay seat had no per-cell mine or EMP cloud payload, so
-    the watcher's hover tooltip was blank for those objects when
-    the user toggled the omniscient pane. Both must now ride on the
-    cell payload returned by :meth:`observer_cells_rowmajor`.
+    "obs" replay seat had no per-cell EMP cloud payload, so the
+    watcher's hover tooltip was blank for a cloud when the user
+    toggled the omniscient pane. It must ride on the cell payload
+    returned by :meth:`observer_cells_rowmajor`.
     """
     sess = _fresh_night_session()
-    sess.mines[sess._mine_key(3, 4)] = {
-        "owner": "p2",
-        "laid_at_day": 2,
-        "laid_at_hour": 9,
-        "witnesses": [],
-    }
     sess.emp_clouds.append({
         "owner": "p1", "cx": 7, "cy": 7,
         "radius": 1, "hours_remaining": 2,
     })
     cells = sess.observer_cells_rowmajor()
-    mine_cell = cells[4 * sess.width + 3]
-    assert mine_cell.get("mine", {}).get("owner") == "p2"
     emp_centre = cells[7 * sess.width + 7]
     assert emp_centre.get("emp_cloud", {}).get("owner") == "p1"
-
-
-def test_mine_witness_survives_probe_intel_pulse_overwrite() -> None:
-    """v0.9.5 regression — pre-v0.9.5 the witness was scribbled into
-    ``probe_intel`` and silently overwritten by the next
-    :meth:`_pulse_vision_intel` tile snapshot. v0.9.5 stores the
-    witness ON THE MINE, so a probe pulse no longer destroys
-    opponent intel.
-    """
-    sess = _fresh_night_session()
-    sess.mines[sess._mine_key(5, 5)] = {
-        "owner": "p1",
-        "laid_at_day": 1,
-        "laid_at_hour": 7,
-        "witnesses": ["p2"],
-    }
-    # Move a p2 probe near (5,5) so the next pulse touches that cell.
-    if "probe_p2_1" not in sess.entities:
-        # Spawn a probe entity for p2 — minimum viable for the pulse.
-        from sea_of_colours.game.session import Entity
-        sess.entities["probe_p2_1"] = Entity(
-            id="probe_p2_1",
-            entity_type="probe",
-            owner="p2",
-            x=5, y=5,
-        )
-    else:
-        sess.entities["probe_p2_1"].x = 5
-        sess.entities["probe_p2_1"].y = 5
-    sess._pulse_vision_intel()
-    assert "p2" in sess.mines[sess._mine_key(5, 5)]["witnesses"], (
-        "pulse must not strip the witness set"
-    )
-    # And the standard tile snapshot DID land in probe_intel.
-    from sea_of_colours.game.session import _xy_key
-    snap = sess.probe_intel["p2"].get(_xy_key(5, 5))
-    assert snap is not None
-    assert "tile" in snap
 
 
 # ── v0.9.x EMP salvo + cross-system destruction ─────────────────────
@@ -989,73 +857,34 @@ def test_emp_salvo_caps_at_missiles_per_launch() -> None:
     assert len(sess.emp_clouds) == EMP_MISSILES_PER_LAUNCH
 
 
-def test_emp_destroys_probes_and_mines_in_blast() -> None:
-    """EMP frying — probes destroyed, mines neutralized in the cloud."""
+def test_emp_destroys_probes_in_blast() -> None:
+    """EMP frying — probes caught in the cloud are destroyed."""
     sess = _fresh_night_session()
     _stock_weapon(sess, "p1", "emp", n=1)
     # A rival probe sitting at the blast centre.
     sess.entities["probe_p2_1"] = Entity(
         id="probe_p2_1", entity_type="probe", owner="p2", x=5, y=5,
     )
-    # A rival mine one cell away (inside the r>=1 disk).
-    sess.mines[sess._mine_key(6, 5)] = {
-        "owner": "p2", "laid_at_day": 1, "laid_at_hour": 1, "witnesses": [],
-    }
     ok, _ = sess.apply_emp_launch("p1", 5, 5, hour=2)
     assert ok is True
     assert "probe_p2_1" not in sess.entities
-    assert sess.mine_at(6, 5) is None
     launch_ev = [
         e for e in sess.pending_emp_events if e.get("kind") == "emp_launch"
     ][-1]
     assert len(launch_ev["destroyed_probes"]) == 1
-    assert len(launch_ev["neutralized_mines"]) == 1
 
 
 def test_emp_field_sweep_kills_unit_entering_standing_cloud() -> None:
-    """A probe/mine that appears inside a live cloud is swept on tick."""
+    """A probe that appears inside a live cloud is swept on tick."""
     sess = _fresh_night_session()
     _stock_weapon(sess, "p1", "emp", n=1)
     sess.apply_emp_launch("p1", 5, 5, hour=1)
-    # Drop a fresh probe + mine into the standing cloud AFTER formation.
+    # Drop a fresh probe into the standing cloud AFTER formation.
     sess.entities["probe_p2_2"] = Entity(
         id="probe_p2_2", entity_type="probe", owner="p2", x=5, y=5,
     )
-    sess.mines[sess._mine_key(5, 6)] = {
-        "owner": "p2", "laid_at_day": 1, "laid_at_hour": 1, "witnesses": [],
-    }
     sess.tick_emp_clouds()
     assert "probe_p2_2" not in sess.entities
-    assert sess.mine_at(5, 6) is None
-
-
-# ── v0.9.x mine cluster ─────────────────────────────────────────────
-
-
-def test_mine_lay_arms_a_plus_cluster() -> None:
-    """One mine_lay arms the center + N/E/S/W (plus shape, 5 cells)."""
-    assert MINE_BATCH_SHAPE == "plus"
-    sess = _fresh_night_session()
-    _stock_weapon(sess, "p1", "mine", n=1)
-    ok, _ = sess.apply_mine_lay("p1", 7, 8, hour=1)
-    assert ok is True
-    for cell in [(7, 8), (7, 7), (7, 9), (6, 8), (8, 8)]:
-        assert sess.mine_at(*cell) is not None, f"missing mine at {cell}"
-    # One lay still drains exactly one stock.
-    assert sess.weapon_stock["p1"]["mine"] == 0
-
-
-def test_mine_cluster_clips_to_bounds() -> None:
-    """A cluster laid at a corner only arms in-bounds cells."""
-    sess = _fresh_night_session()
-    _stock_weapon(sess, "p1", "mine", n=1)
-    ok, _ = sess.apply_mine_lay("p1", 0, 0, hour=1)
-    assert ok is True
-    assert sess.mine_at(0, 0) is not None
-    assert sess.mine_at(1, 0) is not None
-    assert sess.mine_at(0, 1) is not None
-    # Off-grid neighbours simply aren't placed (no crash, no negatives).
-    assert sess.mine_at(-1, 0) is None
 
 
 # ── v0.9.x chaff multi-hour window ──────────────────────────────────

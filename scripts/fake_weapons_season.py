@@ -6,13 +6,19 @@ agent runtime and feeds hand-crafted policies straight into
 ``engine.submit_policy`` so the watcher sees one **interdiction
 weapon** fire per night.
 
-v0.9.4 — the demo now runs TWICE. Nights 1-4 are the "p1 deploys"
-half (setup + EMP + mine + chaff fired BY p1 against p2's
-harvester); Nights 5-7 are the "p2 deploys" half (same
-choreography mirrored: same coords, but with p1↔p2 / harvester_p1
-↔harvester_p2 swapped throughout). That gives a clean side-by-side
-A/B of "what does an EMP look like when MY seat fires it" vs "what
-does it look like when the OTHER seat fires it on me".
+v1.31 — the caltrop night was CUT, taking the season from 7 nights
+to 5. It could not simply be left in place: ``mine_lay`` now parses
+to a waste marker, so that night would still run and still announce
+itself while producing no frames whatsoever — a demo that lies is
+worse than one that is a night shorter.
+
+v0.9.4 — the demo runs TWICE. Nights 1-3 are the "p1 deploys" half
+(setup + EMP + chaff fired BY p1 against p2's harvester); Nights
+4-5 are the "p2 deploys" half (same choreography mirrored: same
+coords, but with p1↔p2 / harvester_p1↔harvester_p2 swapped
+throughout). That gives a clean side-by-side A/B of "what does an
+EMP look like when MY seat fires it" vs "what does it look like
+when the OTHER seat fires it on me".
 
 v0.9.3 introduced the build-first flow: weapons are BUILT during
 the preceding Orbit phase and DRAINED from a per-seat stockpile at
@@ -31,16 +37,8 @@ launch. So each demo night has a matching orbit action queue.
     evaporates pre-H10, so p2's H10 pickup recovers the harvester
     cleanly — no dawn strand.
 
-  Orbit Day 3 — p1 builds 1 × caltrop mine.
-  Night 3 — Caltrop mine deployment.
-    p2 probes (15, 10), drops harvester_p2 at (13, 10), steps east
-    twice. p1 mines (15, 10) at H2. The harvester's H4 step onto
-    (15, 10) detonates the mine — move cancelled, harvester
-    damaged, mine consumed. Pickup retrieves the damaged unit so
-    the asset survives dawn.
-
-  Orbit Day 4 — p1 builds 1 × chaff flare.
-  Night 4 — Orbital chaff flare deployment.
+  Orbit Day 3 — p1 builds 1 × chaff flare.
+  Night 3 — Orbital chaff flare deployment.
     p2 probes (20, 10), drops at (20, 10), then steps east. p1
     fires chaff_flare at H3 — every OTHER seat's hour-3 action is
     smothered. p2's H3 step is cancelled (``chaffed``); the same
@@ -50,14 +48,14 @@ launch. So each demo night has a matching orbit action queue.
 Resources: the script pre-seeds p1's hoard with blue parcels and
 boosts p2's probe stock so each night has at least one probe to
 satisfy the v0.9.2 fog-of-war drop rule. Credits are covered by
-the +1000c/turn Orbit award accumulating across days 2-4.
+the +1000c/turn Orbit award accumulating across days 2-3.
 
 Run::
 
     python scripts/fake_weapons_season.py --season-name Weapons_Demo_v093
 
 Then load ``/watch.html?season=weapons-demo-v093`` to see the EMP
-burst, mine detonation, and chaff snowstorm play out in sequence.
+burst and the chaff snowstorm play out in sequence.
 """
 
 from __future__ import annotations
@@ -79,8 +77,8 @@ sys.path.insert(0, str(HERE))
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
-            "Engineered weapons-showcase season — 3 nights, one v0.9 "
-            "interdiction weapon per night (EMP / mine / chaff)."
+            "Engineered weapons-showcase season — one interdiction "
+            "weapon per night (EMP / chaff), fired by each seat in turn."
         )
     )
     p.add_argument("--seed", type=int, default=9090)
@@ -166,16 +164,12 @@ ORBIT_PLANS: List[Optional[Dict[str, List[Dict[str, Any]]]]] = [
     None,
     # Day 2 orbit — p1 builds 1 EMP warhead.
     {"p1": [{"a": "build_emp"}], "p2": []},
-    # Day 3 orbit — p1 builds 1 caltrop mine.
-    {"p1": [{"a": "build_mine"}], "p2": []},
-    # Day 4 orbit — p1 builds 1 chaff flare.
+    # Day 3 orbit — p1 builds 1 chaff flare.
     {"p1": [{"a": "build_chaff"}], "p2": []},
-    # Day 5 orbit — REVERSAL: p2 starts building. EMP again, this
+    # Day 4 orbit — REVERSAL: p2 starts building. EMP again, this
     # time deployed by p2 against p1.
     {"p1": [], "p2": [{"a": "build_emp"}]},
-    # Day 6 orbit — p2 builds a mine.
-    {"p1": [], "p2": [{"a": "build_mine"}]},
-    # Day 7 orbit — p2 builds a chaff flare.
+    # Day 5 orbit — p2 builds a chaff flare.
     {"p1": [], "p2": [{"a": "build_chaff"}]},
 ]
 
@@ -211,21 +205,11 @@ NIGHTS_P1_DEPLOYS: List[Dict[str, List[Dict[str, Any]]]] = [
             {"a": "pickup", "unit": "harvester_p2"},
         ],
     },
-    # ── Night 3 — Caltrop mine ─────────────────────────────────────
-    {
-        "p1": [
-            {"a": "wait"},
-            {"a": "mine_lay", "at": [15, 10]},
-        ],
-        "p2": [
-            {"a": "probe", "at": [15, 10]},
-            {"a": "drop", "unit": "harvester_p2", "at": [13, 10]},
-            {"a": "step", "unit": "harvester_p2", "to": [14, 10]},
-            {"a": "step", "unit": "harvester_p2", "to": [15, 10]},
-            {"a": "pickup", "unit": "harvester_p2"},
-        ],
-    },
-    # ── Night 4 — Orbital chaff flare ──────────────────────────────
+    # ── Night 3 — Orbital chaff flare ──────────────────────────────
+    # v1.31 — the caltrop night used to sit between the EMP and the
+    # chaff. It was cut rather than left in: ``mine_lay`` now parses to
+    # a waste marker, so the night would still run, still print
+    # "MINE", and quietly produce no frames at all.
     {
         "p1": [
             {"a": "wait"},
@@ -325,13 +309,11 @@ def _blue_parcel(owner: str, idx: int, purity: int) -> Dict[str, Any]:
 
 # v0.9.4 — both seats now build weapons during their half of the
 # demo, so both get pre-seeded with the same denomination ladder.
-# Each ladder covers one EMP (200), one mine (100), one chaff (255)
-# with zero waste.
+# Each ladder covers one EMP (200) and one chaff (255) with zero waste.
 #
 #   EMP   (200 blue) : 50 + 50 + 50 + 50
-#   Mine  (100 blue) : 50 + 50
 #   Chaff (255 blue) : 255
-WEAPONS_BLUE_PARCELS: List[int] = [50, 50, 50, 50, 50, 50, 255]
+WEAPONS_BLUE_PARCELS: List[int] = [50, 50, 50, 50, 255]
 
 
 def _slug(name: str) -> str:
@@ -401,9 +383,10 @@ def _print_banner(*, season_name: str, session_id: str, seed: int,
     print(f"  session_id   : {session_id}")
     print(f"  seed         : {seed}")
     print(f"  backend      : {backend}")
-    print(f"  day cap      : 7 nights (build-first weapons, both seats deploy)")
-    print(f"  half 1       : N1 setup · N2 p1→EMP · N3 p1→MINE · N4 p1→CHAFF")
-    print(f"  half 2       : N5 p2→EMP · N6 p2→MINE · N7 p2→CHAFF")
+    print(f"  day cap      : {len(SCRIPTED_NIGHTS)} nights "
+          f"(build-first weapons, both seats deploy)")
+    print(f"  half 1       : N1 setup · N2 p1→EMP · N3 p1→CHAFF")
+    print(f"  half 2       : N4 p2→EMP · N5 p2→CHAFF")
     print(line, flush=True)
 
 
@@ -429,18 +412,16 @@ def _print_final_block(*, view: Dict[str, Any], season_name: str,
 
 
 def _summarize_weapon_events(rep: Dict[str, Any]) -> Dict[str, int]:
-    """Count EMP / mine / chaff event payloads in a per-night replay
-    so the operator can confirm the FX actually fired engine-side
-    (the splash / cloud / static animations are client-only)."""
+    """Count EMP / chaff event payloads in a per-night replay so the
+    operator can confirm the FX actually fired engine-side (the splash
+    / cloud / static animations are client-only)."""
     frames = [f for d in rep.get("days", []) for f in d.get("frames", [])]
     n_emp = sum(len(f.get("emp") or []) for f in frames)
-    n_mine = sum(len(f.get("mine") or []) for f in frames)
     n_chaff = sum(len(f.get("chaff") or []) for f in frames)
     n_empd = sum(1 for f in frames if f.get("tag") == "empd")
     n_chaffed = sum(1 for f in frames if f.get("tag") == "chaffed")
     return {
         "emp_events": n_emp,
-        "mine_events": n_mine,
         "chaff_events": n_chaff,
         "empd_frames": n_empd,
         "chaffed_frames": n_chaffed,
@@ -544,7 +525,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(
             "    events: "
             f"emp={events['emp_events']}  "
-            f"mine={events['mine_events']}  "
             f"chaff={events['chaff_events']}  "
             f"empd_frames={events['empd_frames']}  "
             f"chaffed_frames={events['chaffed_frames']}",

@@ -28,6 +28,18 @@ This file is always-on context for AI agents; keep it lean and current.
  `scripts/export_agent_guide_data.py` rather than editing
  `manual/agent-data.js`. It cites harness module paths, so a rename in
  `harnesses/tabula_v12/` fans out here.
+- `server/static/films/*.webm` — the teaching-mode films (v1.32). These
+ are **generated build output that is checked in**: they are shot by
+ `scripts/make_tutorial_films.py` driving the real UI in a real browser,
+ never hand-recorded. That makes them a **fan-out surface with teeth** —
+ a selector rename, a moved button or a reworded verb can silently turn
+ a film into a clip of the wrong thing. If you change the ORDERS panel,
+ the fleet row, the board context menu or the orbit buys, re-shoot and
+ **watch the result**; the harness asserts outcomes, not pedagogy.
+ `docs/TUTORIAL_PLAN.md` §9 is the state of play; the reel text and its
+ turn live in `server/static/tutorial.js`, the presets in
+ `sea_of_colours/game/tutorial.py`, and `scripts/_fx_tutorial.py` is the
+ end-to-end check.
 - `docs/SNOWFLAKE_SETUP.md` — BYO-Snowflake-trial-account walkthrough
   (PAT for the V12 agent; optional schema deploy for persistent
   sessions). Playing/testing against `RED_HARVEST` / `RED_HARVEST_LITE`
@@ -133,7 +145,10 @@ The same `engine.py` backs the Snowpark stored procedures.
   lints (`ReadLints`). It's one large IIFE — prefer `StrReplace` with ample
   context.
 - `station.js` loads **after** `app.js` and wires `window.osOn*` hooks; keep that
-  order.
+ order.
+- `tutorial.js` also loads after `app.js` and is coupled to it by exactly one
+ seam — the `soc:tutorial-state` event. Keep it that way: nothing in `app.js`
+ may import it, so a teaching feature can never break a real season.
 - Replay/live cinematic renders the **resolved end-state frame first**, then
   animates deltas over it (`paintReplayFrameOntoMain` → `runReplayAnimationsTick`
   → `runSingleDeltaAnimation`). To avoid the board "moving" before a sprite
@@ -156,7 +171,7 @@ Checklist for any rule/constant/formula change:
 
 1. **Engine (source of truth).** Change the single canonical definition — a
    constant at the top of `game/session.py` (capacities, costs, multipliers),
-   `game/weapons.py` (EMP/mine/chaff dials), `game/tuning.py` (env-tunable vision
+   `game/weapons.py` (EMP/chaff dials), `game/tuning.py` (env-tunable vision
    knobs), or `game/policy.py` (slot caps). Never duplicate a literal you could
    import.
 2. **RULEBOOK.md.** Update the prose **and** the `Canonical Configuration` table,

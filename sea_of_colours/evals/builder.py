@@ -537,7 +537,6 @@ class WorldBuilder:
         *,
         player: PlayerId = "p1",
         emp: int = 0,
-        mine: int = 0,
         chaff: int = 0,
     ) -> "WorldBuilder":
         """Pre-arm the seat's weapon stockpile.
@@ -549,10 +548,9 @@ class WorldBuilder:
         """
         sess = self._ensure_session()
         slot = sess.weapon_stock.setdefault(
-            player, {"emp": 0, "mine": 0, "chaff": 0}
+            player, {"emp": 0, "chaff": 0}
         )
         slot["emp"] = int(emp)
-        slot["mine"] = int(mine)
         slot["chaff"] = int(chaff)
         return self
 
