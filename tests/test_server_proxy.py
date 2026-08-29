@@ -71,6 +71,38 @@ def test_policy_resolves_when_both_seats_ready(client):
     assert r2["day"] == 2
 
 
+@pytest.mark.parametrize(
+    "route, good, bad",
+    [("policy", "moves", "policy"), ("orbit", "actions", "orders")],
+)
+def test_a_queue_under_the_wrong_field_name_is_refused(client, route, good, bad):
+    """A typo must not read as "this seat is passing".
+
+    Both submit routes used to fall back to an empty queue for any
+    unrecognised field, so a misspelling locked a no-op turn and still
+    answered ``ok`` — indistinguishable from a deliberate pass, and no
+    way to tell from the response that the orders were thrown away.
+    Attendees drive these endpoints by hand from their own harnesses.
+    """
+    sid = client.post(
+        "/api/game/new", params={"seed": 41, "width": 16, "height": 10},
+    ).json()["session_id"]
+
+    r = client.post(
+        f"/api/game/{sid}/{route}",
+        json={"player": "p1", bad: [{"a": "probe", "at": [4, 4]}]},
+    )
+    assert r.status_code == 400
+    assert bad in r.json()["detail"] and good in r.json()["detail"]
+
+    # Omitting the queue is still how you pass, so the guard must not
+    # fire on it. (Whether the engine then accepts it is a phase
+    # question — an orbit submission on a planning board is a legitimate
+    # `ok: false` — so this only pins that we got past the field check.)
+    ok = client.post(f"/api/game/{sid}/{route}", json={"player": "p1"})
+    assert ok.status_code == 200
+
+
 def test_replay_and_day_index_populate(client):
     sid = client.post(
         "/api/game/new", params={"seed": 33, "width": 16, "height": 10},

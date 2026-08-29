@@ -170,7 +170,7 @@ def main() -> int:
         # turn one. Play the night out from under the open page and see
         # whether the orbit reel lets itself in.
         _api(base, f"/api/game/{sid}/policy",
-             {"player": "p1", "policy": [{"a": "probe", "at": [8, 7]}]})
+             {"player": "p1", "moves": [{"a": "probe", "at": [8, 7]}]})
         try:
             pg.wait_for_function(
                 """() => {

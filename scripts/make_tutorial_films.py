@@ -337,6 +337,28 @@ _PUSH_IN = """
 
   vp.style.transition = `transform ${ms}ms cubic-bezier(.4,0,.2,1)`;
   vp.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
+
+  // Four overlays — planned orders, vision borders, blue sign, redsign
+  // — are positioned in absolute pixels snapshotted from cell rects, so
+  // a camera move strands all four exactly as the zoom dragger would.
+  // Left alone they draw the previous board's geometry over the new
+  // one: a vision border stapled across the middle of a zoomed map,
+  // with the terrain magnified underneath it.
+  // Re-anchor on EVERY frame of the glide, not just at both ends. The
+  // overlays measure the cells as they are now, so a single call pins
+  // them to a size the board is only passing through: the terrain
+  // swells for 700ms with a small border sitting still on top of it,
+  // which is the "zoom breaks the vision areas" the films were showing.
+  if (typeof window._osReanchorOverlays === 'function') {
+    if (window.__filmCam) cancelAnimationFrame(window.__filmCam);
+    const until = performance.now() + ms + 80;
+    const chase = () => {
+      window._osReanchorOverlays();
+      window.__filmCam =
+        performance.now() < until ? requestAnimationFrame(chase) : 0;
+    };
+    chase();
+  }
   return {k: Math.round(k * 100) / 100, base: base};
 }
 """
@@ -692,6 +714,80 @@ class Film:
                 f"something reset the camera, so this beat is a wide shot "
                 f"with a close-up's caption over it"
             )
+        self.expect_overlays_anchored(f"after pushing in on {list(cells)}")
+
+    def expect_overlays_anchored(self, where: str) -> None:
+        """The pixel-anchored overlays must match the grid they sit on.
+
+        Vision borders and the planned-orders layer snapshot cell rects
+        rather than living in the grid, so any camera move strands them
+        at the previous board's geometry. Nothing errors: you get a
+        vision border stapled across the middle of a magnified board and
+        harvester chips a quarter of the size of the squares they are
+        standing on. Compare the layer against the grid and say so.
+        """
+        got = self.pg.evaluate("""() => {
+          const grid = document.querySelector('#map-player .map-grid');
+          const svg = document.querySelector('.vision-border-layer');
+          if (!grid) return null;
+          const g = grid.getBoundingClientRect();
+          if (!svg) return {drift: 0, gw: g.width};
+          const s = svg.getBoundingClientRect();
+          return {drift: Math.max(Math.abs(s.width - g.width),
+                                  Math.abs(s.left - g.left),
+                                  Math.abs(s.top - g.top)),
+                  gw: g.width, sw: s.width};
+        }""")
+        if not got:
+            return
+        # A few pixels is rounding; anything more is the wrong geometry.
+        if float(got["drift"]) > 8:
+            self.fails.append(
+                f"{where}: the vision border is drawn on the old grid "
+                f"({got.get('sw', 0):.0f}px wide against a {got['gw']:.0f}px "
+                f"board, off by {got['drift']:.0f}px) — it will sit across "
+                f"the map at the wrong scale"
+            )
+
+    def watch_lifters(self) -> None:
+        """Start tallying how many Houses have a lifter in the air at once.
+
+        A collision beat is under a second and the craft are a glyph
+        wide, so "did both lifters fly?" is not a question watching the
+        film reliably answers — the first cut of `basic_crash` shipped
+        with the rival's craft suppressed entirely and nobody caught it
+        from the video.
+
+        Two narrowings, both learned by writing the loose version first.
+        Count DISTINCT seat colours, because one House launching twice
+        is not the claim. And count only BOUNCE arcs: every lift at dawn
+        is also an orbital ghost, so a census over the whole cinematic
+        reaches two colours on the recoveries alone and passes happily
+        with the collision itself rendered as a single craft.
+        """
+        self.pg.evaluate("""() => {
+          window.__lifterPeak = 0;
+          if (window.__lifterTimer) clearInterval(window.__lifterTimer);
+          window.__lifterTimer = setInterval(() => {
+            const seen = new Set();
+            document.querySelectorAll('.replay-anim-ghost--bounce')
+              .forEach((e) => seen.add(e.style.color || ''));
+            window.__lifterPeak = Math.max(window.__lifterPeak, seen.size);
+          }, 40);
+        }""")
+
+    def expect_lifters(self, n: int, where: str) -> None:
+        peak = int(self.pg.evaluate("""() => {
+          if (window.__lifterTimer) clearInterval(window.__lifterTimer);
+          window.__lifterTimer = 0;
+          return window.__lifterPeak || 0;
+        }""") or 0)
+        if peak < n:
+            self.fails.append(
+                f"{where}: only {peak} House(s) had a lifter on screen at "
+                f"once, wanted {n} — the beat plays as one craft bouncing "
+                f"off an empty square"
+            )
 
     def pull_out(self, ms: int = 700) -> None:
         self.pg.evaluate("""(ms) => {
@@ -701,6 +797,16 @@ class Film:
           vp.style.transform = 'none';
           const fx = document.getElementById('collision-fx-layer');
           if (fx && fx.parentElement !== vp) vp.appendChild(fx);
+          if (typeof window._osReanchorOverlays === 'function') {
+            if (window.__filmCam) cancelAnimationFrame(window.__filmCam);
+            const until = performance.now() + ms + 80;
+            const chase = () => {
+              window._osReanchorOverlays();
+              window.__filmCam =
+                performance.now() < until ? requestAnimationFrame(chase) : 0;
+            };
+            chase();
+          }
         }""", ms)
         self._cam = None
         self.wait(ms + 200)
@@ -1122,6 +1228,7 @@ def _crash(f: Film, base: str, sid: str) -> None:
     f.push_in(same)
 
     f.say("Both Houses commit blind. PRAXIS.")
+    f.watch_lifters()
     f.praxis(cues=[
         ("H01", "Hour 1 \u2014 you both chose the same landing square"),
         # Hour 2 is the quiet one, so the pan happens between the two
@@ -1131,6 +1238,8 @@ def _crash(f: Film, base: str, sid: str) -> None:
         ("H03", "And yours walks into theirs. Neither moves."),
         ("AURORA", "Your lifts ran, so the wrecks came home"),
     ])
+
+    f.expect_lifters(2, "the simultaneous-drop collision")
 
     # By now the night has resolved, so the ORDERS roster is gone and
     # the aftermath lives in the ORBIT panel: two damaged hulls and a

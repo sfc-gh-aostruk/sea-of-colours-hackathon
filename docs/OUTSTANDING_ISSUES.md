@@ -1310,6 +1310,81 @@ profile. It now plays a second tutorial in the same context and asserts the
 modal opens again, plus a third with mute set to assert mute still wins. Both
 were confirmed to fail against the old code before the fix went in.
 
+## 29. ✅ (DONE, v1.33) A camera move left the vision border on the old board
+
+**Symptom:** found while watching `basic_crash`. Push the camera in on a tile
+and the terrain magnifies while the white vision border stays exactly where
+and how big it was — a small outline stapled across the middle of a zoomed
+map, tracing cells that are no longer under it. Nothing errors, and it is
+easy to mistake for a border that is merely mis-drawn rather than one that is
+describing the previous frame.
+
+**Root cause:** four overlays (planned orders, vision borders, blue sign,
+redsign) do not live in the grid — they snapshot cell rects and write absolute
+pixels. `app.js` already knew this and repainted all four after a zoom, but
+that repaint was buried inside `applyMapZoom`, so the only camera in the
+building that was not a zoom — the film harness's CSS transform on
+`.cc-map-viewport` — had no way to ask for it.
+
+**Fix:** `reanchorOverlays()` is factored out of `applyMapZoom` and exposed as
+`window._osReanchorOverlays`; `push_in` / `pull_out` call it on **every frame
+of the glide**, not just at both ends. Both ends is not enough: the overlays
+measure the cells as they are now, so a single call pins them to a size the
+board is only passing through, and the 700ms move plays with the border
+sitting still on top of swelling terrain.
+
+Measured with `scripts/_probe_camera.py` (before: a 433px-wide border on a
+1299px board; after: both 1299px), and `Film.expect_overlays_anchored` now
+fails a shoot if the layer drifts more than 8px from the grid. The probe cost
+an hour to a scratch-script bug, not a product one — see issue 30.
+
+## 30. ✅ (DONE, v1.33) Only one lifter showed up to a two-House pile-up
+
+**Symptom:** in the crash film, two harvesters are dropped on the same square
+and one orblift flies in, bounces off an apparently empty tile and goes home
+damaged — with the caption underneath reading `SIMULTANEOUS DROP COLLISION at
+(9,7) — (p1+p2)`. The beat teaches nothing, because the thing it collided
+with is not on screen.
+
+**Root cause:** `describeReplayDelta` fans out one bounce per harvester in the
+pile-up, then marked every bounce that was not the viewer's own `stationOnly`
+— drawn on the rival's platform, never on the board — on the grounds that a
+landing cell is private (§3.15). But §3.15 lists **mutual destruction** as one
+of the ways a rival's position is legitimately learnt, and the viewer here
+dropped on that tile themselves. The suppression protected nothing the engine
+was not already printing in the log. A step-into collision never had this
+gate, so the two collision shapes disagreed about the same fact.
+
+**Fix:** the rival's bounce is drawn when the viewer is one of the Houses in
+the pile-up; a collision between two other seats stays station-only.
+
+**Why no test caught it, twice:** a film harness that only checks the crash
+*happened* cannot see that half of it is invisible, and neither could I from
+the video — the craft are one glyph wide for under a second. `Film.watch_lifters`
+now counts distinct seat colours among in-flight arcs. The first version of
+that census passed against the broken build: every lift at dawn is also an
+orbital arc, so a count over the whole cinematic reaches two on the
+recoveries alone. Narrowed to bounce arcs only (`.replay-anim-ghost--bounce`,
+a new marker class) it fails the backout correctly.
+
+## 31. ✅ (DONE, v1.33) A misspelled field made a turn silently do nothing
+
+**Symptom:** `POST /api/game/{id}/policy` with `{"player": "p1", "policy":
+[...]}` returns `200 {"ok": true}`, the night resolves, and the log reads
+`p1 locked policy (0 move(s))`. The queue is dropped without a word. Cost an
+hour of debugging a camera probe that was actually staging an empty board.
+
+**Root cause:** the endpoint read `payload.get("moves", payload.get("commands"))`
+and treated a miss as "this seat is passing", which is a legal thing to do —
+so a typo and a deliberate pass were indistinguishable.
+
+**Fix:** `_queue_field` in `server/app.py` still allows an omitted queue (pass
+is real) but rejects a payload that carries some *other* list field with a 400
+naming the right one. Applied to `/policy` and `/orbit` alike. This matters
+past our own scratch scripts: attendees drive these endpoints by hand, and a
+submit API that accepts a misspelling by throwing the turn away is a bad hour
+to hand someone at a hackathon.
+
 | # | Area | Severity | Blocking multiplayer? |
 |---|------|----------|-----------------------|
 | 1 | Vision / trails (echo coverage — now fog-frozen) | ✅ done (v1.8) | no |
@@ -1340,3 +1415,6 @@ were confirmed to fail against the old code before the fix went in.
 | 26 | A stale `mine_lay` reached the engine unfiltered (the v7 sanitiser never rejected it) and wasted a slot as a nameless "unknown action" — resolved by retiring the caltrop and refusing both tags by name (§4.9.4); old saves clear armed caltrops and refund unspent stock as blue | ✅ done (v1.31) | no |
 | 27 | `two_seams_choose_one` red at HEAD: the heuristic walks the other seam, so `HarvesterChainHits` sees 0/1. Predates the tutorial work; suspects are the three recent seam/jackpot pricing commits | 🔴 open | no |
 | 28 | The tutorial modal never auto-opened again after one play: the shown-already set was keyed on reel names that repeat in every Basic game, so a returning player got a teaching mode that taught nothing. Now scoped per game id | ✅ done (v1.33) | no |
+| 29 | A camera move stranded the four pixel-anchored overlays on the previous board's geometry — `reanchorOverlays` was locked inside `applyMapZoom`. Now exposed and called every frame of the glide | ✅ done (v1.33) | no |
+| 30 | A rival's bounce in a simultaneous-drop pile-up was suppressed as a private landing (§3.15), so the viewer watched one lifter hit an empty square while the caption named the House it hit. §3.15 already discloses mutual destruction | ✅ done (v1.33) | no |
+| 31 | `POST /policy` and `/orbit` silently discarded a queue sent under the wrong field name and reported `ok` — a typo and a deliberate pass were indistinguishable | ✅ done (v1.33) | no |

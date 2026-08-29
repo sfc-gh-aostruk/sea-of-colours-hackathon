@@ -8624,6 +8624,19 @@
       if (!at) return null;
       const harvs = Array.isArray(ev.harvesters) ? ev.harvesters : [];
       const singleSeat = replayViewSeat !== "obs" && replayViewSeat !== "both";
+      // v1.33 — is the viewer one of the Houses in the pile-up? §3.15
+      // makes landing cells private but names **mutual destruction** as
+      // one of the ways a rival's position is learnt anyway, and a
+      // simultaneous-drop collision is exactly that: you dropped on the
+      // tile yourself, and the engine's caption already reads
+      // "SIMULTANEOUS DROP COLLISION at (12,8) — (p1+p2)". Suppressing
+      // the rival's craft disclosed nothing extra and cost the beat its
+      // point — you watched one lifter bounce off an empty square with
+      // the thing it hit named in the log underneath. A step-into
+      // collision always drew both craft, so this settles that
+      // asymmetry too.
+      const viewerInPileup = singleSeat && harvs.some(
+        (h) => String(h).split("_")[1] === replayViewSeat);
       const deltas = [];
       for (const hid of harvs) {
         const seat = String(hid).split("_")[1] || "";
@@ -8635,12 +8648,13 @@
           // wrong seat's station half the time.
           owner: seat,
           fg: ownerColor(seat), damaged: true, idx: unitOrdinal(hid),
-          // v1.28 — a rival's bounce is still not DRAWN: the contested tile
-          // is a private landing location. But the launch that produced it
-          // left a platform in plain view, so the delta now survives as a
-          // station-only event instead of being dropped here. See
-          // _emitOrbitalPlatformEvent.
-          stationOnly: singleSeat && seat !== replayViewSeat,
+          // v1.28 — a rival's bounce the viewer had no part in is still not
+          // DRAWN: the contested tile is a private landing location. But the
+          // launch that produced it left a platform in plain view, so the
+          // delta survives as a station-only event instead of being dropped
+          // here. See _emitOrbitalPlatformEvent.
+          stationOnly:
+            singleSeat && seat !== replayViewSeat && !viewerInPileup,
         });
       }
       return deltas.length ? deltas : null;
@@ -9021,7 +9035,12 @@
     const c2x = midX - perpX * curve, c2y = midY - perpY * curve;
 
     const ghost = document.createElement("span");
-    ghost.className = "replay-anim-ghost replay-anim-ghost--orbital";
+    // A bounce is marked on the element, not just implied by the cargo
+    // glyph: it is the one arc that never sets its cargo down, and
+    // telling it apart from a delivery is the difference between "two
+    // Houses hit the same square" and "two craft happened to be out".
+    ghost.className = "replay-anim-ghost replay-anim-ghost--orbital"
+      + (isBounce ? " replay-anim-ghost--bounce" : "");
     ghost.style.color = delta.fg;
     ghost.style.width = `${String(Math.round(cw))}px`;
     ghost.style.height = `${String(Math.round(ch))}px`;
@@ -20989,30 +21008,33 @@
     } catch (_) {
       /* ignore — private mode etc. */
     }
-    // v0.9.13 — cells resized; re-anchor the planned-orders overlay once
-    // layout settles so badges/legs track the new cell geometry.
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => {
-        try { paintPlannedOrdersOverlay(); } catch (_e) { /* non-fatal */ }
-        // Zoom resizes cells WITHOUT repainting the board, so the post-paint
-        // hook never fires — the border layer has to be re-anchored here or
-        // it stays sized to the old grid.
-        try { paintVisionBorders(); } catch (_e) { /* non-fatal */ }
-      });
-    }
-    // The blue-sign overlay is positioned in absolute pixels snapshotted
-    // from the cell rects, so a zoom change (which resizes cells via
-    // --map-font-size) leaves it stranded. Repaint it against the
-    // freshly-laid-out grid so it tracks the zoom. requestAnimationFrame
-    // lets the CSS reflow settle first.
-    if (mainMapSource === "live") {
-      requestAnimationFrame(() => {
-        try { paintBlueSignOverlay(lastBlueSign); } catch (_e) {}
-      });
-    }
-    // The redsign pulse overlay is likewise pixel-anchored, and it renders
-    // in BOTH live and replay — re-anchor it after any resize/zoom.
+    reanchorOverlays();
+  }
+
+  /**
+   * Re-anchor every overlay that is positioned in absolute pixels.
+   *
+   * Four layers snapshot cell geometry rather than living in the grid:
+   * planned orders, vision borders, the blue-sign smear and the redsign
+   * pulse. Anything that resizes cells WITHOUT repainting the board —
+   * the zoom dragger, a container resize, the film harness's camera —
+   * leaves all four sized to a grid that no longer exists, and the
+   * post-paint hook never fires to catch it. The symptom is a vision
+   * border stapled across the middle of a zoomed board.
+   *
+   * v0.9.13 for the planned-orders half; lifted out of `applyMapZoom`
+   * in v1.33 so callers other than the dragger can ask for it.
+   */
+  function reanchorOverlays() {
+    if (typeof requestAnimationFrame !== "function") return;
     requestAnimationFrame(() => {
+      try { paintPlannedOrdersOverlay(); } catch (_e) { /* non-fatal */ }
+      try { paintVisionBorders(); } catch (_e) { /* non-fatal */ }
+      // Blue sign is live-only; the redsign pulse renders in both live
+      // and replay.
+      if (mainMapSource === "live") {
+        try { paintBlueSignOverlay(lastBlueSign); } catch (_e) {}
+      }
       try { paintRedsignOverlay(); } catch (_e) {}
     });
   }
@@ -21021,6 +21043,10 @@
   // fit-to-width baseline as "100%". No effect when the station UI is off.
   window._osApplyMapZoom      = applyMapZoom;
   window._osSetMapZoomDefault = (px) => { MAP_ZOOM_DEFAULT = clampZoom(px); };
+  // The film harness moves a camera the product does not have (a CSS
+  // transform on the viewport), which resizes cells the same way a zoom
+  // does and strands the same four overlays.
+  window._osReanchorOverlays  = reanchorOverlays;
 
   /** @param {number} delta */
   function nudgeMapZoom(delta) {

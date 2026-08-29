@@ -1397,6 +1397,32 @@ def api_game_status(game_id: str) -> dict[str, Any]:
     return status
 
 
+def _queue_field(payload: dict[str, Any], *accepted: str) -> Any:
+    """Read a submit endpoint's queue, refusing a near-miss field name.
+
+    A misspelled key used to be indistinguishable from an empty
+    submission: the seat locked a no-op turn and the response still
+    said ``ok``. Anyone driving the API by hand — an attendee harness,
+    one of our own scratch scripts — then spent a while debugging a
+    game that had quietly agreed to do nothing. An empty queue is still
+    legal (it's how you pass), but naming the wrong field is not.
+    """
+    for name in accepted:
+        if name in payload:
+            value = payload[name]
+            return [] if value is None else value
+    stray = [k for k, v in payload.items() if k != "player" and isinstance(v, list)]
+    if stray:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown field {stray[0]!r}; send the queue as "
+                f"{accepted[0]!r} (or omit it to pass)"
+            ),
+        )
+    return []
+
+
 @app.post("/api/game/{game_id}/orbit")
 def api_game_orbit(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Submit a seat's Orbit phase action queue (v0.8.0).
@@ -1410,9 +1436,7 @@ def api_game_orbit(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     player = payload.get("player")
     if not isinstance(player, str) or not player:
         raise HTTPException(status_code=400, detail="player is required")
-    actions_field: Any = payload.get("actions", payload.get("commands"))
-    if actions_field is None:
-        actions_field = []
+    actions_field: Any = _queue_field(payload, "actions", "commands")
     pre_status = soc_engine.get_session_status(_store_for(game_id), game_id)
     slow = _game_has_slow_bot(pre_status.get("agents") or {})
 
@@ -1495,9 +1519,7 @@ def api_game_policy(game_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     player = payload.get("player")
     if not isinstance(player, str) or not player:
         raise HTTPException(status_code=400, detail="player is required")
-    moves_field: Any = payload.get("moves", payload.get("commands"))
-    if moves_field is None:
-        moves_field = []
+    moves_field: Any = _queue_field(payload, "moves", "commands")
     pre_status = soc_engine.get_session_status(_store_for(game_id), game_id)
     slow = _game_has_slow_bot(pre_status.get("agents") or {})
 

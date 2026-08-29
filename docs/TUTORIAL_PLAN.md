@@ -418,10 +418,22 @@ about it are load-bearing, each learned by shooting a film that lied:
    identity breaks the moment an ancestor is scaled: the first zoomed
    crash film drew its collision X several hundred pixels off the board.
 
+5. **Re-anchor the pixel-positioned overlays on EVERY frame of the
+   glide.** Vision borders, planned orders, blue sign and redsign
+   snapshot cell rects rather than living in the grid, so a camera move
+   strands all four (issue 29). `app.js` already fixed this for its own
+   zoom; the fix just was not reachable, and is now
+   `window._osReanchorOverlays`. Calling it at both ends of the move is
+   not enough — the overlays measure the cells *as they are now*, so one
+   call pins them to a size the board is only passing through, and the
+   whole 700ms plays with a small border sitting still on swelling
+   terrain. That is what "the zoom breaks the vision areas" was.
+
 `push_in` measures the result and fails if the subject is outside the
-frame or the squares did not actually grow, because a close-up is the
-one effect that fails silently — the film still runs, the caption still
-says "watch this square", and you get a wide shot with a lie over it.
+frame, if the squares did not actually grow, or if the vision border has
+drifted more than 8px from the grid — because a close-up is the one
+effect that fails silently. The film still runs, the caption still says
+"watch this square", and you get a wide shot with a lie over it.
 
 ### Other traps paid for here
 
@@ -438,6 +450,17 @@ says "watch this square", and you get a wide shot with a lie over it.
 - **The ORDERS roster is gone once the night resolves.** Damage shows
   up in the ORBIT panel (`[data-orbit-damaged-count]`), not on a fleet
   row sticker.
+- **Assert what the beat CLAIMS, not that the beat happened.** The
+  first `basic_crash` cut showed one orblift bouncing off an empty
+  square: the rival's craft was suppressed as a private landing, with
+  the caption naming the House it hit right underneath (issue 30). No
+  check could see it, and neither could I from the video — the craft
+  are one glyph wide for under a second. `Film.watch_lifters` counts
+  distinct seat colours among in-flight arcs. Note that the *loose*
+  version of that census passed against the broken build, because every
+  lift at dawn is also an orbital arc; it only bites once narrowed to
+  bounce arcs. **Back out the fix and confirm the check goes red** —
+  this one silently did not, twice.
 - **The "already shown" memory is scoped per GAME**
   (`"<session>|<reel>"`), not per reel. Reel keys repeat in every Basic
   game, so keying on the reel alone meant the modal auto-opened exactly
