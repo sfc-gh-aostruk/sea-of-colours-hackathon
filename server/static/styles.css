@@ -1259,6 +1259,15 @@ body {
   width: calc(var(--map-cols) * 2ch);
 }
 
+/* The board is usually narrower than the frame it sits in, and parked
+ * against the top-left corner it read as a rendering accident — the
+ * dead space all pooled on one side. Auto margins centre it in both
+ * axes and, unlike `justify-content: center` on the scrolling parent,
+ * give the START edge back the moment a zoomed board outgrows the box. */
+.cc-map-area .map-host--main > .map-grid {
+  margin: auto;
+}
+
 .map-host > .map-grid .row {
   display: table-row;
 }
@@ -3491,6 +3500,15 @@ body.cc-mode {
   align-items: flex-start;
   justify-content: flex-start;
   padding: 6px;
+  /* Centring lives on the CHILD as `margin: auto` (see
+   * `.map-host--main > .map-grid`), not here as `justify-content:
+   * center`. On a scroll container those two are not the same rule:
+   * centred flex content that outgrows its box overflows equally in
+   * both directions, and the half that goes off the START edge cannot
+   * be scrolled back to — you lose the left column of a zoomed-in map
+   * with no way to reach it. Auto margins collapse to zero once the
+   * child no longer fits, so the map centres while it is small and
+   * pins to the corner the moment it is not. */
   /* v0.9.13 — let one-finger touch pan the map natively; the JS gesture
    * layer claims two-finger pinch for zoom (preventDefault on 2 pointers).
    * -webkit-overflow-scrolling keeps momentum scroll smooth on iOS. */
@@ -10661,6 +10679,33 @@ button.cli-btn.cc-advisor-tab[hidden] { display: none; }
   line-height: 1.62;
 }
 .soc-tut-prose p:last-child { margin-bottom: 0; }
+
+/* The one line of the card that is an instruction rather than an
+ * explanation, so it is the one thing that does not look like prose. */
+.soc-tut-todo {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-top: 1px solid var(--green);
+  background: rgba(63, 185, 80, 0.09);
+}
+.soc-tut-todo[hidden] { display: none; }
+.soc-tut-todo-tag {
+  flex: 0 0 auto;
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+.soc-tut-todo-text {
+  color: var(--green);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
 
 .soc-tut-foot {
   display: flex;

@@ -61,6 +61,7 @@
             + "— same order, one click less.\n\n"
             + "You start with two probes. Use both. An unspent probe reveals "
             + "nothing.",
+          todo: "Launch both probes, on two separate patches of fog.",
         },
         {
           film: "basic_praxis.webm",
@@ -74,6 +75,7 @@
             + "Remember your opponent is writing their own plan at the same "
             + "time, and you will not see it until the night plays out. Nobody "
             + "is reacting to anybody — you are both committing blind.",
+          todo: "Read the queue back, then hit PRAXIS to run the night.",
         },
       ],
     },
@@ -93,6 +95,7 @@
             + "needs somewhere to go.\n\n"
             + "Orbit works like the night does — queue the buys, then commit "
             + "the phase.",
+          todo: "Buy two more probes, then commit the orbit phase.",
         },
       ],
     },
@@ -110,6 +113,7 @@
             + "you can see RIGHT NOW — which is why last night was probes.\n\n"
             + "Then walk it. Each step onto a RED square harvests that square, "
             + "so a chain of steps through a seam fills the hold as it goes.",
+          todo: "Drop your harvester on lit RED, then step it along the seam.",
         },
         {
           film: "basic_stranded.webm",
@@ -130,6 +134,7 @@
             + "And spend your probes again this turn. Vision expires, the ground "
             + "you lit last night goes dark, and a probe sitting in stock is "
             + "worth nothing.",
+          todo: "End the queue with LIFT — and spend both probes again.",
         },
       ],
     },
@@ -153,6 +158,7 @@
             + "the number on the board move.\n\n"
             + "The film follows one load all the way through without cutting, "
             + "so you can see exactly where the delay is.",
+          todo: "Commit the orbit to load the catapult. It throws tomorrow night.",
         },
         {
           film: "basic_buy_harvester.webm",
@@ -165,6 +171,8 @@
             + "Watch the projected wallet as you queue — it shows what you will "
             + "have left, so you can see whether the buy leaves you able to "
             + "probe as well.",
+          todo: "Buy a second harvester, if the projected wallet still leaves "
+            + "you a probe.",
         },
       ],
     },
@@ -188,6 +196,7 @@
             + "night that is effectively a write-off.\n\n"
             + "You cannot see their plan, but you can see where they have been "
             + "working. Read the trails before you route through them.",
+          todo: "Route both harvesters clear of the trails they left last night.",
         },
         {
           film: "basic_supersede.webm",
@@ -199,6 +208,176 @@
             + "much less than one dropped on ground you have never seen.\n\n"
             + "Spread them. It is the last night: light the ground you intend "
             + "to walk, and walk everything you light.",
+          todo: "Probe fog you have never lit, and lift everything before dawn.",
+        },
+      ],
+    },
+
+    /* ── ADVANCED ────────────────────────────────────────────────────
+     *
+     * Basic teaches the machine: probes, drops, walks, lifts, and the
+     * ways a night can go wrong on its own. Advanced teaches the other
+     * House — what you can read about them without seeing them, and
+     * what you can do to them without touching them.
+     *
+     * It is the same three nights and two orbits, and the arc is the
+     * economy: the blue you land on in night one is literally what pays
+     * for the weapons in orbit, because 250 blue a season buys exactly
+     * one EMP and not one flare of chaff.
+     */
+
+    "advanced:planning:1": {
+      title: "Night one — the map is dark, and it is still telling you things",
+      chapters: [
+        {
+          film: "adv_hotdrop.webm",
+          heading: "Blue signs, and landing on ground you cannot see",
+          body:
+            "Blue is radioactive. Every blue pocket smears a glow across "
+            + "the fog around it, and that smear has been on your map since "
+            + "the season opened — before you probed anything.\n\n"
+            + "It is deliberately vague. It says a pocket is somewhere "
+            + "under here; it does not say which square, and it never "
+            + "fades, so a sign over ground somebody already stripped "
+            + "looks exactly like a sign over a full pocket.\n\n"
+            + "The play is the HOT DROP. Probe the brightest part on one "
+            + "hour, and queue the landing for the next hour — into a "
+            + "hole that has not been cut yet. You are committing to "
+            + "ground you will not see until the night is already "
+            + "running. That is not recklessness; under live-only drops "
+            + "it is the only way to reach anything on turn one.\n\n"
+            + "And blue is not score. Blue is the entire weapons budget.",
+          todo: "Probe the brightest blue smear, then hot-drop into it "
+            + "the hour after.",
+        },
+      ],
+    },
+
+    "advanced:orbit:2": {
+      title: "Orbit — what blue is actually for",
+      chapters: [
+        {
+          film: "adv_buy_emp.webm",
+          heading: "Credits buy hulls. Weapons cost blue.",
+          body:
+            "Two currencies, and they do not convert. Credits arrive on "
+            + "their own, 1000 a turn, and buy harvesters, probes and "
+            + "repairs. Blue has to be dug out of the ground, and it is "
+            + "the only thing weapons take.\n\n"
+            + "You start with 250 blue. An EMP is 200 of it plus 250 "
+            + "credits. So the season hands you exactly one weapon and "
+            + "then stops — everything after that is blue you went and "
+            + "harvested.\n\n"
+            + "Buy the EMP now. You will fire it in two nights.",
+          todo: "Buy one EMP, and a couple of probes with the credits.",
+        },
+      ],
+    },
+
+    "advanced:planning:2": {
+      title: "Night two — jackpots cannot be kept quiet",
+      chapters: [
+        {
+          film: "adv_redsign.webm",
+          heading: "Find a pure seam, and tell the whole board",
+          body:
+            "A handful of squares on the map are PURE — 255, the richest "
+            + "the generator makes. The moment any probe or harvester "
+            + "brings one into live vision for the first time, a RED SIGN "
+            + "is minted over it.\n\n"
+            + "It is public. Every House sees the beacon, on the same "
+            + "hour, whoever lit it. It does not say who.\n\n"
+            + "So there is no such thing as quietly finding a jackpot. "
+            + "The instant you know, they know.",
+          todo: "Probe toward a pure seam — and expect company when you "
+            + "find one.",
+        },
+        {
+          film: "adv_redsign_rival.webm",
+          heading: "A beacon you did not light",
+          body:
+            "The same thing, from the other side. You probe your own "
+            + "ground, and a red sign comes up somewhere you have never "
+            + "been, with nothing of yours near it.\n\n"
+            + "That is the other House finding a pure seam. You learn on "
+            + "the same hour they do, and roughly where. You do not learn "
+            + "which square, how much of it there is, or whether they can "
+            + "reach it.\n\n"
+            + "Pures are rationed — two or three on a board this size — "
+            + "and they are worth several ordinary seams each. A beacon "
+            + "is not information you can sit on. It is a start gun.",
+          todo: "Decide now: contest their beacon, or bank the seam you "
+            + "already hold.",
+        },
+      ],
+    },
+
+    "advanced:orbit:3": {
+      title: "Orbit — a second hull, and the dearest thing on the board",
+      chapters: [
+        {
+          film: "adv_buy_chaff.webm",
+          heading: "Chaff costs no credits, and more blue than you own",
+          body:
+            "A harvester first: two seams need two hulls, and by now you "
+            + "know where two seams are.\n\n"
+            + "Then look at chaff. It costs nothing in credits and 255 in "
+            + "blue — five more than a whole season's starting stipend. "
+            + "There is no turn on which you can simply buy it. You can "
+            + "only buy it having gone and landed on blue.\n\n"
+            + "If you cannot afford it this turn, nothing has gone wrong. "
+            + "That is the weapon telling you what it costs.",
+          todo: "Buy a second harvester. Buy chaff if the blue is there — "
+            + "and if not, plan a landing on blue.",
+        },
+      ],
+    },
+
+    "advanced:planning:3": {
+      title: "Last night — taking the clock, and taking the ride home",
+      chapters: [
+        {
+          film: "adv_emp.webm",
+          heading: "EMP does not take the red. It takes the clock.",
+          body:
+            "One launch is a salvo of three missiles, each a radius-2 "
+            + "diamond. Placed apart they are three puddles; overlapped "
+            + "they are one wall.\n\n"
+            + "A cloud destroys probes and stands for EIGHT hours. It "
+            + "does not destroy harvesters — it only stops them acting, "
+            + "and a pickup still works, so it is not how you kill "
+            + "anything.\n\n"
+            + "What it does is take away sight. Landing needs live vision "
+            + "of the square, so a House whose eye you fried cannot land "
+            + "on that seam no matter how well they know it is there — "
+            + "and the beacon stays lit the whole time, which is the "
+            + "cruel part.\n\n"
+            + "Meanwhile you can work one square outside the wall "
+            + "perfectly normally. Land BESIDE a cloud and you harvest; "
+            + "land inside one that was already standing and you do not.",
+          todo: "Overlap your three missiles into one wall, and land just "
+            + "outside it.",
+        },
+        {
+          film: "adv_chaff.webm",
+          heading: "Chaff is not denial. Chaff is a kill.",
+          body:
+            "A flare jams every House for three hours — yours included, "
+            + "which is why it occupies three slots of your own queue. "
+            + "Spent as area denial that is an expensive shrug.\n\n"
+            + "Spent as a scalpel it is the deadliest thing in the game. "
+            + "The lifter is the only way off the surface, a cancelled "
+            + "pickup cannot be re-queued, and anything still standing at "
+            + "Aurora is destroyed by the dawn wave along with its whole "
+            + "hold.\n\n"
+            + "So you do not jam their landing or their walk. You let "
+            + "them do all of it, and jam the hour they reach for the "
+            + "ride home.\n\n"
+            + "Which means reading their queue from the outside: they "
+            + "landed on that hour, they have walked this many squares, "
+            + "so the lift is about now.",
+          todo: "Let them work. Flare on the hour you think their lift is "
+            + "queued.",
         },
       ],
     },
@@ -304,6 +483,14 @@
       '    <h3 class="soc-tut-heading" data-tut-heading></h3>',
       '    <div class="soc-tut-prose" data-tut-prose></div>',
       '  </div>',
+      // The prose explains the mechanic; this says what to actually do
+      // about it. Deliberately a sibling of the body rather than the
+      // last thing inside it: the body scrolls, and on a long card the
+      // one line the player most needs was sitting below the fold.
+      '  <div class="soc-tut-todo" data-tut-todo hidden>',
+      '    <span class="soc-tut-todo-tag">do this turn</span>',
+      '    <span class="soc-tut-todo-text" data-tut-todo-text></span>',
+      '  </div>',
       '  <div class="soc-tut-foot">',
       '    <label class="soc-tut-mute">',
       '      <input type="checkbox" data-tut-mute> don\u2019t show these again',
@@ -390,6 +577,13 @@
       p.textContent = para;
       prose.appendChild(p);
     });
+
+    var todo = root.querySelector("[data-tut-todo]");
+    var todoText = root.querySelector("[data-tut-todo-text]");
+    if (todo && todoText) {
+      todoText.textContent = String(ch.todo || "");
+      todo.hidden = !ch.todo;
+    }
 
     var stage = root.querySelector("[data-tut-stage]");
     stage.textContent = "";

@@ -951,6 +951,13 @@ def api_game_new(
             height = int(preset.get("height", height))
         if body.get("season_day_cap") in (None, ""):
             season_day_cap = int(preset.get("season_day_cap", season_day_cap))
+        # A preset may pin its board. Advanced does, because its lessons
+        # need terrain the generator only sometimes provides and because
+        # its films are shot on that exact map — see
+        # ``ADVANCED_TUTORIAL_SEED``. An explicit seed still wins, so the
+        # harness can shoot a variant without editing the preset.
+        if seed is None and preset.get("seed") is not None:
+            seed = int(preset["seed"])
         weapons_enabled = bool(preset.get("weapons_enabled", True))
         signs_enabled = bool(preset.get("signs_enabled", True))
         tutorial_name = (

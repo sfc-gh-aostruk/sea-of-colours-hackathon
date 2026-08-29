@@ -1385,6 +1385,49 @@ past our own scratch scripts: attendees drive these endpoints by hand, and a
 submit API that accepts a misspelling by throwing the turn away is a bad hour
 to hand someone at a hackathon.
 
+## 32. ✅ (DONE, v1.34) The board sat in the top-left corner of its own frame
+
+**Symptom:** on any layout wider than the grid — most obviously the
+season-complete screen, where the ORDERS panel is gone — the map parked against
+the top-left of the map frame with all the dead space pooled to the right and
+below. It read as a rendering accident rather than a layout.
+
+**Root cause:** `.cc-map-area .map-host--main` is a flex scroll container with
+`justify-content: flex-start` and `align-items: flex-start`, and nothing ever
+overrode it.
+
+**Fix:** `margin: auto` on the grid, not `justify-content: center` on the host.
+On a scroll container those are not the same rule: centred content that
+outgrows its box overflows equally in both directions, and the half that goes
+off the START edge cannot be scrolled back to — a zoomed-in map would lose its
+left column with no way to reach it. Auto margins collapse to zero the moment
+the child stops fitting, so the board centres while it is small and pins to the
+corner when it is not. Measured both ways: at 289px in a 751px host the gaps
+are 231/231; at 809px in the same host the left gap is the 6px padding and all
+the overflow is on the right.
+
+## 33. ✅ (DONE, v1.34) The landing collision was shot at a zoom that hid it
+
+**Symptom:** reported off the v1.33 films — "both harvesters landing on the same
+square are not showing both orblifters, and the zoom looks weird". Issue 30
+fixed the missing lifter; the framing was a second, separate fault in the same
+beat.
+
+**Root cause:** `basic_crash` pushed in on the landing square before PRAXIS. The
+two collision shapes want opposite cameras and were being given the same one. A
+walk-in is one sprite arriving at another and reads fine tight. A simultaneous
+drop is two orbital arcs converging from opposite corners of the board — punch
+in on the destination and both arcs begin off-screen, so the whole event is a
+flash in a hole.
+
+**Fix:** hour one plays wide, with both platforms in frame from launch; the
+close-up is kept for the walk-in on hour three, which is what it suits. Then
+the landing is shown a second time, hand-cranked: `Film.replay_rewind_to` /
+`Film.replay_step` drive the replay bar an hour a click, and stepping forward
+re-fires that hour's animations, so the same collision plays at a speed a
+first-timer can follow. No product speed control was added — the film crew
+should not get to slow the game down for everybody.
+
 | # | Area | Severity | Blocking multiplayer? |
 |---|------|----------|-----------------------|
 | 1 | Vision / trails (echo coverage — now fog-frozen) | ✅ done (v1.8) | no |
@@ -1418,3 +1461,5 @@ to hand someone at a hackathon.
 | 29 | A camera move stranded the four pixel-anchored overlays on the previous board's geometry — `reanchorOverlays` was locked inside `applyMapZoom`. Now exposed and called every frame of the glide | ✅ done (v1.33) | no |
 | 30 | A rival's bounce in a simultaneous-drop pile-up was suppressed as a private landing (§3.15), so the viewer watched one lifter hit an empty square while the caption named the House it hit. §3.15 already discloses mutual destruction | ✅ done (v1.33) | no |
 | 31 | `POST /policy` and `/orbit` silently discarded a queue sent under the wrong field name and reported `ok` — a typo and a deliberate pass were indistinguishable | ✅ done (v1.33) | no |
+| 32 | The board parked top-left in a frame wider than itself. Centred via `margin: auto` on the grid rather than `justify-content` on the scroll container, which would have made a zoomed map's left column unreachable | ✅ done (v1.34) | no |
+| 33 | `basic_crash` pushed in before the landing collision, so two converging orbital arcs both started off-screen. Hour one now plays wide, and the beat is repeated hand-cranked off the replay bar | ✅ done (v1.34) | no |

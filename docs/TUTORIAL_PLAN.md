@@ -467,3 +467,87 @@ effect that fails silently. The film still runs, the caption still says
   once per browser, ever — see issue 28. `_fx_tutorial.py` now plays a
   second tutorial in the same profile to hold that line, because a
   fresh Playwright context cannot see this class of bug at all.
+
+## 11. Advanced (v1.34, 2026-08-29)
+
+Basic teaches the machine — probe, drop, walk, lift, and the ways a night
+goes wrong on its own. **Advanced teaches the other House**: what you can
+read about them without seeing them, and what you can do to them without
+touching them. Same 24×16, same three nights, weapons and signs on.
+
+### The arc is the economy
+
+The seven films are one storyline and the spine of it is blue, because
+the numbers already force it: you start a season with **250 blue**, an
+EMP is **200**, and chaff is **255**. So the stipend buys exactly one
+weapon and never a flare, and everything after that is blue you went and
+dug up. Night one's hot drop onto the blue pocket is *literally* what
+pays for the EMP in orbit two and the chaff in orbit three. Nothing in
+the reels has to assert that; the prices do it.
+
+### The board is pinned, and Basic's is not
+
+`advanced` is the only preset with a `seed` (`ADVANCED_TUTORIAL_SEED`,
+2351). Basic's lessons land on any terrain, so a fresh map each time
+costs nothing. Advanced's do not: it needs one bright blue smear to
+hot-drop into and two pure seams far enough apart to be one each, and
+the generator supplies that combination on roughly **10 seeds in 400**
+(`scripts/_probe_advseed.py` searches for it). An Advanced game that
+happens not to have it does not teach a slightly worse lesson — it
+teaches that the mode is broken.
+
+Pinning buys a second thing worth more than the first: **the films are
+shot on the player's own board.** The blue smear in the video is the
+blue smear on their map, at the same coordinates.
+
+`test_the_advanced_board_can_teach_what_advanced_teaches` re-derives the
+requirements from the seed, so a generator retune fails there rather
+than in a player's tutorial.
+
+### What each turn teaches
+
+| Reel | Films | The point |
+|---|---|---|
+| `planning:1` | `adv_hotdrop` | The fog is not blank. A blue sign is static, season-old and vague; the hot drop commits a landing into a disk the probe has not cut yet. |
+| `orbit:2` | `adv_buy_emp` | Two currencies that do not convert. Credits arrive; blue is mined; only blue buys weapons. |
+| `planning:2` | `adv_redsign`, `adv_redsign_rival` | A pure seam mints a **public** beacon the moment anyone sees it. Shot from both sides — one you light, one that arrives out of empty fog. There is no quiet jackpot. |
+| `orbit:3` | `adv_buy_chaff` | A second hull, and the weapon that costs more blue than a season hands you. |
+| `planning:3` | `adv_emp`, `adv_chaff` | EMP takes the clock, not the ore. Chaff is not denial — it is a kill. |
+
+### Things learned shooting these
+
+- **Both redsign paths are the same code.** `_register_redsign` does not
+  care who looked; the beacon is anonymous and public either way. That
+  makes the pair *better* than "yours vs theirs" — the mirror film's
+  subject is that a beacon can arrive with no probe of yours near it.
+- **A one-order night is one hour long.** Both redsign films first shot
+  with a single probe, so the `H02` cue never fired and the reveal had
+  nowhere to land. Queue position is the hour: two probes, jackpot
+  second.
+- **Aim the chaff at the LIFT, not the walk.** The first cut flared an
+  hour early, ate the rival's last step as well, and killed them in the
+  wrong square — which reads as "chaff stops movement" when the lesson
+  is that it stops the exit. `tests/test_chaff_strands.py` pins the
+  whole path (land → work → jammed pickup → dawn wave →
+  `harv_lost_chaff`) and carries the counterweight: an early flare must
+  let them get away, or "chaff kills" is satisfiable by a chaff that
+  simply kills.
+- **On a duel board, post the rival's night before the camera commits
+  one.** Two human seats means the first to transmit goes into "waiting
+  for the other House", which locks TRANSMIT — indistinguishable from a
+  hang, thirty seconds into a shoot. Every `_setup_advanced` branch that
+  hands over a PLANNING turn posts p2's night on the way out.
+- **Keep the rival's early probes away from both jackpots.** A decoy
+  probe within radius 4 of a pure mints its beacon a night early and
+  quietly steals the only beat a redsign film has.
+- **Land BESIDE a cloud, never in one.** §4.9.3: a cloud already
+  standing at hour start denies the landing's auto-harvest, while one
+  spawned that same hour does not. The EMP film's second half depends on
+  the difference and would look like a bug if it got it wrong.
+
+### Per-card "do this turn" badges
+
+Every chapter in both modes now carries a `todo` — one imperative line,
+rendered as a green strip. It is a **sibling of** `.soc-tut-body`, not
+the last thing inside it: the body scrolls, and on a long card the one
+line the player most needs was sitting below the fold.

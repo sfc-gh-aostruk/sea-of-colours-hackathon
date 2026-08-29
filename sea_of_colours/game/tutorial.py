@@ -38,6 +38,24 @@ TUTORIAL_HEIGHT = 16
 #: can play before they have configured anything.
 TUTORIAL_OPPONENT = "red_harvest_lite"
 
+#: Advanced runs on ONE fixed board, and Basic does not.
+#:
+#: Basic's lessons are about the machine — probe, drop, walk, lift — and
+#: they land on any terrain, so a fresh map each time costs nothing.
+#: Advanced's lessons are about SIGNS and WEAPONS, and those need the
+#: board to co-operate: a bright blue smear to hot-drop into, and two
+#: pure seams far enough apart that each House can light one. The
+#: generator supplies that combination only sometimes, and an Advanced
+#: game that happens not to have it teaches the player that the mode is
+#: broken.
+#:
+#: Pinning it buys a second thing worth more than the first: the
+#: Advanced films are shot on this seed, so the blue smear in the video
+#: is the blue smear on the player's own map. Chosen by
+#: ``scripts/_probe_advseed.py`` — see the header of
+#: ``scripts/make_tutorial_films.py`` for what it was chosen against.
+ADVANCED_TUTORIAL_SEED = 2351
+
 
 TUTORIAL_PRESETS: Dict[str, Dict[str, Any]] = {
     # Weapons and signs both off. Basic teaches the core loop only:
@@ -60,6 +78,7 @@ TUTORIAL_PRESETS: Dict[str, Dict[str, Any]] = {
         "width": TUTORIAL_WIDTH,
         "height": TUTORIAL_HEIGHT,
         "season_day_cap": TUTORIAL_DAY_CAP,
+        "seed": ADVANCED_TUTORIAL_SEED,
         "weapons_enabled": True,
         "signs_enabled": True,
         "opponent": TUTORIAL_OPPONENT,

@@ -212,6 +212,61 @@ def test_preset_names_are_case_and_prefix_forgiving():
     assert tut.normalise_preset("tut-advanced") == "advanced"
 
 
+def test_only_advanced_pins_its_board():
+    """Basic teaches the machine and lands on any terrain. Advanced
+    teaches signs and weapons, which need the board to co-operate — so
+    it is the one preset that names a seed."""
+    assert tut.preset_config("advanced")["seed"] == tut.ADVANCED_TUTORIAL_SEED
+    assert "seed" not in tut.preset_config("basic")
+    assert "seed" not in tut.preset_config("quick")
+
+
+def test_the_advanced_board_can_teach_what_advanced_teaches():
+    """The guard on the pinned seed.
+
+    Every Advanced reel asserts something about this specific map: a
+    blue smear bright enough to aim a hot drop at, and two pure seams
+    far enough apart to be one each. None of that is guaranteed by the
+    generator — it was searched for. So a retune of the generator, or a
+    fat-fingered seed, must fail HERE rather than as a tutorial that
+    describes terrain the player cannot find.
+    """
+    cfg = tut.preset_config("advanced")
+    s = GameSession.new(
+        cfg["width"], cfg["height"], seed=cfg["seed"],
+        season_day_cap=cfg["season_day_cap"],
+        weapons_enabled=True, signs_enabled=True, tutorial="advanced",
+    )
+
+    pures = [
+        (x, y)
+        for y in range(s.height) for x in range(s.width)
+        if getattr(s.grid[y][x].tile, "name", "") == "RED"
+        and int(getattr(s.grid[y][x], "purity", 0) or 0) == 255
+    ]
+    assert len(pures) >= 2, f"advanced board has {len(pures)} pure seam(s)"
+    apart = max(
+        ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+        for a in pures for b in pures
+    )
+    assert apart >= 10, (
+        f"the two jackpots are only {apart:.1f} apart — 'one each' is not "
+        "a thing you can say about this board"
+    )
+
+    bright = [
+        (int(c[0]), int(c[1]))
+        for region in (s.blue_sign or [])
+        for c in (region.get("cells") or [])
+        if float(c[2]) >= 0.75
+    ]
+    assert bright, "no bright blue sign — the hot-drop film aims at nothing"
+    # Inset, or a radius-4 probe disk and a close-up both run off the edge.
+    assert any(
+        3 <= x < s.width - 3 and 2 <= y < s.height - 2 for x, y in bright
+    ), f"every bright sign cell is jammed against the edge: {bright}"
+
+
 def test_every_preset_names_an_in_process_opponent():
     """No teaching game may need credentials. The heuristic runs in
     process; anything else would make the tutorial the first thing to

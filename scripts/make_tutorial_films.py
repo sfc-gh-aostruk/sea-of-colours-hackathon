@@ -50,6 +50,49 @@ OUT = ROOT / "server" / "static" / "films"
 
 VIEWPORT = {"width": 1280, "height": 800}
 
+# ── the Advanced board ──────────────────────────────────────────────
+#
+# Advanced teaches SIGNS and WEAPONS, and neither can be taught on a
+# board that does not happen to have them. Unlike the Basic films —
+# which work on any board and so ride whatever ``--seed`` the batch is
+# running under — these pin one seed, picked by
+# ``scripts/_probe_advseed.py`` against three things the generator only
+# sometimes delivers on a 24x16:
+#
+#   * exactly ONE bright blue smear, so "that glow is a blue pocket"
+#     points at one thing rather than three;
+#   * TWO pure-255 jackpots far apart, so each House can light its own
+#     and the contested-jackpot lesson has two sides;
+#   * all of it inset from the edge, because a probe is a radius-4 disk
+#     and a close-up on column 0 is a close-up of the bezel.
+#
+# The blue is also the arc: EMP is 200 blue and chaff is 255 against a
+# 250 stipend, so the hot drop on night one is literally what pays for
+# the weapons in orbit. Change the seed and that stops being true.
+#
+# It comes FROM the preset rather than being restated here, because the
+# Advanced preset pins the same board for the player. That is the whole
+# point of pinning it: the blue smear in the film is the blue smear on
+# their map. A second copy of the number here could drift, and the way
+# it would show up is a tutorial whose films quietly describe somewhere
+# else — so there is only the one copy, and it lives with the mode.
+ADVANCED_SEED = soc_tutorial.ADVANCED_TUTORIAL_SEED
+ADV_SIGN = (12, 6)        # brightest bluesign cell — intensity 0.98
+ADV_BLUE_LAND = (12, 4)   # BLUE 255 beneath the smear: the hot-drop prize
+ADV_BLUE_STEP = (12, 5)   # BLUE 147, the second bite
+ADV_MINE = (19, 5)        # our jackpot, sitting in a rich seam
+ADV_THEIRS = (4, 12)      # theirs, right across the board
+# Somewhere for the rival's early probes that lights nothing. Anything
+# within radius 4 of a jackpot mints its beacon a night early and steals
+# the only beat the redsign films have.
+ADV_QUIET = (20, 12)
+ADV_QUIET2 = (8, 2)
+# Three radius-2 diamonds in a row overlap into one wall instead of
+# three puddles — the "interwoven" pattern, centred on the rival's
+# jackpot so the salvo takes their eye off it.
+ADV_SALVO = [(2, 12), (4, 12), (6, 12)]
+ADV_BESIDE = (8, 11)      # clear of every diamond, one square outside
+
 
 # ── API helpers ─────────────────────────────────────────────────────
 
@@ -63,19 +106,20 @@ def _req(base: str, path: str, body: Optional[dict] = None) -> dict:
         return json.loads(r.read().decode())
 
 
-def seed_game(base: str, seed: int) -> str:
-    """A Basic tutorial game — the exact board the films teach on.
+def seed_game(base: str, seed: int, preset: str = "basic") -> str:
+    """A tutorial game — the exact board the films teach on.
 
     Posts the preset NAME so the film is shot on whatever
-    ``game/tutorial.py`` currently says Basic is. Restating 24x16 here
-    would let the films quietly diverge from the mode.
+    ``game/tutorial.py`` currently says that mode is. Restating 24x16
+    here would let the films quietly diverge from the mode.
     """
-    game = _req(base, "/api/game/new", {"tutorial": "basic", "seed": seed})
+    game = _req(base, "/api/game/new", {"tutorial": preset, "seed": seed})
     return str(game["session_id"])
 
 
-def seed_duel(base: str, seed: int, cap: int = 5) -> str:
-    """A Basic-LOOKING board with both seats human.
+def seed_duel(base: str, seed: int, cap: int = 5,
+              preset: str = "basic") -> str:
+    """A preset-LOOKING board with both seats human.
 
     The outcome films — a crash, a stranding, a shipment — have to show
     a specific thing happen, and the Basic preset hands the other seat
@@ -88,7 +132,7 @@ def seed_duel(base: str, seed: int, cap: int = 5) -> str:
     preset (via the module, not by restating 24x16) so the board the
     attendee learns on is the board they then play.
     """
-    cfg = soc_tutorial.preset_config("basic") or {}
+    cfg = soc_tutorial.preset_config(preset) or {}
     game = _req(base, "/api/game/new", {
         "players": ["p1", "p2"],
         "agents": {"p1": "human", "p2": "human"},
@@ -536,6 +580,38 @@ class Film:
     def _resolving(self) -> bool:
         return bool(self.pg.evaluate(
             "() => document.body.classList.contains('cc-resolving')"))
+
+    # ── replaying a night that has already happened ─────────────────
+    #
+    # The cinematic runs at the game's pace, which is the right pace for
+    # playing and the wrong one for teaching: a collision is over in
+    # under a second and the eye has nowhere to be beforehand. There is
+    # no speed control to turn down — and adding one to the product for
+    # the benefit of the film crew would be the tail wagging the dog —
+    # but the replay bar already walks a resolved night an hour at a
+    # click, and stepping FORWARD re-fires that hour's animations. So a
+    # beat worth a second look gets shown twice: once at speed, then
+    # again a hand-cranked hour at a time.
+
+    def replay_rewind_to(self, slot: str, limit: int = 40) -> bool:
+        """Step the replay cursor back until the clock reads ``slot``."""
+        want = slot.upper()
+        for _ in range(limit):
+            if self.slot().upper() == want:
+                return True
+            self.pg.click("#replay-prev")
+            self.pg.wait_for_timeout(90)
+        self.fails.append(
+            f"could not rewind the replay to {want} in {limit} step(s); "
+            f"the clock stopped at {self.slot()!r}"
+        )
+        return False
+
+    def replay_step(self, n: int = 1, hold: int = 1400) -> None:
+        """Advance the replay one hour per click, dwelling on each."""
+        for _ in range(max(1, n)):
+            self.pg.click("#replay-next")
+            self.wait(hold)
 
     def praxis(self, cues: Optional[List[tuple]] = None,
                timeout_ms: int = 150_000) -> None:
@@ -1219,19 +1295,19 @@ def _crash(f: Film, base: str, sid: str) -> None:
     f.lift(1)
     f.expect_slots(5, "two harvesters out, both lifted")
 
-    # A collision burst is a handful of pixels at the default zoom and
-    # it lasts under a second, so at 1:1 the crash this whole film is
-    # about is easy to miss entirely. Two close-ups rather than one wide
-    # one: the sites are five squares apart, and a frame holding both
-    # only gets to about 1.4x, which is not a close-up of anything.
-    f.say("Watch this square")
-    f.push_in(same)
-
+    # The two collisions want opposite cameras, which is why this used
+    # to be wrong. A WALK-IN is one sprite arriving at another and reads
+    # fine tight. A SIMULTANEOUS DROP is two orbital arcs converging on
+    # one square from opposite corners of the board — punch in on the
+    # square and both arcs start off-screen, so all you see is a flash
+    # in a hole. Hour one is therefore played WIDE, with the whole board
+    # in frame and both lifters visible from launch, and the close-up is
+    # saved for hour three.
     f.say("Both Houses commit blind. PRAXIS.")
     f.watch_lifters()
     f.praxis(cues=[
         ("H01", "Hour 1 \u2014 you both chose the same landing square"),
-        # Hour 2 is the quiet one, so the pan happens between the two
+        # Hour 2 is the quiet one, so the push happens between the two
         # collisions rather than across either of them.
         ("H02", "Neither lands. Both damaged, both still in orbit.",
          900, [meet, mine, theirs]),
@@ -1240,6 +1316,22 @@ def _crash(f: Film, base: str, sid: str) -> None:
     ])
 
     f.expect_lifters(2, "the simultaneous-drop collision")
+
+    # Hour one again, hand-cranked. At the cinematic's pace two craft
+    # meet and are gone inside a second, and nobody watching for the
+    # first time knows where to be looking. The replay bar walks the
+    # same night an hour a click, and stepping forward re-fires the
+    # animations, so this is the identical collision at a speed you can
+    # actually read. Gentle push only — the arcs still have to fit.
+    f.pull_out()
+    f.say("That first one is worth a second look", hold=2000)
+    f.push_in(same, pad=5.0, max_scale=1.9, ms=800)
+    if f.replay_rewind_to("VESPERA"):
+        f.say("Two orbital lifters, one square, neither House knowing")
+        f.replay_step(1, hold=2600)
+        f.say("Both set down on the same ground. Both bounce.")
+        f.replay_step(1, hold=3000)
+    f.pull_out()
 
     # By now the night has resolved, so the ORDERS roster is gone and
     # the aftermath lives in the ORBIT panel: two damaged hulls and a
@@ -1479,6 +1571,349 @@ def _orbit(f: Film, base: str, sid: str) -> None:
     f.wait(500)
 
 
+# ── ADVANCED: signs, and the two weapons ────────────────────────────
+#
+# Basic teaches the machine. Advanced teaches the other House: what you
+# can read about them without seeing them (signs), and what you can do
+# to them without touching them (EMP, chaff). Every one of these is a
+# duel, because every lesson needs a rival who turns up on cue.
+
+def _adv_deploy(f: Film, label: str) -> str:
+    return f'.cc-deploy-btn:has-text("{label}")'
+
+
+@film("adv_hotdrop")
+def _adv_hotdrop(f: Film, base: str, sid: str) -> None:
+    """Night one: read the smear, then land on ground you cannot see.
+
+    The name is the lesson. You are not dropping onto blue you found —
+    you are queueing a landing for hour two into a hole hour one has not
+    cut yet, on the strength of a glow. The film has to show the drop
+    being clicked onto FOG for that to land.
+    """
+    sign = tuple(f.plan["sign"])
+    land = tuple(f.plan["land"])
+    step = tuple(f.plan["step"])
+
+    f.say("The board is dark \u2014 but it is not blank", hold=2000)
+    f.hover_cell(sign[0], sign[1], ms=900, hold=1800)
+    f.say("That glow is a BLUE SIGN. Blue is radioactive, and the smear "
+          "has been there since the season opened.", hold=3200)
+    f.say("It says a blue pocket is somewhere under here. Not which "
+          "square, and it never fades \u2014 not even once the blue is gone.",
+          hold=3400)
+
+    f.say("Probe the brightest part of it")
+    f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=460, after=420)
+    f.click(f.cell(sign[0], sign[1]), before=520, after=900, ms=700)
+    f.escape(after=300)
+
+    f.say("Now the HOT DROP: land the harvester on hour two, into the "
+          "hole hour one has not cut yet", hold=3000)
+    f.click('.cc-fleet-row .cc-fleet-verb', before=460, after=460)
+    f.say("Still fog. You are aiming at the sign, not at anything you "
+          "can see.")
+    f.click(f.cell(land[0], land[1]), before=620, after=900, ms=760)
+    f.click(f.cell(step[0], step[1]), before=300, after=560, ms=420)
+    f.escape(after=300)
+
+    lift = '.cc-fleet-row .cc-fleet-verb:has-text("LIFT")'
+    if not f.pg.locator(lift).count():
+        f.fails.append("no LIFT verb on the fleet row")
+        return
+    f.click(lift, before=420, after=800)
+    f.expect_slots(4, "probe + hot drop + step + lift")
+
+    f.praxis(cues=[
+        ("H01", "Hour one \u2014 the probe opens the disk"),
+        ("H02", "Hour two \u2014 and the landing you already committed to",
+         600, [land, step]),
+        ("H03", "BLUE 255. The guess paid.", 700),
+        ("AURORA", "Blue is not score. Blue is what buys weapons.", 500),
+    ])
+    f.pull_out()
+    f.say("A hot drop can miss. A probe you never follow always does.",
+          hold=2600)
+    f.say(None)
+    f.wait(600)
+
+
+@film("adv_buy_emp", ready='[data-orbit-action="build_emp"]')
+def _adv_buy_emp(f: Film, base: str, sid: str) -> None:
+    """Orbit two: weapons are bought with blue, not credits."""
+    f.say("Credits buy hulls. Weapons cost BLUE.", hold=2400)
+
+    blue = "#cc-orbit-blue-total, [data-readout='blue']"
+    if f.pg.locator(blue).count():
+        f.say("This is the blue you brought home last night")
+        f.point_near(blue, dx=0, dy=-26, ms=760)
+        f.wait(1800)
+    else:
+        f.fails.append("no blue readout in the orbit panel to point at")
+
+    cost = '[data-orbit-cost="build_emp"]'
+    if f.pg.locator(cost).count():
+        f.say("An EMP is 200 blue and 250 credits")
+        f.point_near(cost, dx=0, dy=-26, ms=700)
+        f.wait(1600)
+
+    f.say("You start each season with 250 blue \u2014 one weapon's worth, "
+          "and no more. Everything after that you have to go and dig up.",
+          hold=3400)
+
+    f.say("Buy one")
+    f.click('[data-orbit-action="build_emp"]', before=520, after=900)
+    f.wait(900)
+
+    f.say("Now watch the projected blue drop", hold=2000)
+    if f.pg.locator("#cc-orbit-blue-proj").count():
+        f.point_near("#cc-orbit-blue-proj", dx=0, dy=-26, ms=700)
+        f.wait(1600)
+    f.say(None)
+    f.wait(500)
+
+
+@film("adv_redsign")
+def _adv_redsign(f: Film, base: str, sid: str) -> None:
+    """Night two: your probe finds a pure seam, and tells everyone.
+
+    The beat that matters is not the discovery — it is the second after
+    it, when the film says out loud that the rival is now looking at the
+    same beacon. A jackpot you find quietly would be worth hoarding; a
+    jackpot that announces itself is a race, and that is the whole
+    reason the Advanced board plays differently from Basic.
+    """
+    mine = tuple(f.plan["mine"])
+
+    quiet = tuple(f.plan["quiet"])
+
+    f.say("Somewhere out there is PURE red \u2014 255, the richest square "
+          "the map makes", hold=2800)
+    f.say("Two probes, two guesses")
+    # The jackpot goes SECOND. Queue position is the hour, a one-order
+    # night is one hour long, and a discovery that lands in the same
+    # breath as "here is your first probe" has no room to be a reveal.
+    f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=460, after=420)
+    f.click(f.cell(quiet[0], quiet[1]), before=520, after=800, ms=660)
+    f.escape(after=300)
+    f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=380, after=380)
+    f.click(f.cell(mine[0], mine[1]), before=520, after=860, ms=660)
+    f.escape(after=300)
+    f.expect_slots(2, "a probe elsewhere, then one onto the jackpot")
+
+    f.praxis(cues=[
+        ("H01", "Hour one \u2014 the disk opens", 400),
+        ("H02", "A RED SIGN. You have found a pure seam.", 900, [mine]),
+    ])
+    f.wait(1400)
+
+    beacon = ".redsign-cell, .redsign-beacon"
+    if not f.pg.locator(beacon).count():
+        f.fails.append(
+            "no redsign painted after probing a pure-255 cell \u2014 this "
+            "film's entire subject is missing from the frame"
+        )
+    f.say("And so has everybody else.", hold=2400)
+    f.say("A red sign is PUBLIC. It does not name who lit it, but the "
+          "beacon is on every House's map from this hour.", hold=3400)
+    f.pull_out()
+    f.say("Pures are rationed \u2014 a couple on a board this size. That "
+          "makes every one of them contested by default.", hold=3400)
+    f.say(None)
+    f.wait(600)
+
+
+@film("adv_redsign_rival")
+def _adv_redsign_rival(f: Film, base: str, sid: str) -> None:
+    """Night two, the other way round: a beacon you did not light.
+
+    Shot as the mirror of ``adv_redsign`` on purpose. Same night, same
+    board, and the player does something harmless somewhere else — so
+    the only thing that changes on their map is a beacon arriving out of
+    empty fog, with no probe of theirs anywhere near it.
+    """
+    theirs = tuple(f.plan["theirs"])
+    quiet = tuple(f.plan["quiet"])
+
+    sign = tuple(f.plan["sign"])
+
+    f.say("This time you go about your own business", hold=2200)
+    f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=460, after=420)
+    f.click(f.cell(quiet[0], quiet[1]), before=520, after=860, ms=700)
+    f.escape(after=300)
+    # Second probe for the same reason as in adv_redsign: one order is
+    # one hour, and the beacon needs an hour of its own to arrive in.
+    f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=380, after=380)
+    f.click(f.cell(sign[0], sign[1]), before=460, after=800, ms=620)
+    f.escape(after=300)
+
+    f.praxis(cues=[
+        ("H01", "Your probes open, over here", 400),
+        ("H02", "\u2014 and a RED SIGN blazes over there.", 1100, [theirs]),
+    ])
+    f.wait(1500)
+
+    beacon = ".redsign-cell, .redsign-beacon"
+    if not f.pg.locator(beacon).count():
+        f.fails.append(
+            "no redsign on the board \u2014 the rival's discovery never "
+            "reached this seat, which is the one thing the film claims"
+        )
+    f.say("You have no probe within a mile of it. That is the other "
+          "House finding a pure seam.", hold=3200)
+    f.say("You learn the same hour they do, and roughly where. You do "
+          "NOT learn which square, or what they mean to do about it.",
+          hold=3600)
+    f.pull_out()
+    f.say("Which is the point: a jackpot cannot be hidden. It can only "
+          "be reached first.", hold=3000)
+    f.say(None)
+    f.wait(600)
+
+
+@film("adv_emp")
+def _adv_emp(f: Film, base: str, sid: str) -> None:
+    """Night three: take their eye off the jackpot, then use it yourself.
+
+    Two halves, and the second is the one people miss. Frying a probe
+    is satisfying; the reason to do it is that ``live_only`` drops mean
+    a House with no eye on a square cannot land on it. Eight hours of
+    cloud is eight hours in which that seam is yours alone.
+    """
+    theirs = tuple(f.plan["theirs"])
+    salvo = [tuple(c) for c in f.plan["salvo"]]
+    beside = tuple(f.plan["beside"])
+
+    f.say("The other House has an eye on their jackpot", hold=2400)
+    f.hover_cell(theirs[0], theirs[1], ms=900, hold=1600)
+
+    f.say("One EMP launch is a salvo of three")
+    f.click(_adv_deploy(f, "EMP"), before=520, after=520)
+    f.say("Each missile is a radius-2 diamond. Overlap them and you get "
+          "a wall, not three puddles.", hold=2600)
+    for c in salvo:
+        f.click(f.cell(c[0], c[1]), before=300, after=520, ms=420)
+    f.escape(after=400)
+
+    f.say("Now a probe of your own \u2014 just OUTSIDE the wall")
+    f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=460, after=420)
+    f.click(f.cell(beside[0], beside[1]), before=520, after=800, ms=640)
+    f.escape(after=300)
+
+    f.say("And land on it. Beside a cloud still harvests \u2014 inside one "
+          "does not.", hold=2800)
+    f.click('.cc-fleet-row .cc-fleet-verb', before=460, after=460)
+    f.click(f.cell(beside[0], beside[1]), before=520, after=800, ms=640)
+    f.escape(after=300)
+    lift = '.cc-fleet-row .cc-fleet-verb:has-text("LIFT")'
+    if f.pg.locator(lift).count():
+        f.click(lift, before=380, after=700)
+    f.expect_slots(4, "salvo + probe + drop + lift")
+
+    f.praxis(cues=[
+        ("H01", "Three missiles, one wall", 500, salvo + [theirs]),
+        ("H02", "Their probe is gone. The beacon stays lit.", 1200),
+        ("H03", "They still know the seam is there \u2014 and can no longer "
+         "see it, so they cannot land on it.", 900),
+        ("H04", "You land one square clear of the cloud, and harvest "
+         "normally.", 800, [beside]),
+        ("AURORA", "Eight hours of denial. You choose when that ground "
+         "is open.", 600),
+    ])
+    f.pull_out()
+    f.say("EMP does not take the red. It takes the CLOCK.", hold=2800)
+    f.say(None)
+    f.wait(600)
+
+
+@film("adv_buy_chaff", ready='[data-orbit-action="build_chaff"]')
+def _adv_buy_chaff(f: Film, base: str, sid: str) -> None:
+    """Orbit three: a second hull, and the dearest thing on the board."""
+    f.say("Two seams need two harvesters", hold=2200)
+    f.click('[data-orbit-action="build_harvester"]', before=520, after=860)
+
+    cost = '[data-orbit-cost="build_chaff"]'
+    if f.pg.locator(cost).count():
+        f.say("Chaff costs no credits at all \u2014 and 255 blue")
+        f.point_near(cost, dx=0, dy=-26, ms=700)
+        f.wait(2000)
+    f.say("That is more than the 250 you start a season with. Chaff is "
+          "not something you can buy \u2014 it is something you mine for.",
+          hold=3400)
+
+    f.click('[data-orbit-action="build_chaff"]', before=520, after=900)
+    f.wait(900)
+    if f.pg.locator("#cc-orbit-blue-proj").count():
+        f.point_near("#cc-orbit-blue-proj", dx=0, dy=-26, ms=700)
+        f.wait(1600)
+    f.say("If you cannot afford it this turn, that is not a mistake. "
+          "Go and land on blue.", hold=3000)
+    f.say(None)
+    f.wait(500)
+
+
+@film("adv_chaff")
+def _adv_chaff(f: Film, base: str, sid: str) -> None:
+    """Night four: cancel a lift, and let the sunrise do the rest.
+
+    Chaff reads like a delay weapon — three hours where nobody acts —
+    and used as one it mostly wastes your own turn too. Its real use is
+    surgical: the lifter is the only way off the surface, a cancelled
+    pickup cannot be re-queued, and dawn kills whatever is still down
+    there. Three hours of jamming, aimed at one of them, is a kill.
+    """
+    grave = tuple(f.plan["grave"])
+
+    f.say("Chaff jams every House for three hours. Yours included.",
+          hold=2800)
+    f.say("Used for denial that is an expensive shrug", hold=2400)
+    f.say("Aim it at one hour instead \u2014 the hour they reach for the "
+          "lifter", hold=2800)
+
+    # Four waits, so the flare goes up on H05 and smothers H05-H07.
+    # Three was a hour too early: it ate the rival's last STEP as well,
+    # and a harvester that never finished walking dies in the wrong
+    # square with the wrong lesson attached — it looks like chaff stops
+    # movement, when the thing worth teaching is that it stops the exit.
+    f.say("Let them land. Let them work. Let them fill the hold.",
+          hold=2600)
+    for _ in range(4):
+        f.click('.cc-deploy-btn:has-text("WAIT")', before=240, after=340)
+
+    f.say("Flare on the hour they reach for the lifter")
+    f.click(_adv_deploy(f, "CHAFF"), before=520, after=900)
+    f.say("Three slots: the flare, and two hours of jamming yourself",
+          hold=2600)
+    f.expect_slots(5, "four waits and a flare")
+
+    f.praxis(cues=[
+        ("H02", "They land and start working", 500),
+        ("H05", "Flare. Nobody acts for three hours \u2014 you included.",
+         700),
+        ("H06", "That was their pickup hour. The lifter never came.",
+         900, [grave]),
+        ("AURORA", "And the dawn wave takes whatever is still standing.",
+         800, [grave]),
+    ])
+    f.wait(1600)
+
+    f.say("A harvester, and everything in its hold", hold=2400)
+    f.push_in(grave, pad=2.4, ms=900)
+    f.hover_cell(grave[0], grave[1], ms=800, hold=2400)
+    tip = f.tooltip()
+    if "\u2020" not in tip and "lost" not in tip.lower():
+        f.fails.append(
+            f"no wreck in the tooltip at {grave}: {tip!r} \u2014 the close-up "
+            "is pointing at empty ground"
+        )
+    f.wait(1200)
+    f.pull_out()
+    f.say("You never touched it. You just took away the ride home.",
+          hold=3000)
+    f.say(None)
+    f.wait(600)
+
+
 # ── setup: getting a session to the turn a film needs ───────────────
 
 #: Films that need a scriptable rival rather than the bot. Kept as a set
@@ -1494,6 +1929,8 @@ def setup_for(base: str, name: str, seed: int) -> tuple[str, Plan]:
     Driven over HTTP rather than by clicking, deliberately: setup is not
     the lesson, and clicking it would put four minutes of it in frame.
     """
+    if name in ADVANCED_FILMS:
+        return _setup_advanced(base, name)
     if name in DUEL_FILMS:
         return _setup_duel(base, name, seed)
 
@@ -1598,6 +2035,165 @@ def _setup_duel(base: str, name: str, seed: int) -> tuple[str, Plan]:
     if name == "basic_score":
         return sid, _plan_seam(base, sid, steps=3, want_red=True)
     return sid, _plan_seam(base, sid, steps=2, want_red=True)
+
+
+# ── setup for the Advanced arc ──────────────────────────────────────
+#
+# One board, one storyline, seven films cut out of different turns of
+# it. Each shoot replays the same history from scratch and stops at the
+# turn its film opens on, so the reels join up: the blue banked in the
+# first film is the blue spent in the second, and the probe fried in the
+# fifth is the one the rival launched in the fourth.
+
+#: Advanced films, all of them duels — see ``_setup_advanced``.
+ADVANCED_FILMS = {
+    "adv_hotdrop", "adv_buy_emp", "adv_redsign", "adv_redsign_rival",
+    "adv_emp", "adv_buy_chaff", "adv_chaff",
+}
+
+#: Where in the storyline each film opens. Order matters: the setup
+#: replays every earlier turn before handing the session to the camera.
+_ADV_TURN = {
+    "adv_hotdrop": 0,        # night 1, as the player meets it
+    "adv_buy_emp": 1,        # orbit 2
+    "adv_redsign": 2,        # night 2
+    "adv_redsign_rival": 2,  # night 2, mirrored
+    "adv_buy_chaff": 3,      # orbit 3
+    "adv_emp": 4,            # night 3
+    "adv_chaff": 6,          # night 4
+}
+
+
+def _setup_advanced(base: str, name: str) -> tuple[str, Plan]:
+    """Replay the Advanced storyline up to the turn ``name`` opens on.
+
+    Both seats are human. Every Advanced lesson is about the OTHER
+    House — a beacon they light, a probe you fry, a lift you cancel —
+    and the bot will not do any of those on cue.
+
+    The seed is pinned rather than taken from the batch: this board's
+    blue pocket and two jackpots are load-bearing (see ``ADVANCED_SEED``),
+    and a film of a hot drop onto ground that has no blue under it is a
+    film of nothing.
+
+    THE RULE THAT BITES: whenever the camera is going to commit a night,
+    the rival's orders for THAT night must already be in. Two human
+    seats means the first to transmit is put into "waiting for the other
+    House", which locks the button — and locks it in a way that looks
+    exactly like a hang, thirty seconds into a shoot that has already
+    run a minute. So every branch below that hands over a PLANNING turn
+    posts p2's night on the way out.
+    """
+    stop = _ADV_TURN[name]
+    sid = seed_duel(base, ADVANCED_SEED, cap=6, preset="advanced")
+    plan: Plan = {
+        "sign": list(ADV_SIGN), "land": list(ADV_BLUE_LAND),
+        "step": list(ADV_BLUE_STEP), "mine": list(ADV_MINE),
+        "theirs": list(ADV_THEIRS), "quiet": list(ADV_QUIET),
+        "salvo": [list(c) for c in ADV_SALVO], "beside": list(ADV_BESIDE),
+    }
+    mine_h = harvester_ids(base, sid, "p1")[0]
+
+    def probe(at) -> dict:
+        return {"a": "probe", "at": list(at)}
+
+    # ── turn 0 · night 1 — the hot drop that funds everything ────────
+    if stop <= 0:
+        submit_night(base, sid, [probe(ADV_QUIET)], "p2")
+        return sid, plan
+    submit_night(base, sid, [
+        probe(ADV_SIGN),
+        {"a": "drop", "unit": mine_h, "at": list(ADV_BLUE_LAND)},
+        {"a": "step", "unit": mine_h, "to": list(ADV_BLUE_STEP)},
+        {"a": "pickup", "unit": mine_h},
+    ], "p1")
+    submit_night(base, sid, [probe(ADV_QUIET)], "p2")
+
+    # ── turn 1 · orbit 2 — blue becomes an EMP ───────────────────────
+    if stop <= 1:
+        return sid, plan
+    submit_orbit(base, sid, [
+        {"a": "build_emp", "count": 1},
+        {"a": "build_probe", "count": 2},
+    ], "p1")
+    # The rival buys the harvester here that the chaff film later
+    # strands. Buying it later would leave them nothing to lose.
+    submit_orbit(base, sid, [
+        {"a": "build_probe", "count": 2},
+        {"a": "build_harvester"},
+    ], "p2")
+
+    # ── turn 2 · night 2 — a beacon each ─────────────────────────────
+    if stop <= 2:
+        # Both redsign films open here, and they want opposite things of
+        # the rival. The mirror film needs their discovery to happen
+        # DURING the filmed night, so the camera catches the beacon
+        # arriving out of nowhere. The other film needs them to light
+        # NOTHING, or two beacons come up at once and "you found it"
+        # stops being a sentence about the player.
+        if name == "adv_redsign_rival":
+            # A WAIT in front so their discovery lands on H02. Their
+            # probe on H01 would put the beacon up in the same hour the
+            # player's own first probe opens, and the film's one reveal
+            # would arrive before anyone had a reason to look.
+            submit_night(base, sid,
+                         [{"a": "wait"}, probe(ADV_THEIRS)], "p2")
+        else:
+            submit_night(base, sid, [probe(ADV_QUIET2)], "p2")
+        return sid, plan
+    submit_night(base, sid, [probe(ADV_MINE)], "p1")
+    submit_night(base, sid, [probe(ADV_THEIRS)], "p2")
+
+    # ── turn 3 · orbit 3 — the second hull, and the chaff ────────────
+    if stop <= 3:
+        return sid, plan
+    submit_orbit(base, sid, [
+        {"a": "build_chaff", "count": 1},
+        {"a": "build_harvester"},
+        {"a": "build_probe", "count": 2},
+    ], "p1")
+    submit_orbit(base, sid, [{"a": "build_probe", "count": 2}], "p2")
+
+    # ── turn 4 · night 3 — the salvo ─────────────────────────────────
+    if stop <= 4:
+        # The rival's eye has to still be ON the jackpot for the salvo
+        # to take it, so they re-probe it this night.
+        submit_night(base, sid, [probe(ADV_THEIRS)], "p2")
+        return sid, plan
+    submit_night(base, sid, [
+        {"a": "emp_launch", "at": [list(c) for c in ADV_SALVO]},
+        probe(ADV_BESIDE),
+    ], "p1")
+    submit_night(base, sid, [probe(ADV_THEIRS)], "p2")
+
+    # ── turn 5 · orbit 4 ─────────────────────────────────────────────
+    submit_orbit(base, sid, [{"a": "build_probe", "count": 2}], "p1")
+    submit_orbit(base, sid, [{"a": "build_probe", "count": 2}], "p2")
+
+    # ── turn 6 · night 4 — the lift that never comes ─────────────────
+    # Their whole night is posted before the camera rolls: hot drop,
+    # two squares of work, then reach for the lifter on H05. Our flare
+    # goes up on H04 and smothers H04-H06.
+    their_h = [
+        u["id"] for u in view(base, sid, "p2")["units"]
+        if u.get("type") == "harvester" and u.get("orbit")
+    ]
+    if not their_h:
+        raise SystemExit(
+            "advanced setup left the rival with no harvester in orbit — "
+            "adv_chaff would have nothing to strand"
+        )
+    walk = [(ADV_THEIRS[0], ADV_THEIRS[1] - 1),
+            (ADV_THEIRS[0] + 1, ADV_THEIRS[1] - 1)]
+    submit_night(base, sid, [
+        probe(ADV_THEIRS),
+        {"a": "drop", "unit": their_h[0], "at": list(ADV_THEIRS)},
+        {"a": "step", "unit": their_h[0], "to": list(walk[0])},
+        {"a": "step", "unit": their_h[0], "to": list(walk[1])},
+        {"a": "pickup", "unit": their_h[0]},
+    ], "p2")
+    plan["grave"] = list(walk[1])
+    return sid, plan
 
 
 def _plan_seam(base: str, sid: str, steps: int, want_red: bool) -> Plan:
