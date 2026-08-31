@@ -140,7 +140,7 @@ def _write_manifest(dest: Path, team: str, name: str, menu_label: str,
     )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="new_agent",
         description="Fork the V12 harness into your own registered agent.",
@@ -155,7 +155,7 @@ def main() -> int:
         "--dry-run", action="store_true",
         help="Report what would be created without writing anything.",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     team = _validate(args.team, "team")
     name = _validate(args.name, "name")
