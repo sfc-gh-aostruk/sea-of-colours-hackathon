@@ -137,6 +137,12 @@ class WorldBuilder:
     day: int = 1
     season_day_cap: int = 7
     season_name: Optional[str] = None
+    # Seat list. ``None`` keeps the engine default (p1/p2), which is what
+    # almost every fixture wants. The redsign battles need it because
+    # "three opponents already on your seam" is a different game from
+    # "one opponent", and the engine scales real things off seat count —
+    # the pure-RED floor among them (v1.28).
+    players: Optional[Sequence[str]] = None
     store: SocStore = field(default_factory=_default_store)
 
     # Internal session reference — populated on first mutator call.
@@ -162,6 +168,7 @@ class WorldBuilder:
             height=self.height,
             season_name=self.season_name,
             season_day_cap=self.season_day_cap,
+            players=list(self.players) if self.players else None,
         )
         sid = info["session_id"]
         self._session_id = sid
@@ -812,7 +819,12 @@ class WorldBuilder:
         # Re-run the "remember everything currently visible" pass so
         # entities we just placed surface in the agent view. (This is
         # the same pass GameSession.new runs after _spawn_defaults.)
-        for p in ("p1", "p2"):
+        #
+        # Driven off the session's actual seat list rather than a
+        # hardcoded p1/p2: on a four-seat board the later seats would
+        # otherwise start with no memory of their own units, which reads
+        # to the agent as an empty map rather than a crowded one.
+        for p in (sess.players or ("p1", "p2")):
             sess._remember_entire_visibility(p)  # type: ignore[arg-type]
         soc_engine.save_session_full(self.store, sess)
         assert self._session_id is not None
