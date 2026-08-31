@@ -1,10 +1,10 @@
 """Minting a fork is the first thing an attendee does (v1.12).
 
-``scripts/new_agent.py`` copies V12, renames its identity, and registers
-the binding. If it half-works the failure lands on someone with an hour
-to spend, so the contract is pinned here: validation rejects bad names
-*before* writing, and the shipped registry keeps the anchors the script
-edits.
+``scripts/new_agent.py`` copies V12, renames its identity, and declares
+it in an ``agent.json`` inside the new directory. If it half-works the
+failure lands on someone with an hour to spend, so the contract is
+pinned here: validation rejects bad names *before* writing, and minting
+touches nothing outside the fork.
 
 The copy itself is exercised through ``--dry-run``. Running it for real
 would mutate the repo mid-suite, and the interesting failure modes
@@ -60,7 +60,6 @@ def test_capitalisation_is_normalised_not_rejected() -> None:
     r = _run("--team", "Redwatch", "--name", "Reaper", "--dry-run")
     assert r.returncode == 0, r.stderr
     assert "redwatch_reaper" in r.stdout
-    assert "SOC_REDWATCH_REAPER" in r.stdout
 
 
 @pytest.mark.parametrize(
@@ -89,12 +88,20 @@ def test_existing_name_is_refused_before_any_copy() -> None:
     assert "already" in r.stderr
 
 
-def test_registry_keeps_the_anchors_the_script_edits() -> None:
-    """The script refuses to guess where the dicts end. If someone
-    reformats the registry and drops these, minting breaks."""
-    text = _REGISTRY.read_text(encoding="utf-8")
-    assert "# SOC_NEW_AGENT_ANCHOR" in text
-    assert "# SOC_NEW_AGENT_LABEL_ANCHOR" in text
+def test_minting_leaves_the_shared_registry_alone() -> None:
+    """The property the whole submission model rests on (v1.39).
+
+    Registration used to mean inserting two lines here, which meant
+    every team's push conflicted with every other team's. A fork now
+    declares itself inside its own directory, so minting must not touch
+    this file at all — if it starts doing so again, forty people find
+    out at once and late in the day.
+    """
+    before = _REGISTRY.read_text(encoding="utf-8")
+    r = _run("--team", "unittest", "--name", "probe", "--dry-run")
+    assert r.returncode == 0, r.stderr
+    assert _REGISTRY.read_text(encoding="utf-8") == before
+    assert "discovery" in r.stdout
 
 
 def test_roster_endpoint_serves_the_registry() -> None:

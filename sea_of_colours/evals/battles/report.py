@@ -50,6 +50,19 @@ def render(suite: SuiteResult, *, verbose: bool = False) -> str:
     add(f"  clean   {suite.clean}/{len(suite.battles)} battles passed every run")
     add("")
 
+    # Before anything else, because it invalidates everything else.
+    if suite.fallback_rate > 0:
+        add("  " + "!" * (_W - 4))
+        add(f"  {suite.fallback_rate:.0%} of turns fell back to the harness "
+            f"safety net.")
+        add("  The model was not reached or its reply would not parse, so "
+            "that")
+        add("  share of this score belongs to the fallback heuristic and not")
+        add("  to your agent. Check credentials before reading anything "
+            "below.")
+        add("  " + "!" * (_W - 4))
+        add("")
+
     add(_ladder_section(suite))
     add(_diagnosis_section(suite))
     add(_weapons_section(suite))
@@ -188,8 +201,9 @@ def league_table(results: Sequence[SuiteResult]) -> str:
     """Rank agents. Same suite, same rungs, one row each."""
     ranked = sorted(results, key=lambda r: (-r.score, r.agent))
     lines = [_rule("═"), "  LEAGUE", _rule("═"), ""]
-    lines.append(f"  {'#':<3} {'agent':<26} {'score':>6}  {'clean':>7}  ladder")
+    lines.append(f"  {'#':<3} {'agent':<24} {'score':>6}  {'clean':>7}  ladder")
     lines.append("  " + _rule()[:_W - 2])
+    suspect = []
     for i, res in enumerate(ranked, 1):
         rungs = res.by_rung()
         reached = [
@@ -197,9 +211,22 @@ def league_table(results: Sequence[SuiteResult]) -> str:
             if rungs[r][0] == rungs[r][1]
         ]
         top = reached[-1] if reached else "—"
+        # An agent that never reached its model is ranked on its safety
+        # net. Flagged rather than dropped: the run still happened, and
+        # a silently missing entrant is worse than a marked one.
+        mark = " *" if res.fallback_rate > 0 else ""
+        if res.fallback_rate > 0:
+            suspect.append((res.agent, res.fallback_rate))
         lines.append(
-            f"  {i:<3} {res.agent:<26} {res.score:>5.0%}  "
+            f"  {i:<3} {res.agent + mark:<24} {res.score:>5.0%}  "
             f"{res.clean:>3}/{len(res.battles):<3}  clean through {top}"
         )
     lines.append("")
+    if suspect:
+        lines.append("  * scored partly on the fallback heuristic, not the "
+                     "agent's own plan:")
+        for name, rate in suspect:
+            lines.append(f"      {name}: {rate:.0%} of turns never reached "
+                         f"a model")
+        lines.append("")
     return "\n".join(lines)

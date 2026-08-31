@@ -58,6 +58,12 @@ class RunResult:
     rationale: str = ""
     seconds: float = 0.0
     error: str = ""
+    # Did the harness fail to reach its model and play its own safety
+    # net instead? Recorded because the alternative is scoring a
+    # heuristic under a team's name — an agent whose credentials were
+    # down can otherwise outrank one that actually worked, and nothing
+    # in the numbers would show it.
+    fell_back: bool = False
 
     @property
     def passed(self) -> bool:
@@ -154,6 +160,18 @@ class SuiteResult:
                     total[k] = total.get(k, 0) + v
         return total
 
+    @property
+    def fallback_rate(self) -> float:
+        """Share of turns where the harness never got a usable reply.
+
+        Anything above zero makes the rest of the numbers suspect: the
+        score is partly the safety net's, not the agent's.
+        """
+        runs = [r for b in self.battles for r in b.runs]
+        if not runs:
+            return 0.0
+        return sum(1 for r in runs if r.fell_back) / len(runs)
+
 
 def _extract_moves(store, session_id: str, day: int, player: str) -> list:
     """Read the moves that actually reached the engine.
@@ -226,6 +244,7 @@ def _play(
         result.rationale = str(
             (env or {}).get("rationale") or (env or {}).get("agent_rationale") or ""
         )
+        result.fell_back = _detect_fallback(env, result.rationale)
     except Exception as exc:
         # A crash is a result, not an abort: one board that blows up
         # must not cost you the other forty-four, and the traceback is
@@ -237,6 +256,25 @@ def _play(
     if card_dir is not None:
         _write_card(card_dir, battle, result)
     return result
+
+
+def _detect_fallback(env: Mapping[str, Any] | None, rationale: str) -> bool:
+    """Did the harness play its safety net rather than its own plan?
+
+    V12 and its forks answer honestly — they stamp ``fallback=True`` into
+    the rationale when the model could not be reached or its reply would
+    not parse. Nothing consumed that, so a suite run with no credentials
+    scored the fallback heuristic and reported it as the agent.
+
+    Checked structurally first and by marker second, because the marker
+    is a formatting detail of one harness and a fork may reword it.
+    """
+    for key in ("fallback", "used_fallback", "is_fallback"):
+        val = (env or {}).get(key)
+        if isinstance(val, bool):
+            return val
+    text = (rationale or "").lower()
+    return "fallback=true" in text or "plan=[fallback]" in text
 
 
 def _dispatch(battle: StagedBattle, agent: str) -> Mapping[str, Any]:

@@ -269,6 +269,25 @@ def test_a_harder_rung_puts_more_on_the_board():
 # ── the suite runs offline ──────────────────────────────────────────
 
 
+def test_a_harness_that_never_reached_its_model_is_flagged():
+    """Otherwise the league silently ranks a safety net under a team's name.
+
+    An LLM harness that cannot reach its model plays a built-in
+    fallback. It says so in its rationale, but nothing consumed that, so
+    a credentials outage produced a real-looking score — and could rank
+    a broken agent above a working one with nothing in the numbers to
+    show it.
+    """
+    from sea_of_colours.evals.battles.runner import _detect_fallback
+
+    assert _detect_fallback(
+        {}, "[plan=[fallback] follow top heuristic chain] [fallback=True:parse]"
+    )
+    assert _detect_fallback({"fallback": True}, "")
+    assert not _detect_fallback({"fallback": False}, "picked SMASH_GRAB")
+    assert not _detect_fallback({}, "[plan=SMASH_GRAB] [exec=mover] moves=7")
+
+
 def test_the_whole_suite_runs_without_credentials():
     """The heuristic needs no PAT, so the kit works on a train.
 
