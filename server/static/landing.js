@@ -13,26 +13,22 @@
 
   // ── terminal glitch effect ────────────────────────────────────────
   // The three title words ("sea", "of", "colours") periodically glitch
-  // into random ASCII, reconstitute, and swap RGB colors.
+  // into random ASCII and reconstitute.
+  //
+  // v1.37 — the words used to REST in saturated red/green/blue, one
+  // each. On the old dark-video page that was already busy; against the
+  // acid wordmark it would be three clashing colours competing with the
+  // only loud element on the page. The three tile colours now arrive as
+  // a chromatic split for the length of a glitch and then leave, so
+  // "sea of colours" is still literally true — it is just an event
+  // rather than a permanent state. Colour lives in `.is-split` (CSS),
+  // not in an inline style.
   (function initGlitch() {
-    var colors = ["#ff0000", "#00ff00", "#0000ff"]; // pure R, G, B
     var asciiChars = "!@#$%^&*()_+-=[]{}|;:,.<>?/~`";
 
-    // Assign initial random colors to each word
-    function shuffleColors() {
-      var words = document.querySelectorAll(".glitch-word");
-      if (words.length === 0) return;
-      
-      var shuffled = colors.slice();
-      for (var i = shuffled.length - 1; i > 0; i--) {
-        var j = Math.floor(Math.random() * (i + 1));
-        var temp = shuffled[i];
-        shuffled[i] = shuffled[j];
-        shuffled[j] = temp;
-      }
-      words.forEach(function (w, idx) {
-        w.style.color = shuffled[idx % shuffled.length];
-      });
+    function splitWord(el, ms) {
+      el.classList.add("is-split");
+      setTimeout(function () { el.classList.remove("is-split"); }, ms);
     }
 
     // Glitch a single word: scramble -> reconstitute
@@ -76,7 +72,7 @@
       
       var target = words[Math.floor(Math.random() * words.length)];
       glitchWord(target);
-      setTimeout(shuffleColors, 300); // swap colors mid-glitch
+      splitWord(target, 640); // 12 frames at 50ms, plus a beat to settle
     }
 
     // Run glitch every 1.5-3 seconds (but wait for typing to complete)
@@ -92,6 +88,148 @@
       }, delay);
     }
     scheduleNext();
+  })();
+
+  // ── instrument chrome ─────────────────────────────────────────────
+  // Decoration, but not invented decoration: every number in the band
+  // is a real constant from the rules, so the page cannot drift into
+  // promising a game we do not ship. If a multiplier or a capacity
+  // changes, this is a fan-out surface (see AGENTS.md).
+  (function initChrome() {
+    var BAND = [
+      "SEA OF COLOURS",
+      "AN AGENTIC GAME OF STRATEGY AND SUBTERFUGE",
+      "RED IN THE VAULT IS THE WHOLE GAME",
+      "TRACE \u00D70.75",
+      "VEIN \u00D71.0",
+      "MASS \u00D71.5",
+      "PURE \u00D73.0",
+      "GREEN \u2212100 PER PARCEL",
+      "21 HOURS TO A NIGHT",
+      "HOLD 6 \u00B7 VAULT 15",
+      "PROBE RADIUS 4",
+      "LIFT OR LOSE IT",
+      "FOG OF WAR \u00B7 LIVE / ECHO",
+      "HUMANS AND ALGORITHMS, SAME SEAT",
+    ];
+    var runs = document.querySelectorAll(".ticker-run");
+    if (runs.length) {
+      var text = BAND.join("   \u25AA   ") + "   \u25AA   ";
+      runs.forEach(function (r) { r.textContent = text; });
+    }
+
+    var clock = document.getElementById("clock-utc");
+    if (clock) {
+      var tick = function () {
+        var d = new Date();
+        var p = function (n) { return String(n).padStart(2, "0"); };
+        clock.textContent = p(d.getUTCHours()) + ":" + p(d.getUTCMinutes())
+          + ":" + p(d.getUTCSeconds()) + "Z";
+      };
+      tick();
+      setInterval(tick, 1000);
+    }
+
+    var reduce = window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* ── the barcode re-reads ──────────────────────────────────────
+     * A barcode that never changes is wallpaper. This regenerates the
+     * bar pattern on an interval so the mark reads as a scanner picking
+     * up a new code rather than as a texture.
+     *
+     * Bars are built as a gradient referencing `var(--acid)` rather than
+     * a resolved colour, so a new code drawn mid-transition still comes
+     * out on the cycle instead of freezing whatever the accent happened
+     * to be when it was generated. */
+    function barcode(el) {
+      var w = el.offsetWidth || 92;
+      var stops = [], x = 0;
+      while (x < w) {
+        var bar = 1 + Math.floor(Math.random() * 3);
+        var gap = 1 + Math.floor(Math.random() * 3);
+        stops.push("var(--acid) " + x + "px " + (x + bar) + "px");
+        stops.push("transparent " + (x + bar) + "px " + (x + bar + gap) + "px");
+        x += bar + gap;
+      }
+      el.style.backgroundImage = "linear-gradient(to right," + stops.join(",") + ")";
+    }
+
+    var bars = document.querySelectorAll(".barcode");
+    if (bars.length && !reduce) {
+      bars.forEach(function (el) { barcode(el); });
+      setInterval(function () {
+        bars.forEach(function (el) {
+          // Blank for a frame on the swap. Without it the change is a
+          // silent substitution you only notice by comparing; the drop
+          // out is what sells it as a re-read.
+          el.style.opacity = "0.12";
+          setTimeout(function () {
+            barcode(el);
+            el.style.opacity = "";
+          }, 70);
+        });
+      }, 2300);
+    }
+
+    /* ── the purity ladder ─────────────────────────────────────────
+     * Flicks through the four RED tiers. Every value here is the
+     * engine's: the bands are `GameSession._tier_for_purity`
+     * (RULEBOOK §2.2) and the multipliers are `RED_QUALITY_MULTIPLIER`,
+     * so this is a fan-out surface — see AGENTS.md. The glyphs are the
+     * board's own ramp from `catTierGlyph` in app.js.
+     *
+     * It scrambles before it settles, which is not just decoration: the
+     * scramble runs the whole ░▒▓█ ramp, so you see the ladder the tier
+     * sits on before you see the tier. */
+    var TIERS = [
+      { name: "TRACE", band: "001\u2013050", mult: "\u00D70.75", ch: "\u2591" },
+      { name: "VEIN",  band: "051\u2013150", mult: "\u00D71.0",  ch: "\u2592" },
+      { name: "MASS",  band: "151\u2013254", mult: "\u00D71.5",  ch: "\u2593" },
+      { name: "PURE",  band: "255",          mult: "\u00D73.0",  ch: "\u2588" },
+    ];
+    var RAMP = "\u2591\u2592\u2593\u2588";
+    var BLOCKS = 8;
+
+    var elBlocks = document.getElementById("tier-blocks");
+    var elName = document.getElementById("tier-name");
+    var elBand = document.getElementById("tier-band");
+    var elMult = document.getElementById("tier-mult");
+
+    if (elBlocks && elName && elBand && elMult) {
+      var ti = 0;
+
+      var paint = function (t) {
+        elBlocks.textContent = new Array(BLOCKS + 1).join(t.ch);
+        elName.textContent = t.name;
+        elBand.textContent = t.band;
+        elMult.textContent = t.mult;
+      };
+
+      var advance = function () {
+        ti = (ti + 1) % TIERS.length;
+        var t = TIERS[ti];
+        if (reduce) { paint(t); return; }
+        var n = 0;
+        var churn = setInterval(function () {
+          n++;
+          var s = "";
+          for (var i = 0; i < BLOCKS; i++) {
+            // Settle left to right, so it resolves rather than just
+            // stopping.
+            s += n > i + 3
+              ? t.ch
+              : RAMP.charAt(Math.floor(Math.random() * RAMP.length));
+          }
+          elBlocks.textContent = s;
+          if (n === 2) { elName.textContent = t.name; elBand.textContent = t.band; }
+          if (n >= BLOCKS + 3) { clearInterval(churn); paint(t); }
+        }, 45);
+      };
+
+      paint(TIERS[0]);
+      if (!reduce) setInterval(advance, 2800);
+    }
   })();
 
   // ── hero video autoplay kick ──────────────────────────────────────
@@ -137,7 +275,6 @@
     var fullText = "sea_of_colours_";
     var typed = "";
     var charIndex = 0;
-    var initialColors = ["#ff0000", "#00ff00", "#0000ff"]; // R, G, B
 
     titleContent.style.opacity = "1";
     titleContent.innerHTML = '<span class="cursor-blink">_</span>'; // just cursor initially
@@ -152,18 +289,18 @@
         var parts = typed.split("_");
         
         if (parts[0]) {
-          display += '<span class="glitch-word" data-word="sea" style="color: ' + initialColors[0] + ';">' + parts[0] + '</span>';
+          display += '<span class="glitch-word" data-word="sea">' + parts[0] + '</span>';
         }
         if (typed.includes("_") && parts.length > 1) {
           display += "_";
           if (parts[1]) {
-            display += '<span class="glitch-word" data-word="of" style="color: ' + initialColors[1] + ';">' + parts[1] + '</span>';
+            display += '<span class="glitch-word" data-word="of">' + parts[1] + '</span>';
           }
         }
         if (typed.split("_").length > 2) {
           display += "_";
           if (parts[2]) {
-            display += '<span class="glitch-word" data-word="colours" style="color: ' + initialColors[2] + ';">' + parts[2] + '</span>';
+            display += '<span class="glitch-word" data-word="colours">' + parts[2] + '</span>';
           }
         }
         if (typed.endsWith("_") && typed.length === fullText.length) {
@@ -211,7 +348,7 @@
 
     var asciiChars = "!@#$%^&*()_+-=[]{}|;:,.<>?/~`";
 
-    function scrambleTaglineToText(targetText, isYellow) {
+    function scrambleTaglineToText(targetText, accent) {
       if (isTaglineScrambling) return;
       isTaglineScrambling = true;
       if (currentInterval) clearInterval(currentInterval);
@@ -222,11 +359,7 @@
       var scrambleStart = 6;
       var scrambleEnd = 18;
 
-      if (isYellow) {
-        taglineEl.classList.add("is-yellow");
-      } else {
-        taglineEl.classList.remove("is-yellow");
-      }
+      taglineEl.classList.toggle("is-accent", Boolean(accent));
 
       currentInterval = setInterval(function () {
         frame++;

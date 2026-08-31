@@ -1,307 +1,563 @@
-/* Circuit FX overlay — runs the circuit/pixel animation on #fx-cv.
-   To revert: comment out the canvas + script tags in landing.html and
-   the #fx-cv rule in landing.css. This file can stay untouched. */
-(function(){
-'use strict';
+/* Sea of Colours — machine-read FX overlay, drawn on #fx-cv.
+ *
+ * v1.37 — replaces the PCB circuit-trace overlay. That one filled the
+ * whole viewport with white box-drawing glyphs at a uniform density,
+ * which did three things wrong: it competed with the title for
+ * attention, it greyed out the hero video underneath, and because it
+ * never rested there was nothing for the eye to settle on.
+ *
+ * This one has a budget. At any moment most of the screen is empty; the
+ * marks that do exist are acid on black, clustered, and short-lived,
+ * and they sweep rather than shimmer. Five layers, cheapest first:
+ *
+ *   1. dither     a fixed 4x4 Bayer wash, very faint, never redrawn
+ *   2. registers  columns of hex/dec that retype a digit at a time
+ *   3. sweep      a scan bar that lights the dither as it passes
+ *   4. bursts     short-lived blocks of glyphs, like a packet arriving
+ *   5. storm      the periodic pixelation — see below
+ *
+ * Layers 1-4 keep out of the middle of the screen (see `inKeepout`) so
+ * nothing ever crawls over the wordmark. Layer 5 deliberately does not.
+ *
+ * ── the storm (v1.38) ──────────────────────────────────────────────
+ * Every ~14.3 seconds a front of thick blocks sweeps across the hero
+ * until the screen is a single flat colour, holds there, and then the
+ * same front runs across a second time lifting the blocks off, back to
+ * the video. The wavefront is from `docs/scatter_fx.html` — a diagonal
+ * sweep jittered by value noise, so it is ragged rather than a wipe.
+ * What is new is the mark: that prototype drew 5px characters, this
+ * draws blocks big enough to actually occlude.
+ *
+ * ONE COLOUR, ONE TONE, START TO FINISH. Every block is the same flat
+ * dimmed accent and it never changes value, so the middle of the cycle
+ * is literally one colour edge to edge. Which colour depends on where
+ * the page's own red → green → blue cycle has got to (see `--acid` in
+ * landing.css); this file samples it rather than holding a copy, so the
+ * pixelation is never a different colour from the page under it. Three
+ * earlier cuts all
+ * failed the same way, by putting more than one value on screen at
+ * once: a fixed palette with red, green and blue all mixed in, which
+ * read as confetti; a
+ * per-block sample of the video, which gave hundreds of near-identical
+ * greens; and a drain to black, which made the field a different colour
+ * every second. There is no gutter between blocks either — they are
+ * overdrawn so they fuse.
+ *
+ * Staying dark is also what keeps the page legible with no help from
+ * anywhere else: acid type sits on a dark field the whole way through,
+ * so there is no ink inversion and no stroke around the letters. Both
+ * of those existed only to survive a bright field, and both are gone.
+ *
+ * It also rests — nine of every fifteen seconds it is not there at all.
+ *
+ * To revert: comment out the canvas + script tags in landing.html and
+ * the #fx-cv rule in landing.css. This file can stay untouched. To keep
+ * the quiet layers but drop the pixelation, set STORM.enabled = false.
+ */
+(function () {
+  "use strict";
 
-const cv=document.getElementById('fx-cv');
-if(!cv)return;
-const ctx=cv.getContext('2d');
-const LIME='#ffffff', BLACK='#000';
-let W,H;
-function resize(){cv.width=W=innerWidth;cv.height=H=innerHeight;}
-resize();
-window.addEventListener('resize',resize);
+  var cv = document.getElementById("fx-cv");
+  if (!cv) return;
+  var ctx = cv.getContext("2d", { alpha: true });
+  if (!ctx) return;
 
-const CC=10, CFONT='9px ui-monospace,"Cascadia Code",monospace';
-const THIN=['·','│','│','│','─','┐','┘','┤','─','┌','└','├','─','┬','┴','┼'];
-const BOLD=[' ','║','║','║','═','╗','╝','╣','═','╔','╚','╠','═','╦','╩','╬'];
-const VIAS=['⊕','⊗','○','●','◉'];
-const LBLS=['U','B','A','R','C','Q','G','V','D','F','H','I','J','K','L','M','N','P','S','T',
-            '1','2','3','4','5','6','7','8','9','0','+','-','='];
-const DX=[1,0,-1,0], DY=[0,1,0,-1];
-const MY=[8,1,4,2], OPP=[4,2,8,1];
+  var reduce = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-let ccSortedA, ccSortedB, ccSortedC, ccSortedD;
+  /* The page's accent, and the turn order it moves through. This file
+   * owns WHEN it changes because the change is a storm event — it has
+   * to land on the frame the screen is fully covered, and the storm
+   * clock is here. It publishes to CSS rather than keeping the colour
+   * to itself, so the wordmark, the chrome and the pixel field are
+   * never three different colours.
+   *
+   * `data-accent` rides along so the swatch legend can key off an
+   * attribute instead of trying to match a colour string. */
+  var ACCENTS = [
+    { key: "r", css: "#ff2b2b" },
+    { key: "g", css: "#00ff88" },
+    { key: "b", css: "#3b5bff" },
+  ];
+  var accent = 0;
 
-function buildOneLayer(){
-  const ccCols=Math.floor(W/CC), ccRows=Math.floor(H/CC);
-  const ccGrid=Array.from({length:ccRows*ccCols},()=>({rlud:0,time:1,bold:false,marked:false,dark:false,via:null,lbl:null}));
-  function cc(r,c){return ccGrid[r*ccCols+c];}
-  function ok(r,c){return r>=0&&r<ccRows&&c>=0&&c<ccCols;}
-  const NK=4+Math.floor(Math.random()*5);
-  const kernels=Array.from({length:NK},(_,i)=>({r:Math.floor(Math.random()*ccRows),c:Math.floor(Math.random()*ccCols),base:i*0.05}));
-  function kTime(r,c){let best=0,bd=1e9;for(const k of kernels){const d=Math.abs(r-k.r)+Math.abs(c-k.c);if(d<bd){bd=d;best=k.base;}}return best+bd*0.0012;}
-  function mark(r,c,rlud,bold,t,drk=false){
-    if(!ok(r,c))return;
-    const ce=cc(r,c);
-    ce.rlud|=rlud; ce.bold=ce.bold||bold; ce.dark=ce.dark||drk;
-    if(!ce.marked){ce.marked=true;ce.time=t;}else ce.time=Math.min(ce.time,t);
+  function applyAccent() {
+    var a = ACCENTS[accent];
+    document.documentElement.style.setProperty("--acid", a.css);
+    document.documentElement.setAttribute("data-accent", a.key);
   }
-  function routeH(r,c1,c2,bold,t,drk=false){
-    const dc=c2>c1?1:-1,dir=dc>0?0:2;
-    for(let c=c1;c!==c2;c+=dc){if(!ok(r,c)||!ok(r,c+dc))break;mark(r,c,MY[dir],bold,t,drk);mark(r,c+dc,OPP[dir],bold,t,drk);t+=0.00022;}
+
+  /* Even though this file sets the colour, it READS it back rather than
+   * using what it set: CSS tweens `--acid` over half a second, so the
+   * computed value is the only thing that knows where the hand-over has
+   * got to. Taking the target directly would snap the pixel field to
+   * the new colour while the copy on top of it was still crossing.
+   *
+   * Sampled on an interval, not per frame — `getComputedStyle` forces a
+   * style resolve. 60ms gives about nine steps across the transition,
+   * which is under the banding threshold on a flat field. */
+  var ACID = "255,43,43";
+  var themeRead = -1e9;
+
+  function readTheme(now) {
+    if (now - themeRead < 60) return;
+    themeRead = now;
+    var v = getComputedStyle(document.documentElement)
+      .getPropertyValue("--acid");
+    var m = /(-?[\d.]+)[,\s]+(-?[\d.]+)[,\s]+(-?[\d.]+)/.exec(v || "");
+    if (m) ACID = (+m[1] | 0) + "," + (+m[2] | 0) + "," + (+m[3] | 0);
   }
-  function routeV(r1,r2,c,bold,t,drk=false){
-    const dr=r2>r1?1:-1,dir=dr>0?1:3;
-    for(let r=r1;r!==r2;r+=dr){if(!ok(r,c)||!ok(r+dr,c))break;mark(r,c,MY[dir],bold,t,drk);mark(r+dr,c,OPP[dir],bold,t,drk);t+=0.00022;}
+
+  function acidPart(i) {
+    return parseInt(ACID.split(",")[i], 10) || 0;
   }
-  function routeL(r1,c1,r2,c2,bold,t,drk=false){
-    if(r1===r2){routeH(r1,c1,c2,bold,t,drk);return;}
-    if(c1===c2){routeV(r1,r2,c1,bold,t,drk);return;}
-    if(Math.random()<0.5){routeH(r1,c1,c2,bold,t,drk);routeV(r1,r2,c2,bold,t,drk);}
-    else{routeV(r1,r2,c1,bold,t,drk);routeH(r2,c1,c2,bold,t,drk);}
+  var CELL = 13;                 // glyph grid pitch, px
+  var FONT = '10px "JetBrains Mono", ui-monospace, monospace';
+  var GLYPHS = "0123456789ABCDEF<>[]{}/\\|+-=*#%$@:;.·×÷▪▫░▒▓■□◆◇○●";
+  var HEX = "0123456789ABCDEF";
+
+  var W = 0, H = 0, dpr = 1, cols = 0, rows = 0;
+  var ditherMask = null;         // white Bayer wash, built once per size
+  var dither = null;             // the same wash tinted to the accent
+  var ditherTint = "";
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cv.width = Math.floor(W * dpr);
+    cv.height = Math.floor(H * dpr);
+    cv.style.width = W + "px";
+    cv.style.height = H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cols = Math.ceil(W / CELL);
+    rows = Math.ceil(H / CELL);
+    buildDither();
+    seedRegisters();
+    buildStorm();
   }
-  const N_IC=45+Math.floor(Math.random()*20);
-  const icPins=[], placed=[];
-  for(let attempt=0;placed.length<N_IC&&attempt<N_IC*6;attempt++){
-    const h=2+Math.floor(Math.random()*4), w=3+Math.floor(Math.random()*5);
-    const r0=1+Math.floor(Math.random()*(ccRows-h-2)), c0=1+Math.floor(Math.random()*(ccCols-w-2));
-    if(placed.some(p=>r0<p.r1+2&&r0+h>p.r0-1&&c0<p.c1+2&&c0+w>p.c0-1))continue;
-    placed.push({r0,c0,r1:r0+h-1,c1:c0+w-1,idx:placed.length});
-    const t=kTime(r0+Math.floor(h/2),c0+Math.floor(w/2));
-    const bold=Math.random()<0.3, isdark=Math.random()<0.35;
-    mark(r0,c0,0b1001,bold,t,isdark); mark(r0,c0+w-1,0b0101,bold,t,isdark);
-    mark(r0+h-1,c0,0b1010,bold,t,isdark); mark(r0+h-1,c0+w-1,0b0110,bold,t,isdark);
-    for(let dc=1;dc<w-1;dc++){mark(r0,c0+dc,0b1100,bold,t,isdark);mark(r0+h-1,c0+dc,0b1100,bold,t,isdark);}
-    for(let dr=1;dr<h-1;dr++){mark(r0+dr,c0,0b0011,bold,t,isdark);mark(r0+dr,c0+w-1,0b0011,bold,t,isdark);}
-    {
-      if(h<=2||w<=3){const ce=cc(r0+Math.floor(h/2),c0+1);if(ce&&!ce.lbl){ce.lbl=LBLS[Math.floor(Math.random()*20)];ce.marked=true;ce.dark=isdark;ce.time=t+0.02;}}
-      else{const style=Math.floor(Math.random()*5),SIG='DACSQGNV',BITS='01011010110100101101';
-        for(let dr=1;dr<h-1;dr++)for(let dc=1;dc<w-1;dc++){
-          const ce=cc(r0+dr,c0+dc);if(!ce||ce.lbl)continue;
-          let ch;
-          if(style===0){ch=(dr+dc)%2===0?'+':'·';}
-          else if(style===1){ch=BITS[(dr*(w-2)+dc)%BITS.length];}
-          else if(style===2){ch='▪';}
-          else if(style===3){ch=dc%2===1?SIG[(dr+dc)%8]:String(((dc-1)/2|0)%8);}
-          else if(dc===1){ch=LBLS[Math.floor(Math.random()*20)];}
-          else if(dc===2){ch=String(Math.floor(Math.random()*9)+1);}
-          else continue;
-          ce.lbl=ch;ce.marked=true;ce.dark=isdark;ce.time=t+0.02+dr*0.004+dc*0.001;
-        }
+
+  /* The keep-out box the wordmark occupies. Everything that draws asks
+   * this first, which is the whole reason the overlay can be busy at
+   * the edges without ever making the title hard to read. */
+  function inKeepout(x, y) {
+    var cx = W / 2, cy = H * 0.46;
+    return Math.abs(x - cx) < W * 0.34 && Math.abs(y - cy) < H * 0.24;
+  }
+
+  /* ── 1. dither wash ─────────────────────────────────────────────── */
+  // A 4x4 ordered Bayer matrix, painted once into an offscreen canvas
+  // and then blitted. Drawing ~20k dots a frame is what made the old
+  // overlay expensive; drawing them once and moving the result is free.
+  var BAYER = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5],
+  ];
+
+  /* Laid down once per size in WHITE and then re-tinted by compositing,
+   * because the accent moves and this does not: the mask is ~144k
+   * one-pixel fills at 1440x900, far too many to redraw eight times a
+   * second while a colour transition is running. `source-in` keeps the
+   * mask's alpha and swaps only the hue, so a re-tint is two full-canvas
+   * operations instead. */
+  function buildDither() {
+    var c = document.createElement("canvas");
+    c.width = Math.max(1, Math.floor(W));
+    c.height = Math.max(1, Math.floor(H));
+    var g = c.getContext("2d");
+    if (!g) { ditherMask = dither = null; return; }
+    g.fillStyle = "rgba(255,255,255,0.05)";
+    var step = 3;
+    for (var y = 0; y < H; y += step) {
+      for (var x = 0; x < W; x += step) {
+        var bx = (x / step) & 3, by = (y / step) & 3;
+        // Density falls off toward the centre so the wash frames the
+        // stage instead of veiling it.
+        var dx = (x - W / 2) / (W / 2), dy = (y - H / 2) / (H / 2);
+        var edge = Math.min(1, (dx * dx + dy * dy) * 0.9);
+        if (BAYER[by][bx] / 16 > edge * 0.55) continue;
+        g.fillRect(x, y, 1, 1);
       }
     }
-    const icIdx=placed.length-1;
-    for(let dr=1;dr<h-1;dr+=2){
-      if(ok(r0+dr,c0-1)){mark(r0+dr,c0,0b0100,bold,t,isdark);mark(r0+dr,c0-1,0b1000,false,t+0.004,isdark);icPins.push({r:r0+dr,c:c0-1,icIdx,t:t+0.004,dark:isdark});}
-      if(ok(r0+dr,c0+w)){mark(r0+dr,c0+w-1,0b1000,bold,t,isdark);mark(r0+dr,c0+w,0b0100,false,t+0.004,isdark);icPins.push({r:r0+dr,c:c0+w,icIdx,t:t+0.004,dark:isdark});}
-    }
-    for(let dc=1;dc<w-1;dc+=2){
-      if(ok(r0-1,c0+dc)){mark(r0,c0+dc,0b0010,bold,t,isdark);mark(r0-1,c0+dc,0b0001,false,t+0.004,isdark);icPins.push({r:r0-1,c:c0+dc,icIdx,t:t+0.004,dark:isdark});}
-      if(ok(r0+h,c0+dc)){mark(r0+h-1,c0+dc,0b0001,bold,t,isdark);mark(r0+h,c0+dc,0b0010,false,t+0.004,isdark);icPins.push({r:r0+h,c:c0+dc,icIdx,t:t+0.004,dark:isdark});}
-    }
+    ditherMask = c;
+    dither = document.createElement("canvas");
+    dither.width = c.width;
+    dither.height = c.height;
+    ditherTint = "";
+    tintDither();
   }
-  const N_STAMP=12+Math.floor(Math.random()*8);
-  for(let si=0;si<N_STAMP;si++){
-    const kind=Math.floor(Math.random()*4);
-    const sh=kind===1?1:3+Math.floor(Math.random()*(kind===0?6:4));
-    const sw=kind===1?8+Math.floor(Math.random()*14):5+Math.floor(Math.random()*9);
-    const sr=1+Math.floor(Math.random()*(ccRows-sh-2)), sc=1+Math.floor(Math.random()*(ccCols-sw-2));
-    const st=kTime(sr+sh/2,sc+sw/2)+0.10, sdark=Math.random()<0.35;
-    for(let dr=0;dr<sh;dr++)for(let dc=0;dc<sw;dc++){
-      if(!ok(sr+dr,sc+dc))continue;
-      const ce=cc(sr+dr,sc+dc);if(ce.marked)continue;
-      let ch;
-      if(kind===0){ch='01'[(dr^dc)&1];if(dc%4===3)ch='·';}
-      else if(kind===1){ch=dc%2===0?'▪':'·';}
-      else if(kind===2){ch='0123456789ABCDEF'[Math.floor(Math.random()*16)];if(dc%3===2)ch='·';}
-      else{ch=(dr+dc)%2===0?'╬':'·';}
-      ce.lbl=ch;ce.marked=true;ce.dark=sdark;ce.time=st+dr*0.005+dc*0.001;
-    }
-  }
-  const N_BUS=7+Math.floor(Math.random()*6);
-  for(let bi=0;bi<N_BUS;bi++){
-    const horiz=Math.random()<0.55, nLines=2+Math.floor(Math.random()*3), len=8+Math.floor(Math.random()*18);
-    const br=1+Math.floor(Math.random()*(ccRows-nLines-1)), bc=1+Math.floor(Math.random()*(ccCols-len-1));
-    const bt=kTime(br+nLines/2,bc+len/2)+0.06, bdark=Math.random()<0.3;
-    for(let li=0;li<nLines;li++){
-      if(horiz)routeH(br+li,bc,bc+len,false,bt+li*0.008,bdark);
-      else routeV(br,br+len,bc+li,false,bt+li*0.008,bdark);
-    }
-  }
-  const usedPins=new Set(), shuffled=[...icPins].sort(()=>Math.random()-0.5);
-  for(let i=0;i<shuffled.length;i++){
-    if(usedPins.has(i))continue;
-    const p=shuffled[i];let bestJ=-1,bestD=30;
-    for(let j=0;j<shuffled.length;j++){
-      if(j===i||usedPins.has(j)||shuffled[j].icIdx===p.icIdx)continue;
-      const d=Math.abs(p.r-shuffled[j].r)+Math.abs(p.c-shuffled[j].c);
-      if(d<bestD&&d>2){bestD=d;bestJ=j;}
-    }
-    if(bestJ>=0){const q=shuffled[bestJ];routeL(p.r,p.c,q.r,q.c,false,Math.min(p.t,q.t)+0.025,p.dark||q.dark);usedPins.add(i);usedPins.add(bestJ);}
-  }
-  const allW=[];
-  for(let i=0;i<shuffled.length;i++){
-    if(usedPins.has(i))continue;
-    const p=shuffled[i];if(!ok(p.r,p.c))continue;
-    allW.push({r:p.r,c:p.c,dir:Math.floor(Math.random()*4),bold:false,dark:p.dark||false,maxLen:4+Math.floor(Math.random()*16),t:p.t+0.05,straight:0,minSt:3});
-  }
-  const N_EXTRA=80+Math.floor(Math.random()*50);
-  for(let i=0;i<N_EXTRA;i++){const r=Math.floor(Math.random()*ccRows),c=Math.floor(Math.random()*ccCols);allW.push({r,c,dir:Math.floor(Math.random()*4),bold:false,dark:false,maxLen:6+Math.floor(Math.random()*18),t:kTime(r,c)+0.05,straight:0,minSt:3});}
-  let step=0;const MAX=14000;
-  while(allW.length&&step<MAX){
-    step++;
-    for(let wi=allW.length-1;wi>=0;wi--){
-      const w=allW[wi];w.t+=0.00008;w.straight++;
-      if(w.straight>=w.minSt){const rn=Math.random();if(rn<0.24){w.dir=(w.dir+1)&3;w.straight=0;}else if(rn<0.48){w.dir=(w.dir+3)&3;w.straight=0;}}
-      const nr=w.r+DY[w.dir],nc=w.c+DX[w.dir];
-      if(!ok(nr,nc)){w.dir=(w.dir+(Math.random()<.5?1:3))&3;w.straight=0;continue;}
-      mark(w.r,w.c,MY[w.dir],w.bold,kTime(w.r,w.c)+w.t,w.dark);
-      mark(nr,nc,OPP[w.dir],w.bold,kTime(nr,nc)+w.t,w.dark);
-      w.r=nr;w.c=nc;
-      if(--w.maxLen<=0){allW.splice(wi,1);continue;}
-      if(Math.random()<0.018&&w.straight>3){const bd=(w.dir+(Math.random()<.5?1:3))&3;allW.push({r:w.r,c:w.c,dir:bd,bold:false,dark:w.dark,maxLen:4+Math.floor(Math.random()*12),t:w.t,straight:0,minSt:3});}
-    }
-    if(step%500===0&&step<MAX*.7){const r=Math.floor(Math.random()*ccRows),c=Math.floor(Math.random()*ccCols);allW.push({r,c,dir:Math.floor(Math.random()*4),bold:false,dark:false,maxLen:8+Math.floor(Math.random()*22),t:kTime(r,c),straight:0,minSt:3});}
-  }
-  for(let r=0;r<ccRows;r++)for(let c=0;c<ccCols;c++){
-    const ce=cc(r,c);if(!ce.marked)continue;
-    const bits=ce.rlud&0xF,n=(bits>>3&1)+(bits>>2&1)+(bits>>1&1)+(bits&1);
-    if(n>=3&&Math.random()<0.25)ce.via=VIAS[Math.floor(Math.random()*VIAS.length)];
-    if(n===2&&Math.random()<0.04&&!ce.lbl)ce.lbl=LBLS[20+Math.floor(Math.random()*13)];
-  }
-  let mx=0;for(const ce of ccGrid)if(ce.marked&&ce.time>mx)mx=ce.time;
-  if(mx>0)for(const ce of ccGrid)if(ce.marked)ce.time/=mx;
-  for(let r=0;r<ccRows;r++)for(let c=0;c<ccCols;c++){const ce=ccGrid[r*ccCols+c];ce._x=c*CC+CC*.5;ce._y=r*CC+CC*.62;}
-  return ccGrid.filter(ce=>ce.marked).sort((a,b)=>a.time-b.time);
-}
 
-function buildCircuits(){
-  ccSortedA=buildOneLayer(); ccSortedB=buildOneLayer();
-  ccSortedC=buildOneLayer(); ccSortedD=buildOneLayer();
-}
-
-function drawCircuits(sorted,prog,ca,cb,bgColor){
-  ctx.font=CFONT;ctx.textAlign='center';ctx.textBaseline='middle';
-  const useBold=prog>0.40,useVia=prog>0.68;let cur=null;
-  for(const ce of sorted){
-    if(ce.time>prog)break;
-    const col=ce.dark?cb:ca;
-    if(bgColor&&col===bgColor)continue;
-    if(col!==cur){ctx.fillStyle=cur=col;}
-    if(ce.lbl){ctx.fillText(ce.lbl,ce._x,ce._y);continue;}
-    ctx.fillText((useBold&&ce.bold?BOLD:THIN)[ce.rlud&0xF]||'\xB7',ce._x,ce._y);
-    if(useVia&&ce.via)ctx.fillText(ce.via,ce._x,ce._y);
+  function tintDither() {
+    if (!ditherMask || !dither || ditherTint === ACID) return;
+    ditherTint = ACID;
+    var g = dither.getContext("2d");
+    if (!g) return;
+    g.clearRect(0, 0, dither.width, dither.height);
+    g.globalCompositeOperation = "source-over";
+    g.drawImage(ditherMask, 0, 0);
+    g.globalCompositeOperation = "source-in";
+    g.fillStyle = "rgb(" + ACID + ")";
+    g.fillRect(0, 0, dither.width, dither.height);
+    g.globalCompositeOperation = "source-over";
   }
-}
 
-const PX=[{sz:16,t0:0.10,t1:.46},{sz:8,t0:0.13,t1:.74},{sz:4,t0:0.16,t1:1}];
-let pxBlocks,pxBlocksB,pxGlitch,BrightFn,BrightFn2;
-const BrightPool=[];
+  /* ── 2. registers ───────────────────────────────────────────────── */
+  // Short columns of hex that retype one character at a time. They sit
+  // in the outer margins only, and each holds its value for a while
+  // before changing, so they read as instrumentation and not as rain.
+  var registers = [];
 
-function brightEarth(nx,ny){const ed=Math.sqrt((nx-.5)**2+((ny-.2)*1.5)**2);const earth=Math.exp(-ed*ed/0.052)*.88;const md=Math.sqrt((nx-.5)**2*.85+(ny-1.0)**2);const moon=md<0.9?Math.pow(Math.max(0,1-md/0.9),0.35)*.7:0;const s=Math.sin(nx*2311+ny*4271)*.5+.5;return Math.min(1,earth+moon+(s>.984?.5:0));}
-function brightCross(nx,ny){const cx=Math.abs(nx-.5),cy=Math.abs(ny-.5);return Math.min(1,Math.max(0,1-Math.min(cx,cy)*9)*.9+Math.exp(-(cx*cx+cy*cy)*28)*.95);}
-function brightVortex(nx,ny){const dx=nx-.5,dy=ny-.5,r=Math.sqrt(dx*dx+dy*dy),a=Math.atan2(dy,dx),sp=Math.pow(Math.max(0,1-r*1.6),.5);return Math.min(1,sp+(Math.sin(a*5-r*12)*.5+.5)*.6*sp);}
-function brightRings(nx,ny){const dx=nx-.5,dy=ny-.5,r=Math.sqrt(dx*dx+dy*dy*1.3);return Math.pow(Math.max(0,Math.sin(r*18+.4)*.5+.5),1.5)*.92;}
+  function seedRegisters() {
+    registers = [];
+    if (reduce) return;
+    var n = Math.max(4, Math.round(W / 190));
+    for (var i = 0; i < n; i++) {
+      var left = Math.random() < 0.5;
+      registers.push({
+        x: left
+          ? 34 + Math.random() * Math.max(10, W * 0.17)
+          : W - 34 - Math.random() * Math.max(10, W * 0.17),
+        y: 90 + Math.random() * Math.max(10, H - 220),
+        len: 3 + Math.floor(Math.random() * 5),
+        val: [],
+        next: Math.random() * 1400,
+      });
+      var reg = registers[registers.length - 1];
+      for (var k = 0; k < reg.len; k++) {
+        reg.val.push(
+          HEX[(Math.random() * 16) | 0] + HEX[(Math.random() * 16) | 0]
+          + HEX[(Math.random() * 16) | 0] + HEX[(Math.random() * 16) | 0]);
+      }
+    }
+  }
 
-const IMG_SKULL="data:image/jpeg;base64,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";
-const IMG_HERO="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD//gAQTGF2YzYyLjI4LjEwMQD/2wBDAA4KCw0LCQ4NDA0QDw4RFiQXFhQUFiwgIRokNC43NjMuMjI6QVNGOj1OPjIySGJJTlZYXV5dOEVmbWVabFNbXVn/2wBDAQ8QEBYTFioXFypZOzI7WVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVn/wAARCABEAHgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDhYyF7A8d6VwAeAKgLEdKXeSeeau4rCEjcK6TzNL1TTrW2USpdxRhFIQKrOQB8x9MiuZqaEAOp9xUOHMKSvbyJL2zksrh4ZShZDglWyOmaq1ekj3ybgwwxxn0rRn8MyfZ/tFrcxXa7tu2EE0NqOkmOU4q1zAopxTZkN1FN70ymrEjj9wn1qOpX5gT61EKEJC4xSUGpYUO4P90Kc80xk9lbwMS90zqmMrsxkn3zRdy2zEi33FeOWUA1HMxl+X+6c59ai2Ed6AW4yilNFIQh60ClPWigYlORucZpBTh7U7ha5YWTauOvBGD2p8GoX1qmy3upo0zbarYGfWoUKjOfSmM2Bmqkk1qR6jCxJJY5JPU02ikqCyZ/9QlRVNIjC2jYqQCeCRwahIx9aEJbCd/WpEduhY4pgpc0xllFyOKHTAznvUccwXr/ACp0swbgfyq7qxGtyF6KaTRWZQHrSqCxwoJPoKQ9aASpypIPqKYGnDawx6dPLLcxiRSNsJyGfp0rODkM23gN2pCzN95ifqaAKVilKS6khI24xz65qI07PtTcGhDm7ig4p5bK/Qce1R4p4UkYHU0McG9jVkkuJNFtEljk8hSSjHoTz0rM3opwYiPbNXLmK9h0u1klZxbMxEY35Gee3as923tuIxSjaxjCWmnmK7hmBUbR780zNLRVF3uFFFFAgope1FIAPWkoPWjrQMKXNIRiigBQcUlAoNABTg2MY6im0UAnY0ZbUnToLiSaMiQnCK/zKeeo7VS2qkmJAxXH8NR9896mSUMNsh98k0LzErrcWaAKN0Zyo685NQYpySvGCEYqM0Eljk8k02MbiinU3FIGgNFKTRQJiHqaKKKAA0UUUAFL2oooGhKKKKBDifkUYH1ptFFAIKKKKACjNFFAwooooEf/2Q==";
+  function drawRegisters(dt) {
+    ctx.font = FONT;
+    ctx.textBaseline = "top";
+    for (var i = 0; i < registers.length; i++) {
+      var r = registers[i];
+      r.next -= dt;
+      if (r.next <= 0) {
+        var k = (Math.random() * r.len) | 0;
+        r.val[k] = HEX[(Math.random() * 16) | 0] + HEX[(Math.random() * 16) | 0]
+          + HEX[(Math.random() * 16) | 0] + HEX[(Math.random() * 16) | 0];
+        r.next = 260 + Math.random() * 1500;
+      }
+      for (var j = 0; j < r.len; j++) {
+        var y = r.y + j * (CELL + 1);
+        if (y > H - 40 || inKeepout(r.x, y)) continue;
+        ctx.fillStyle = "rgba(" + ACID + "," + (j === 0 ? 0.34 : 0.17) + ")";
+        ctx.fillText(r.val[j], r.x, y);
+      }
+    }
+  }
 
-function makeImgBrightness(dataUri){
-  return new Promise(resolve=>{
-    const img=new Image();
-    img.onload=()=>{
-      const SW=img.naturalWidth,SH=img.naturalHeight;
-      const oc=Object.assign(document.createElement('canvas'),{width:SW,height:SH});
-      oc.getContext('2d').drawImage(img,0,0,SW,SH);
-      const d=oc.getContext('2d').getImageData(0,0,SW,SH).data;
-      resolve((nx,ny)=>{const px=Math.min(SW-1,Math.floor(nx*SW)),py=Math.min(SH-1,Math.floor(ny*SH)),i=(py*SW+px)*4;return(d[i]*.299+d[i+1]*.587+d[i+2]*.114)/255;});
-    };
-    img.onerror=()=>resolve(null);
-    img.src=dataUri;
+  /* ── 3. scan sweep ──────────────────────────────────────────────── */
+  // One bar, travelling down, lighting the dither it crosses. This is
+  // the layer doing most of the work: a slow global motion reads as a
+  // machine reading the page, and it costs two fillRects.
+  var sweep = { y: -200, speed: 0.19 };
+
+  function drawSweep(dt) {
+    if (reduce) return;
+    sweep.y += sweep.speed * dt;
+    if (sweep.y > H + 220) sweep.y = -220;
+    var band = 150;
+    var g = ctx.createLinearGradient(0, sweep.y - band, 0, sweep.y + band);
+    g.addColorStop(0, "rgba(" + ACID + ",0)");
+    g.addColorStop(0.5, "rgba(" + ACID + ",0.055)");
+    g.addColorStop(1, "rgba(" + ACID + ",0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, sweep.y - band, W, band * 2);
+    ctx.fillStyle = "rgba(" + ACID + ",0.16)";
+    ctx.fillRect(0, sweep.y, W, 1);
+  }
+
+  /* ── 4. bursts ──────────────────────────────────────────────────── */
+  // A packet arriving: a small block of glyphs that types on, holds,
+  // and decays. Capped hard, because the failure mode of this kind of
+  // effect is always "more of it".
+  var bursts = [];
+  var MAX_BURSTS = 5;
+  var nextBurst = 600;
+
+  function spawnBurst() {
+    var w = 3 + ((Math.random() * 7) | 0);
+    var h = 1 + ((Math.random() * 4) | 0);
+    var x, y, tries = 0;
+    do {
+      x = 40 + Math.random() * Math.max(10, W - 80 - w * CELL);
+      y = 70 + Math.random() * Math.max(10, H - 170 - h * CELL);
+      tries++;
+    } while (tries < 14 && (inKeepout(x, y)
+      || inKeepout(x + w * CELL, y + h * CELL)));
+    if (inKeepout(x, y)) return;
+    var chars = [];
+    for (var i = 0; i < w * h; i++) {
+      chars.push(GLYPHS[(Math.random() * GLYPHS.length) | 0]);
+    }
+    bursts.push({ x: x, y: y, w: w, h: h, chars: chars, age: 0,
+                  life: 900 + Math.random() * 1400 });
+  }
+
+  function drawBursts(dt) {
+    if (reduce) return;
+    nextBurst -= dt;
+    if (nextBurst <= 0 && bursts.length < MAX_BURSTS) {
+      spawnBurst();
+      nextBurst = 420 + Math.random() * 1500;
+    }
+    ctx.font = FONT;
+    ctx.textBaseline = "top";
+    for (var i = bursts.length - 1; i >= 0; i--) {
+      var b = bursts[i];
+      b.age += dt;
+      if (b.age > b.life) { bursts.splice(i, 1); continue; }
+      var t = b.age / b.life;
+      // type on over the first quarter, hold, fade over the last third
+      var shown = t < 0.25
+        ? Math.ceil((t / 0.25) * b.chars.length)
+        : b.chars.length;
+      var alpha = t > 0.66 ? (1 - (t - 0.66) / 0.34) : 1;
+      for (var k = 0; k < shown; k++) {
+        var cxk = b.x + (k % b.w) * CELL;
+        var cyk = b.y + ((k / b.w) | 0) * CELL;
+        if (inKeepout(cxk, cyk)) continue;
+        ctx.fillStyle = "rgba(" + ACID + "," + (0.4 * alpha).toFixed(3) + ")";
+        ctx.fillText(b.chars[k], cxk, cyk);
+      }
+      // a bracket around the packet, which is what makes it look framed
+      // by something rather than sprayed on
+      ctx.strokeStyle = "rgba(" + ACID + "," + (0.2 * alpha).toFixed(3) + ")";
+      ctx.lineWidth = 1;
+      var bw = b.w * CELL, bh = b.h * CELL;
+      if (!inKeepout(b.x, b.y)) {
+        ctx.beginPath();
+        ctx.moveTo(b.x - 4, b.y + 5); ctx.lineTo(b.x - 4, b.y - 4);
+        ctx.lineTo(b.x + 5, b.y - 4);
+        ctx.moveTo(b.x + bw + 3, b.y + bh + 2);
+        ctx.lineTo(b.x + bw + 3, b.y + bh + 7);
+        ctx.lineTo(b.x + bw - 6, b.y + bh + 7);
+        ctx.stroke();
+      }
+    }
+  }
+
+  /* ── 5. the storm ───────────────────────────────────────────────── */
+
+  var STORM = {
+    enabled: true,
+    pitch: 34,        // block size in px — "thick", not a mosaic filter
+    tone: 0.45,       // the single tone, as a fraction of full accent
+    // Two long dwells with a short move between them. The page should
+    // spend most of its time being one of two things — the video, or a
+    // flat colour — rather than permanently in transit between them.
+    rest: 7000,       // dwell: video alone
+    fill: 1900,       // the front sweeps in, block by block
+    hold: 2500,       // dwell: one flat colour, whole screen
+    melt: 1900,       // the same front sweeps out, video underneath
+    turnAt: 0.3,      // where in the hold the accent changes over
+  };
+
+  var storm = { cells: [], t: 0, cols: 0, rows: 0, turned: false };
+
+  /* Bilinear value noise on a coarse lattice. Straight from
+   * `docs/scatter_fx.html` — it is what turns a diagonal wipe into a
+   * ragged wavefront, and a wipe is the one thing this must not look
+   * like. */
+  function valueNoise(cols, rows, scale) {
+    var cg = Math.ceil(cols / scale) + 2, rg = Math.ceil(rows / scale) + 2;
+    var r = [], y, x;
+    for (y = 0; y < rg; y++) {
+      r[y] = [];
+      for (x = 0; x < cg; x++) r[y][x] = Math.random();
+    }
+    var out = [];
+    for (y = 0; y < rows; y++) {
+      out[y] = [];
+      for (x = 0; x < cols; x++) {
+        var fx = x / scale, fy = y / scale;
+        var x0 = Math.floor(fx), y0 = Math.floor(fy);
+        var tx = fx - x0, ty = fy - y0;
+        var top = r[y0][x0] + (r[y0][x0 + 1] - r[y0][x0]) * tx;
+        var bot = r[y0 + 1][x0] + (r[y0 + 1][x0 + 1] - r[y0 + 1][x0]) * tx;
+        out[y][x] = top + (bot - top) * ty;
+      }
+    }
+    return out;
+  }
+
+  /* Rebuilt every cycle, so no two storms sweep the same way. */
+  function buildStorm() {
+    var p = STORM.pitch;
+    storm.cols = Math.ceil(W / p);
+    storm.rows = Math.ceil(H / p);
+    if (storm.cols < 2 || storm.rows < 2) { storm.cells = []; return; }
+
+    var timing = valueNoise(storm.cols, storm.rows,
+                            Math.max(2, storm.cols / 5));
+    // Which way the wavefront travels, so it is not always top-left.
+    var dirX = Math.random() < 0.5 ? 1 : -1;
+    var dirY = Math.random() < 0.5 ? 1 : -1;
+    var wx = 0.35 + Math.random() * 0.3;
+
+    storm.cells = [];
+    for (var ry = 0; ry < storm.rows; ry++) {
+      for (var cx = 0; cx < storm.cols; cx++) {
+        var fx = dirX > 0 ? cx / storm.cols : 1 - cx / storm.cols;
+        var fy = dirY > 0 ? ry / storm.rows : 1 - ry / storm.rows;
+        var sweep = fx * wx + fy * (1 - wx);
+        // Squeezed to 0..0.82 before the jitter so that even the latest
+        // cell is fully in by the end of the fill — a storm that never
+        // quite closes is the one thing worse than one that does.
+        var t = sweep * 0.82 + (timing[ry][cx] - 0.5) * 0.26;
+        storm.cells.push({
+          x: cx * p, y: ry * p,
+          t: Math.max(0, Math.min(0.999, t)),
+        });
+      }
+    }
+  }
+
+  function drawStorm(dt) {
+    if (!STORM.enabled || reduce) return;
+    var S = STORM;
+    var span = S.rest + S.fill + S.hold + S.melt;
+    var was = storm.t;
+    storm.t = (storm.t + dt) % span;
+    if (storm.t < was) buildStorm();          // wrapped — new wavefront
+
+    var e = storm.t;
+    if (e < S.rest) {
+      setOpacity(0.85);
+      setCover(false);
+      storm.turned = false;
+      return;
+    }
+    e -= S.rest;
+
+    // Turn the accent over a little way into the hold. Not on the first
+    // frame of it: the fill's last blocks land on that frame, and a
+    // colour that changes while anything is still arriving shows the
+    // hand-over through the gap. A third of the way in, the screen has
+    // been solid for the better part of a second, and the 520ms CSS
+    // transition still finishes well before the melt starts.
+    if (!storm.turned && e >= S.fill + S.hold * S.turnAt) {
+      storm.turned = true;
+      accent = (accent + 1) % ACCENTS.length;
+      applyAccent();
+    }
+
+    // Tell the page when it is sitting on a solid field, so the copy can
+    // go white for it. Nothing in the same hue as the field can be read
+    // against it: a saturated colour tops out at a middling luminance,
+    // so accent-on-accent is about 2:1 however the tone is set, and
+    // darkening the field far enough to fix that stops it being a
+    // colour. White clears 4.5:1 against all three.
+    //
+    // Unlike the ink inversion this replaces, the trigger here is a
+    // phase boundary rather than an estimate of how much is covered —
+    // the field is flat and the fill is known to have finished, so there
+    // is no ambiguous middle for it to get wrong. Turned on just before
+    // the screen closes and off just after it opens, so the change is
+    // always hidden under a moving front.
+    setCover(e >= S.fill * 0.8 && e < S.fill + S.hold + S.melt * 0.2);
+
+    // `lo` and `hi` are the two edges of the band of the sweep that is
+    // currently up. That is the whole state — there is no brightness
+    // term, because the colour never changes.
+    //
+    // The band is what makes the storm arrive and leave in the SAME
+    // direction. On the way in the leading edge advances and the
+    // trailing edge stays home, so blocks accumulate behind the front.
+    // On the way out the trailing edge advances instead, so the same
+    // front runs across the screen a second time, this time lifting
+    // blocks off and letting the video back through. An earlier cut
+    // used one edge for both, which made the exit a reverse dissolve —
+    // it unwound back the way it came, instead of continuing.
+    var lo = 0, hi = 1;
+    if (e < S.fill) hi = e / S.fill;
+    else if (e >= S.fill + S.hold) lo = (e - S.fill - S.hold) / S.melt;
+    setOpacity(0.85 + 0.15 * Math.min(1, (hi - lo) * 3));
+
+    // One colour, one tone, and it stays that colour from the first
+    // block to the last. Three earlier cuts all failed by having more
+    // than one value on screen — a fixed palette that read as confetti,
+    // a per-block sample of the video that gave hundreds of near-identical
+    // greens, and a drain to black that meant the field was a different
+    // colour every second of the cycle.
+    var k = S.tone;
+    ctx.fillStyle = "rgb(" + ((acidPart(0) * k) | 0) + ","
+      + ((acidPart(1) * k) | 0) + "," + ((acidPart(2) * k) | 0) + ")";
+
+    // Overdrawn by a pixel so the blocks fuse. The point of the hold is
+    // that the screen is ONE colour, and any seam — even a rounding
+    // hairline off the device pixel ratio — turns it back into a grid.
+    var w = S.pitch + 1, i, c;
+    for (i = 0; i < storm.cells.length; i++) {
+      c = storm.cells[i];
+      if (c.t < lo || c.t > hi) continue;
+      ctx.fillRect(c.x, c.y, w, w);
+    }
+  }
+
+  /* The canvas rests at 0.85 so the quiet layers sit behind the hero
+   * rather than on top of it — but 15% of video bleeding through the
+   * blocks is the difference between "obscured" and "gone", and gone is
+   * the point of the hold. Ride the opacity up with the coverage. The
+   * ramp is x3 so it is at full well before the hold, which keeps the
+   * change hidden inside the fill instead of reading as the wash
+   * brightening. */
+  var covered = false;
+
+  function setCover(on) {
+    if (on === covered) return;
+    covered = on;
+    document.body.classList.toggle("fx-cover", on);
+  }
+
+  var opacity = -1;
+
+  function setOpacity(v) {
+    v = Math.round(v * 100) / 100;
+    if (v === opacity) return;
+    opacity = v;
+    cv.style.opacity = String(v);
+  }
+
+  /* ── loop ───────────────────────────────────────────────────────── */
+
+  var last = 0;
+
+  function frame(now) {
+    var dt = last ? Math.min(now - last, 60) : 16;
+    last = now;
+    readTheme(now);
+    tintDither();
+    ctx.clearRect(0, 0, W, H);
+    if (dither) ctx.drawImage(dither, 0, 0);
+    drawSweep(dt);
+    drawRegisters(dt);
+    drawBursts(dt);
+    drawStorm(dt);          // last: it is the only layer that occludes
+    requestAnimationFrame(frame);
+  }
+
+  var rt = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(rt);
+    rt = setTimeout(resize, 140);
   });
-}
 
-async function preloadBrightness(){
-  BrightPool.push(brightEarth,brightCross,brightVortex,brightRings);
-  for(const uri of [IMG_SKULL,IMG_HERO]){const fn=await makeImgBrightness(uri);if(fn)BrightPool.push(fn);}
-}
-
-function buildPixels(){
-  pxBlocks=[];
-  const bright=BrightFn||brightEarth;
-  for(const{sz,t0,t1}of PX){
-    const cols=Math.ceil(W/sz),rows=Math.ceil(H/sz),span=t1-t0;
-    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const br=bright((c+.5)/cols,(r+.5)/rows);const t=t0+span*(1-br*.94)+(Math.random()-.5)*.04;pxBlocks.push({x:c*sz,y:r*sz,sz,t:Math.max(0,Math.min(1,t))});}
-  }
-  pxBlocks.sort((a,b)=>a.t-b.t);
-  pxBlocksB=[];
-  const bright2=BrightFn2||brightCross;
-  for(const{sz,t0,t1}of PX){
-    const cols=Math.ceil(W/sz),rows=Math.ceil(H/sz),span=t1-t0;
-    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const br=bright2((c+.5)/cols,(r+.5)/rows);const t=t0+span*(1-br*.94)+(Math.random()-.5)*.04;pxBlocksB.push({x:c*sz,y:r*sz,sz,t:Math.max(0,Math.min(1,t))});}
-  }
-  pxBlocksB.sort((a,b)=>a.t-b.t);
-  const maxRows=Math.ceil(H/4)+8;
-  pxGlitch=new Float32Array(maxRows);
-  let i=0;
-  while(i<maxRows){const bh=1+Math.floor(Math.random()*12),extreme=Math.random()<0.12,mag=extreme?(30+Math.floor(Math.random()*32)):(2+Math.floor(Math.random()*22)),blocks=mag*(Math.random()<.5?1:-1);for(let j=0;j<bh&&i<maxRows;j++,i++)pxGlitch[i]=blocks;}
-}
-
-function drawPixels(blocks,prog,color){
-  const gAmt=Math.max(0,1-prog/0.72);ctx.fillStyle=color;
-  const epoch=Math.floor(Date.now()/190);
-  function prng(a,b){const x=Math.sin(a*127.1+b*311.7)*43758.5453;return x-Math.floor(x);}
-  for(const b of blocks){
-    if(b.t>prog)break;
-    const rowBand=Math.floor(b.y/b.sz),blockId=b.x/b.sz+rowBand*4096;
-    if(gAmt>0.05&&prng(epoch*3+5,blockId)<gAmt*0.18)continue;
-    const staticOff=Math.round(pxGlitch[rowBand]*gAmt)*b.sz,hasDyn=prng(epoch,rowBand)<0.12;
-    const dynOff=hasDyn?Math.round((prng(epoch+1,rowBand)-.5)*6*gAmt)*b.sz:0;
-    ctx.fillRect(((b.x+staticOff+dynOff)%W+W)%W,b.y,b.sz,b.sz);
-  }
-}
-
-const T_BUILD=5500,T_ASCII_OUT=1000,T_HOLD=350,T_DECOMP=5000,T_CIRCUIT_OUT=1000;
-const T_TOTAL=T_BUILD+T_ASCII_OUT+T_HOLD+T_DECOMP+T_CIRCUIT_OUT;
-let animId=null,t0=null;
-
-function tick(ts){
-  if(t0===null)t0=ts;
-  let e=ts-t0;
-  if(e>=T_TOTAL){run();return;}  // loop seamlessly
-  if(e<T_BUILD){
-    const p=e/T_BUILD;
-    ctx.fillStyle=BLACK;ctx.fillRect(0,0,W,H);
-    drawPixels(pxBlocks,p,LIME);
-    drawCircuits(ccSortedA,p,LIME,BLACK);
-    drawCircuits(ccSortedB,p,BLACK,LIME);
-  } else if((e-=T_BUILD)<T_ASCII_OUT){
-    const p=e/T_ASCII_OUT;
-    ctx.fillStyle=LIME;ctx.fillRect(0,0,W,H);
-    drawCircuits(ccSortedB,1-p,BLACK,LIME,LIME);
-  } else if((e-=T_ASCII_OUT)<T_HOLD){
-    ctx.fillStyle=LIME;ctx.fillRect(0,0,W,H);
-  } else if((e-=T_HOLD)<T_DECOMP){
-    const p=e/T_DECOMP;
-    ctx.fillStyle=LIME;ctx.fillRect(0,0,W,H);
-    drawPixels(pxBlocksB,p,LIME);
-    drawPixels(pxBlocks,p,BLACK);
-    drawCircuits(ccSortedD,p,BLACK,LIME);
-    drawCircuits(ccSortedC,p,LIME,BLACK);
-  } else {
-    e-=T_DECOMP;
-    const p=e/T_CIRCUIT_OUT;
-    ctx.fillStyle=LIME;ctx.fillRect(0,0,W,H);
-    drawPixels(pxBlocksB,1.0,LIME);
-    drawPixels(pxBlocks,1.0,BLACK);
-    drawCircuits(ccSortedC,1-p,LIME,BLACK,BLACK);
-  }
-  animId=requestAnimationFrame(tick);
-}
-
-function run(){
-  if(animId){cancelAnimationFrame(animId);animId=null;}
   resize();
-  BrightFn=BrightPool.length?BrightPool[Math.floor(Math.random()*BrightPool.length)]:brightEarth;
-  BrightFn2=BrightPool.length?BrightPool[Math.floor(Math.random()*BrightPool.length)]:brightCross;
-  buildCircuits();
-  buildPixels();
-  t0=null;
-  animId=requestAnimationFrame(tick);
-}
-
-window.addEventListener('load',async()=>{await preloadBrightness();run();});
-
+  applyAccent();
+  if (reduce) {
+    // One static pass: the wash and nothing that moves.
+    ctx.clearRect(0, 0, W, H);
+    if (dither) ctx.drawImage(dither, 0, 0);
+  } else {
+    requestAnimationFrame(frame);
+  }
 })();
