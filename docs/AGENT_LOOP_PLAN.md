@@ -1,6 +1,6 @@
 # The agentic improvement loop — plan
 
-**Status:** proposal, not yet built. Written 2026-08-30.
+**Status:** partly built (2026-08-31). Written 2026-08-30.
 **Scope:** what an attendee does between "I forked V12" and "my agent is
 better than it was", and what we should build so that round trip is
 minutes rather than an afternoon.
@@ -8,6 +8,60 @@ minutes rather than an afternoon.
 This is the design document for Phase 7.5 + Phase 8 in
 `docs/HACKATHON_BUILD_PLAN.md`. It supersedes the sketch there; that
 table should point here.
+
+---
+
+## What is built, as of 2026-08-31
+
+The attendee-facing guide is **`docs/HACKATHON_AGENTS.md`** — mint,
+improve, score, publish, league. Read that first; this document is the
+reasoning behind it.
+
+| Piece | Where | State |
+|---|---|---|
+| One front door | `scripts/soc.py` | built — `new`, `list`, `suite`, `why`, `doctor`, `push`, `league` |
+| Fork registration without conflicts | `orchestrator_2/agent_manifest.py` | built — directory discovery over `agent.json` |
+| The scenario suite | `evals/battles/` | built — 9 boards x 5 rungs x 4 loadouts, offline |
+| Verdict after an edit | `soc suite` | built — 45 turns in ~1s against the heuristic |
+| "Why did it do that" | `soc why <board> [agent]` | built — question, canonical, V12's baseline, then every move against every check |
+| Per-run cards | `soc suite --cards DIR` | built |
+| Submission | `soc push` | built — enforces agent-only diffs |
+| League | `soc league` | built — entrants are discovered, fallback runs flagged |
+
+**Time-to-verdict, measured:** ~1s for the whole suite against the
+heuristic, so the target in §1 is met for the offline case. An LLM agent
+is bounded by its own latency, which is why `--board` and `--up-to`
+exist — the common inner-loop command is one board at one rung.
+
+### Three things the build changed about the plan
+
+1. **Registration had to move before anything else.** The plan assumed
+   forks register in `binding_registry.py`. With forty teams that makes
+   every push conflict with every other push and turns collation into
+   forty merges. Discovery over `agent.json` came first because `soc
+   push` and the league both depend on an agent being exactly one
+   directory.
+2. **The boards are constructed, not restored.** The nine documented
+   redsign battles live in Snowflake snapshots that are not in git, so
+   they cannot be restored offline — and a frozen blob has exactly one
+   difficulty anyway. They are rebuilt from their documented geometry
+   via `WorldBuilder`, which is what makes the difficulty ladder
+   possible at all. The trade: documented shape, not byte-exact state.
+3. **Scoring a fallback as a score is a real hazard.** A V12 fork with
+   no credentials scored 86% on its internal safety net and outranked
+   the heuristic. Runs now record whether the model was reached, and
+   both the report and the league say so loudly.
+
+### Still open
+
+- **`two_seams_choose_one` is red** (`tests/test_eval_scenarios.py`), a
+  pre-existing heuristic regression unrelated to this work. It should be
+  green before attendees are told to trust scenario results.
+- **No LLM verification.** Everything above was exercised against the
+  offline heuristic. The V12 path needs one real run with a PAT before
+  the day.
+- **The prompt-diff idea in §5 is not built.** `soc why` covers the
+  "what did it see" half; comparing two runs' cards is still manual.
 
 ---
 

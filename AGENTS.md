@@ -46,10 +46,14 @@ This file is always-on context for AI agents; keep it lean and current.
   sessions). Playing/testing against `RED_HARVEST` / `RED_HARVEST_LITE`
   needs none of this — `SOC_BACKEND=memory` is fully offline.
 - `docs/HACKATHON_BUILD_PLAN.md` — **read this first if you're picking
-  up work on this repo.** This repo is mid-port from a larger dev repo
-  into a hackathon-ready distribution; this doc tracks phase status,
-  what's already decided, and a concrete inventory for the next
-  pending phase. Update its status table as phases complete.
+ up work on this repo.** This repo is mid-port from a larger dev repo
+ into a hackathon-ready distribution; this doc tracks phase status,
+ what's already decided, and a concrete inventory for the next
+ pending phase. Update its status table as phases complete.
+- `docs/HACKATHON_AGENTS.md` — the attendee-facing guide for the day:
+ mint a fork, improve it, score it, publish it, league. Its companion
+ `docs/AGENT_LOOP_PLAN.md` is the reasoning behind the tooling and
+ tracks what's built vs still open.
 
 ## Run & test
 
@@ -118,7 +122,15 @@ sea_of_colours/
   snowpark/      Storage-agnostic engine wrappers (engine.py) + backend.py + stores
   agent/         RED_HARVEST heuristic + Cortex AI agent runtime/invoker
   evals/         Scenario/eval harness
+    battles/     The redsign battles — 9 captured boards x 5 difficulty rungs
+                 x 4 weapon loadouts, all offline. The hackathon's scoring
+                 suite; see its README.md.
   orchestrator_2/  Agent orchestration + the plug-in contract — see its README.md
+    agent_manifest.py  A fork is any harnesses/ dir holding an agent.json,
+                 discovered at import (v1.39). Registering one edits nothing
+                 shared — that's what lets a room of teams share one repo,
+                 and makes the league a directory scan. Don't add a fork to
+                 binding_registry.py.
     harnesses/tabula_v12/  V12 — the shipped LLM agent, and the one attendees
                            fork. Its README.md is the fork guide (pipeline, the
                            two deliberate gaps, where to change what);
@@ -130,6 +142,9 @@ server/
   app.py         FastAPI thin proxy (/, /api/game/*); static mounted no-cache
   static/        Web UI — app.js, styles.css, station.js, index.html
 scripts/         deploy_soc_schema.py, run_season*.py, run_evals.py, run_battery.py
+  soc.py         the hackathon front door — new / list / suite / why / doctor /
+                 push / league. One entry point on purpose; point attendees
+                 (and their coding agents) here rather than at four scripts.
   films/         the tutorial film rig — self-contained, see its README.md
 snowflake/       SOC_* schema, views, procedures, agent SQL
 ```
