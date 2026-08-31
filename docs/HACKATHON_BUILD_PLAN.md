@@ -99,7 +99,7 @@ weapons decision for the attendee to make.
 | 5 | Finish/polish the interactive manual (`manual/`) | pending |
 | 6 | Hackathon Guide (onboarding, sibling to `manual/`) | 🟡 first cut landed (2026-08-25) — `guide/index.html`; revisit after Phases 3/4 change the install story and the orbit |
 | 7 | In-game read-only agent advisor — invoke V12/RED_HARVEST mid-turn from the UI: reasoning card (readable + txt dump), magenta board overlay, adopt-into-your-policy | 🟢 substantially done (2026-08-26, **v1.19**) — **ASK V12**: `GET/POST /api/game/{id}/advisor` drives the harness with `submit=False` (its existing read-only path, so no memory is written and the game is untouched); night/planning turns only, gated on a Snowflake-backed game plus Cortex credentials; timer, cancel, and force-cancel on submit; plan/thinking tabs; a numbered violet board overlay on hover; adopt-into-your-policy. `tests/test_advisor_endpoint.py`. **Remaining:** RED_HARVEST can't be asked (V12 only), and there's no txt dump of the reasoning |
-| 7.5 | **The agent iteration loop** — make the turn-replay suite something an attendee can actually use to improve a fork | pending |
+| 7.5 | **The agent iteration loop** — make the turn-replay suite something an attendee can actually use to improve a fork. Designed in `docs/AGENT_LOOP_PLAN.md` | pending |
 | 8 | Drift-testing alarms + PR-based submission workflow doc; "add weapons to V12" as the flagship worked example | pending |
 
 Sequencing: 1→1.5→2→3 is the critical path. 1.5 must land **before** 2:
@@ -1824,6 +1824,14 @@ menu to pick. That's a far better motivator for "go give it weapons"
 than a paragraph in a README.
 
 ## Phase 7.5 — The agent iteration loop
+
+> **See `docs/AGENT_LOOP_PLAN.md` (v1.37).** That is now the design
+> document for this phase and for Phase 8's submission workflow: the
+> three-speed loop (pinned turn / scenario suite / season), the `soc`
+> façade, the semantic card diff, and a build order. The notes below are
+> the reasoning it was written from and still stand — in particular the
+> card-vs-card judgement, which the plan agrees is the highest-value
+> single item.
 
 **Decided: bring the dev repo's turn-replay suite across in Phase 1.5,
 then do real work on it here.** It arrives as-is (dev tooling, written
