@@ -28,7 +28,7 @@
  * What is new is the mark: that prototype drew 5px characters, this
  * draws blocks big enough to actually occlude.
  *
- * ONE COLOUR, ONE TONE, START TO FINISH. Every block is the same flat
+ * ONE COLOUR, ONE TONE, START TO FINISH. Every mark is the same flat
  * dimmed accent and it never changes value, so the middle of the cycle
  * is literally one colour edge to edge. Which colour depends on where
  * the page's own red → green → blue cycle has got to (see `--acid` in
@@ -40,8 +40,22 @@
  * read as confetti; a
  * per-block sample of the video, which gave hundreds of near-identical
  * greens; and a drain to black, which made the field a different colour
- * every second. There is no gutter between blocks either — they are
- * overdrawn so they fuse.
+ * every second.
+ *
+ * What DOES vary is coverage, and it varies through the board's own
+ * ramp: ░ ▒ ▓ █, the same glyphs `catTierGlyph` draws a cell's purity
+ * tier with (v1.38). A cell the front has just reached comes up light,
+ * thickens through medium and dark as the front moves past it, and only
+ * then goes solid — so the sweep arrives as a stipple that densifies
+ * rather than as blocks switching on. Each cell climbs at its OWN rate,
+ * which is the difference between a ragged shading front and four clean
+ * stripes of ░▒▓█ marching across in formation.
+ *
+ * The grid is measured off the font rather than chosen: `measureCell`
+ * asks for █'s ink box and uses exactly that, so a screen of █ is
+ * seamless and the hold really is one flat colour. Get that wrong by a
+ * pixel and the grid reappears as hairlines. The solid level is drawn
+ * as a rect, not a glyph — visually identical, and it cannot round.
  *
  * Staying dark is also what keeps the page legible with no help from
  * anywhere else: acid type sits on a dark field the whole way through,
@@ -349,7 +363,7 @@
 
   var STORM = {
     enabled: true,
-    pitch: 34,        // block size in px — "thick", not a mosaic filter
+    size: 52,         // block glyph size in px — "thick", not a mosaic
     tone: 0.45,       // the single tone, as a fraction of full accent
     // Two long dwells with a short move between them. The page should
     // spend most of its time being one of two things — the video, or a
@@ -362,6 +376,90 @@
   };
 
   var storm = { cells: [], t: 0, cols: 0, rows: 0, turned: false };
+
+  /* The board's purity ramp, minus the solid — that level is a rect. */
+  var SHADES = ["\u2591", "\u2592", "\u2593"];
+  var FULL = "\u2588";
+  var SHADE_FONT = '"JetBrains Mono", ui-monospace, "Cascadia Code", monospace';
+
+  /* How long a cell takes to climb from first light to solid, as a
+   * fraction of the whole sweep. The spread between these two is what
+   * makes the front ragged in DEPTH as well as in shape: a cell with a
+   * short ramp snaps to solid almost behind the edge, one with a long
+   * ramp is still at ▒ when its neighbours are full. */
+  var RAMP_MIN = 0.09, RAMP_MAX = 0.30;
+
+  var cellW = 0, cellH = 0, cellBase = 0;
+  var shadeMask = null, shadeAtlas = null, shadeTint = "";
+
+  /* Take the grid from the font, not from a round number. █ is defined
+   * to fill its character cell, so its ink box IS the tile that tiles;
+   * anything else leaves seams at full coverage, and the whole point of
+   * the hold is that there is no grid left to see. Fonts disagree about
+   * block metrics, so this has to be asked at runtime rather than
+   * assumed from the size. */
+  function measureCell() {
+    ctx.save();
+    ctx.font = STORM.size + "px " + SHADE_FONT;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    var m = ctx.measureText(FULL);
+    var asc = m.actualBoundingBoxAscent;
+    var desc = m.actualBoundingBoxDescent;
+    ctx.restore();
+    // Fall back to typical monospace proportions if the browser will
+    // not give us an ink box.
+    if (!(asc > 0) && !(desc > 0)) { asc = STORM.size * 0.8; desc = 0; }
+    cellW = Math.max(6, Math.round(m.width || STORM.size * 0.6));
+    cellH = Math.max(6, Math.round(asc + desc));
+    cellBase = Math.round(asc);
+  }
+
+  /* One tile per shade, white, built once per size and re-tinted by
+   * compositing — same trick as the dither wash, and for the same
+   * reason: the accent moves and glyph rasterisation is far too slow to
+   * repeat for ~800 cells every frame. Blitting a tile is not. */
+  function buildShades() {
+    if (!cellW || !cellH) { shadeMask = shadeAtlas = null; return; }
+    var c = document.createElement("canvas");
+    c.width = cellW * SHADES.length;
+    c.height = cellH;
+    var g = c.getContext("2d");
+    if (!g) { shadeMask = shadeAtlas = null; return; }
+    g.font = STORM.size + "px " + SHADE_FONT;
+    g.textAlign = "left";
+    g.textBaseline = "alphabetic";
+    g.fillStyle = "#fff";
+    for (var i = 0; i < SHADES.length; i++) {
+      g.fillText(SHADES[i], i * cellW, cellBase);
+    }
+    shadeMask = c;
+    shadeAtlas = document.createElement("canvas");
+    shadeAtlas.width = c.width;
+    shadeAtlas.height = c.height;
+    shadeTint = "";
+    tintShades();
+  }
+
+  function fieldColour() {
+    var k = STORM.tone;
+    return "rgb(" + ((acidPart(0) * k) | 0) + ","
+      + ((acidPart(1) * k) | 0) + "," + ((acidPart(2) * k) | 0) + ")";
+  }
+
+  function tintShades() {
+    if (!shadeMask || !shadeAtlas || shadeTint === ACID) return;
+    shadeTint = ACID;
+    var g = shadeAtlas.getContext("2d");
+    if (!g) return;
+    g.clearRect(0, 0, shadeAtlas.width, shadeAtlas.height);
+    g.globalCompositeOperation = "source-over";
+    g.drawImage(shadeMask, 0, 0);
+    g.globalCompositeOperation = "source-in";
+    g.fillStyle = fieldColour();
+    g.fillRect(0, 0, shadeAtlas.width, shadeAtlas.height);
+    g.globalCompositeOperation = "source-over";
+  }
 
   /* Bilinear value noise on a coarse lattice. Straight from
    * `docs/scatter_fx.html` — it is what turns a diagonal wipe into a
@@ -391,9 +489,10 @@
 
   /* Rebuilt every cycle, so no two storms sweep the same way. */
   function buildStorm() {
-    var p = STORM.pitch;
-    storm.cols = Math.ceil(W / p);
-    storm.rows = Math.ceil(H / p);
+    measureCell();
+    buildShades();
+    storm.cols = Math.ceil(W / cellW);
+    storm.rows = Math.ceil(H / cellH);
     if (storm.cols < 2 || storm.rows < 2) { storm.cells = []; return; }
 
     var timing = valueNoise(storm.cols, storm.rows,
@@ -409,13 +508,19 @@
         var fx = dirX > 0 ? cx / storm.cols : 1 - cx / storm.cols;
         var fy = dirY > 0 ? ry / storm.rows : 1 - ry / storm.rows;
         var sweep = fx * wx + fy * (1 - wx);
-        // Squeezed to 0..0.82 before the jitter so that even the latest
-        // cell is fully in by the end of the fill — a storm that never
-        // quite closes is the one thing worse than one that does.
         var t = sweep * 0.82 + (timing[ry][cx] - 0.5) * 0.26;
+        var ramp = RAMP_MIN + Math.random() * (RAMP_MAX - RAMP_MIN);
         storm.cells.push({
-          x: cx * p, y: ry * p,
-          t: Math.max(0, Math.min(0.999, t)),
+          x: cx * cellW, y: ry * cellH,
+          // Scaled into the headroom its own ramp leaves. A cell now
+          // needs `ramp` more of the sweep AFTER the front reaches it
+          // before it is solid, so the last cell to light has to start
+          // early enough to still finish — otherwise the latest corner
+          // of the screen is caught at ▓ when the hold begins, and a
+          // storm that never quite closes is the one thing worse than
+          // one that does.
+          t: Math.max(0, Math.min(1, t)) * (1 - ramp),
+          ramp: ramp,
         });
       }
     }
@@ -477,10 +582,20 @@
     // blocks off and letting the video back through. An earlier cut
     // used one edge for both, which made the exit a reverse dissolve —
     // it unwound back the way it came, instead of continuing.
-    var lo = 0, hi = 1;
-    if (e < S.fill) hi = e / S.fill;
-    else if (e >= S.fill + S.hold) lo = (e - S.fill - S.hold) / S.melt;
-    setOpacity(0.85 + 0.15 * Math.min(1, (hi - lo) * 3));
+    // The trailing edge starts a full ramp's width OFF-SCREEN, so that
+    // at the first frame of the melt even the cell at t=0 still reads as
+    // solid. Started at zero it would flick straight to ▒, and the hold
+    // would end with a stutter instead of a departure.
+    var lo = -RAMP_MAX, hi = 1, cover = 1;
+    if (e < S.fill) {
+      hi = e / S.fill;
+      cover = hi;
+    } else if (e >= S.fill + S.hold) {
+      var out = (e - S.fill - S.hold) / S.melt;
+      lo = -RAMP_MAX + (1 + RAMP_MAX) * out;
+      cover = 1 - out;
+    }
+    setOpacity(0.85 + 0.15 * Math.min(1, cover * 3));
 
     // One colour, one tone, and it stays that colour from the first
     // block to the last. Three earlier cuts all failed by having more
@@ -488,18 +603,28 @@
     // a per-block sample of the video that gave hundreds of near-identical
     // greens, and a drain to black that meant the field was a different
     // colour every second of the cycle.
-    var k = S.tone;
-    ctx.fillStyle = "rgb(" + ((acidPart(0) * k) | 0) + ","
-      + ((acidPart(1) * k) | 0) + "," + ((acidPart(2) * k) | 0) + ")";
+    ctx.fillStyle = fieldColour();
 
-    // Overdrawn by a pixel so the blocks fuse. The point of the hold is
+    // Overdrawn by a pixel so solid cells fuse. The point of the hold is
     // that the screen is ONE colour, and any seam — even a rounding
     // hairline off the device pixel ratio — turns it back into a grid.
-    var w = S.pitch + 1, i, c;
+    var fw = cellW + 1, fh = cellH + 1;
+    var last = SHADES.length - 1;
+    var i, c, p;
+
     for (i = 0; i < storm.cells.length; i++) {
       c = storm.cells[i];
-      if (c.t < lo || c.t > hi) continue;
-      ctx.fillRect(c.x, c.y, w, w);
+      // How far this cell has climbed, in its own ramp units. The
+      // leading edge drives it up, the trailing edge drives it back
+      // down, and taking the lower of the two means one expression
+      // covers arriving, holding and leaving.
+      p = Math.min((hi - c.t) / c.ramp, (c.t - lo) / c.ramp);
+      if (p <= 0) continue;
+      if (p >= 1) { ctx.fillRect(c.x, c.y, fw, fh); continue; }
+      if (!shadeAtlas) continue;
+      var lvl = Math.min(last, (p * (last + 1)) | 0);
+      ctx.drawImage(shadeAtlas, lvl * cellW, 0, cellW, cellH,
+                    c.x, c.y, cellW, cellH);
     }
   }
 
@@ -536,6 +661,7 @@
     last = now;
     readTheme(now);
     tintDither();
+    tintShades();
     ctx.clearRect(0, 0, W, H);
     if (dither) ctx.drawImage(dither, 0, 0);
     drawSweep(dt);
