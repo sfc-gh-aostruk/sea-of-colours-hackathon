@@ -6,7 +6,7 @@ a game with the shape its blurb promises — the API-level checks live in
 tests/test_tutorial_mode.py.
 
     SOC_BACKEND=memory python run_web.py --no-reload --port 8022 &
-    python scripts/_fx_landing_tut.py --port 8022
+    python scripts/films/_fx_landing_tut.py --port 8022
 """
 
 from __future__ import annotations

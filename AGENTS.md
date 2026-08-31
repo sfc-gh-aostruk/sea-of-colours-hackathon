@@ -30,7 +30,7 @@ This file is always-on context for AI agents; keep it lean and current.
  `harnesses/tabula_v12/` fans out here.
 - `server/static/films/*.webm` — the teaching-mode films (v1.32). These
  are **generated build output that is checked in**: they are shot by
- `scripts/make_tutorial_films.py` driving the real UI in a real browser,
+ `scripts/films/make_tutorial_films.py` driving the real UI in a real browser,
  never hand-recorded. That makes them a **fan-out surface with teeth** —
  a selector rename, a moved button or a reworded verb can silently turn
  a film into a clip of the wrong thing. If you change the ORDERS panel,
@@ -38,8 +38,9 @@ This file is always-on context for AI agents; keep it lean and current.
  **watch the result**; the harness asserts outcomes, not pedagogy.
  `docs/TUTORIAL_PLAN.md` §9 is the state of play; the reel text and its
  turn live in `server/static/tutorial.js`, the presets in
- `sea_of_colours/game/tutorial.py`, and `scripts/_fx_tutorial.py` is the
- end-to-end check.
+ `sea_of_colours/game/tutorial.py`, and `scripts/films/_fx_tutorial.py` is the
+ end-to-end check. **All of the filming kit is in `scripts/films/` and
+ nothing outside it imports any of it** — start at its README.
 - `docs/SNOWFLAKE_SETUP.md` — BYO-Snowflake-trial-account walkthrough
   (PAT for the V12 agent; optional schema deploy for persistent
   sessions). Playing/testing against `RED_HARVEST` / `RED_HARVEST_LITE`
@@ -129,6 +130,7 @@ server/
   app.py         FastAPI thin proxy (/, /api/game/*); static mounted no-cache
   static/        Web UI — app.js, styles.css, station.js, index.html
 scripts/         deploy_soc_schema.py, run_season*.py, run_evals.py, run_battery.py
+  films/         the tutorial film rig — self-contained, see its README.md
 snowflake/       SOC_* schema, views, procedures, agent SQL
 ```
 

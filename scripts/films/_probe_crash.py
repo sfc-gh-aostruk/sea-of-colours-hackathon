@@ -12,7 +12,7 @@ this file: harvester steps are 4-way orthogonal (a diagonal is dropped
 in silence), and an orbit phase does not resolve until every seat has
 committed, so a duel board needs the rival's empty orbit posted too.
 
-Needs a server: `python scripts/_probe_crash.py` against BASE below.
+Needs a server: `python scripts/films/_probe_crash.py` against BASE below.
 """
 from __future__ import annotations
 

@@ -14,7 +14,7 @@
  * FILMS ARE OPTIONAL AT RUNTIME. Each chapter renders its prose whether
  * or not the .webm behind it exists yet, and a missing film degrades to a
  * labelled placeholder instead of a broken <video>. That is deliberate:
- * films are build output (scripts/make_tutorial_films.py), the reels are
+ * films are build output (scripts/films/make_tutorial_films.py), the reels are
  * source, and the two are allowed to be out of step during development.
  */
 (function () {
@@ -105,15 +105,33 @@
       chapters: [
         {
           film: "basic_drop.webm",
-          heading: "RED in the vault is the whole game",
+          heading: "RED in the vault is the whole game — and not all RED is "
+            + "worth the same",
           body:
             "Score comes from RED you actually bank. Seeing it does nothing; "
             + "harvesting it is the point.\n\n"
-            + "DROP puts a harvester on the surface. You can only land on ground "
-            + "you can see RIGHT NOW — which is why last night was probes.\n\n"
-            + "Then walk it. Each step onto a RED square harvests that square, "
-            + "so a chain of steps through a seam fills the hold as it goes.",
-          todo: "Drop your harvester on lit RED, then step it along the seam.",
+            + "But every RED square has a tier, and the tier is a multiplier "
+            + "on its purity. Hover any square and the card does the sum for "
+            + "you — purity, tier, and the score you would actually bank.\n\n"
+            + "TRACE (purity 1–50) pays ×0.75. A whole hour of your night and "
+            + "a slot of a six-slot hold, for about twenty points — usually "
+            + "not worth the walk. VEIN (51–150) pays ×1.0, and is what most "
+            + "seams are made of: unremarkable one square at a time, "
+            + "significant in a run. MASS (151–254) pays ×1.5 and is the "
+            + "workhorse — two good mass squares come to most of a jackpot. "
+            + "PURE (255) pays ×3.0: 765 in one square, in one hour, which is "
+            + "enough to change the pace of a game.\n\n"
+            + "DROP puts a harvester on the surface, and only on ground you "
+            + "can see RIGHT NOW — which is why last night was probes. Then "
+            + "walk it: entering a RED square harvests it automatically, so a "
+            + "chain of steps through a seam fills the hold as it goes.\n\n"
+            + "Then watch the last shot. Every RED square you harvest turns "
+            + "GREEN, and green banks at MINUS one hundred. You cannot decline "
+            + "it — entering a coloured square harvests it, whoever you are. "
+            + "The trail you leave behind is a minefield, for them and for "
+            + "you.",
+          todo: "Hover a few RED squares and compare the scores. Then land on "
+            + "the richest seam you can see, walk it, and LIFT.",
         },
         {
           film: "basic_stranded.webm",
@@ -275,39 +293,100 @@
     },
 
     "advanced:planning:2": {
-      title: "Night two — jackpots cannot be kept quiet",
+      title: "Night two — the REDSIGN, and why jackpots cannot be kept quiet",
       chapters: [
         {
           film: "adv_redsign.webm",
-          heading: "Find a pure seam, and tell the whole board",
+          heading: "Find a pure seam and the whole board is told",
           body:
             "A handful of squares on the map are PURE — 255, the richest "
             + "the generator makes. The moment any probe or harvester "
-            + "brings one into live vision for the first time, a RED SIGN "
-            + "is minted over it.\n\n"
-            + "It is public. Every House sees the beacon, on the same "
-            + "hour, whoever lit it. It does not say who.\n\n"
-            + "So there is no such thing as quietly finding a jackpot. "
-            + "The instant you know, they know.",
-          todo: "Probe toward a pure seam — and expect company when you "
-            + "find one.",
+            + "brings one into live vision for the first time, the board "
+            + "mints a REDSIGN.\n\n"
+            + "A redsign is public. Every House gets it, on the same hour, "
+            + "and it never says who lit it.\n\n"
+            + "But it is not a pin on the square. The red smear is centred "
+            + "on a point knocked off the real seam and spreads well past "
+            + "it — it says a pure seam is somewhere around HERE, not "
+            + "which square it is.\n\n"
+            + "And you are standing on it in live vision. You can see the "
+            + "exact cell; they get a rough area. That gap is your whole "
+            + "head start, and it lasts only as long as it takes them to "
+            + "probe into it.",
+          todo: "Probe toward a pure seam — and expect company the moment "
+            + "you find one.",
         },
         {
           film: "adv_redsign_rival.webm",
-          heading: "A beacon you did not light",
+          heading: "A redsign you did not light",
           body:
-            "The same thing, from the other side. You probe your own "
-            + "ground, and a red sign comes up somewhere you have never "
+            "The same mechanic from the other side. You probe your own "
+            + "ground, and a redsign comes up somewhere you have never "
             + "been, with nothing of yours near it.\n\n"
-            + "That is the other House finding a pure seam. You learn on "
-            + "the same hour they do, and roughly where. You do not learn "
-            + "which square, how much of it there is, or whether they can "
-            + "reach it.\n\n"
+            + "That is the other House walking onto a pure seam. You learn "
+            + "on the same hour they do — but you learn the approximate "
+            + "area and nothing else. Not the square, not who found it, "
+            + "not how much is in it, not whether they can reach it. Only "
+            + "the finder knows exactly where it is.\n\n"
+            + "The smear paints on FOG, so it burns off as you close in: "
+            + "probe into it and the hint is replaced by real ground, and "
+            + "you find the seam yourself or you find out it was never "
+            + "worth the trip.\n\n"
             + "Pures are rationed — two or three on a board this size — "
-            + "and they are worth several ordinary seams each. A beacon "
-            + "is not information you can sit on. It is a start gun.",
-          todo: "Decide now: contest their beacon, or bank the seam you "
-            + "already hold.",
+            + "and each is worth several ordinary seams. A redsign is not "
+            + "information you can sit on. It is a start gun.",
+          todo: "Decide now: probe into their redsign to pin the square, "
+            + "or bank the seam you already hold.",
+        },
+        {
+          film: "adv_smash_grab.webm",
+          heading: "Smash and grab — take the pure you can see, and take "
+            + "it badly",
+          body:
+            "You can see the square. The instinct is to work the seam "
+            + "around it and lift with a full hold; the arithmetic says "
+            + "otherwise.\n\n"
+            + "A pure is 765 in ONE hour. The five ordinary squares behind "
+            + "it are about a thousand between them, and they cost five "
+            + "more hours plus the lift. The greedy line does bank more — "
+            + "and it leaves the 765 sitting on the board for seven hours "
+            + "with your harvester parked next to it.\n\n"
+            + "So land ON the pure and lift on the next hour. Two hours, "
+            + "one parcel, five slots of hold you never open. What you buy "
+            + "is certainty: ore in the hold cannot be harvested, contested "
+            + "or found by anybody.\n\n"
+            + "Two things still beat it. Chaff on your lift hour leaves you "
+            + "with no ride home and dawn takes the hull and the hold. And "
+            + "a House with its own live vision on that square can drop "
+            + "into it on the same hour — then nobody lands and both hulls "
+            + "come home damaged.",
+          todo: "If you can see a pure, price the greedy line honestly — "
+            + "then take the jackpot and go.",
+        },
+        {
+          film: "adv_blind_grab.webm",
+          heading: "Blind and grab — attack a jackpot you cannot see",
+          body:
+            "The other case: the beacon is lit and you have never been "
+            + "near it. You cannot land on a square you cannot see, and "
+            + "probing in costs you the hour that tells them you are "
+            + "coming.\n\n"
+            + "So attack the situation instead of the square. Fry the "
+            + "probe that lit the beacon — now nobody can land on that "
+            + "seam, including them. Put your own eye on the edge of the "
+            + "smear. And commit the harvester in the same queue, before "
+            + "that eye has reported anything, to a landing and five steps "
+            + "picked off the smear.\n\n"
+            + "Aim the EMP wall UNDER the seam, not over it. Your own cloud "
+            + "denies your own harvests too — there is no friendly-fire "
+            + "switch — so the missiles have to catch their probe without "
+            + "covering the ground you intend to walk.\n\n"
+            + "You will probably miss the pure. What you get is a hold of "
+            + "ordinary red, their eye put out, and — because your probe "
+            + "walked past it — the exact square, for tomorrow. It is not "
+            + "a jackpot play, it is a tempo play.",
+          todo: "If the beacon is somebody else's, take their eye out first "
+            + "and comb the smear while they are blind.",
         },
       ],
     },
@@ -338,44 +417,58 @@
       chapters: [
         {
           film: "adv_emp.webm",
-          heading: "EMP does not take the red. It takes the clock.",
+          heading: "EMP does not take the red. It takes the clock — if you "
+            + "are willing to wait for it.",
           body:
             "One launch is a salvo of three missiles, each a radius-2 "
             + "diamond. Placed apart they are three puddles; overlapped "
             + "they are one wall.\n\n"
-            + "A cloud destroys probes and stands for EIGHT hours. It "
-            + "does not destroy harvesters — it only stops them acting, "
-            + "and a pickup still works, so it is not how you kill "
-            + "anything.\n\n"
-            + "What it does is take away sight. Landing needs live vision "
-            + "of the square, so a House whose eye you fried cannot land "
-            + "on that seam no matter how well they know it is there — "
-            + "and the beacon stays lit the whole time, which is the "
-            + "cruel part.\n\n"
-            + "Meanwhile you can work one square outside the wall "
-            + "perfectly normally. Land BESIDE a cloud and you harvest; "
-            + "land inside one that was already standing and you do not.",
-          todo: "Overlap your three missiles into one wall, and land just "
-            + "outside it.",
+            + "A cloud destroys probes and stands for EIGHT hours. It does "
+            + "not destroy harvesters — it stops them acting — so it is "
+            + "not how you kill anything. What it does is take away sight. "
+            + "Landing needs live vision of the square, so a House whose "
+            + "eye you fried cannot land on that seam however well they "
+            + "know it is there, and the beacon stays lit the whole time.\n\n"
+            + "Which means you have bought eight hours in which a seam is "
+            + "yours alone. The film shows the same night played twice, "
+            + "because the trap here is impatience.\n\n"
+            + "Walk in while the cloud is live and you do not merely lose "
+            + "the harvest: a hull inside a live cloud cannot act at all. "
+            + "It stands there, hour after hour, and lifts with an empty "
+            + "hold. Land just outside instead, spend the hours on WAIT, "
+            + "and step in as the cloud expires — same salvo, same "
+            + "harvester, same squares, and this time the seam and their "
+            + "jackpot come home with you.\n\n"
+            + "They can read that timer too. The difference is being "
+            + "parked next to the seam when it runs out.",
+          todo: "Overlap the three missiles into one wall, land clear of "
+            + "it, and WAIT out your own cloud before you walk in.",
         },
         {
           film: "adv_chaff.webm",
-          heading: "Chaff is not denial. Chaff is a kill.",
+          heading: "Chaff denies three hours. Aimed at one, it kills.",
           body:
             "A flare jams every House for three hours — yours included, "
-            + "which is why it occupies three slots of your own queue. "
-            + "Spent as area denial that is an expensive shrug.\n\n"
-            + "Spent as a scalpel it is the deadliest thing in the game. "
-            + "The lifter is the only way off the surface, a cancelled "
-            + "pickup cannot be re-queued, and anything still standing at "
-            + "Aurora is destroyed by the dawn wave along with its whole "
-            + "hold.\n\n"
-            + "So you do not jam their landing or their walk. You let "
-            + "them do all of it, and jam the hour they reach for the "
-            + "ride home.\n\n"
-            + "Which means reading their queue from the outside: they "
-            + "landed on that hour, they have walked this many squares, "
-            + "so the lift is about now.",
+            + "which is why it occupies three slots of your own queue.\n\n"
+            + "Start with what that is worth on an ordinary turn. Three "
+            + "hours in which nobody lands, nobody walks and nobody lifts "
+            + "is three hours in which a contested seam belongs to nobody. "
+            + "Flare over a pure that neither House has grabbed yet and it "
+            + "is simply not available — while you are already walking at "
+            + "it, or setting up the blind grab. Denial is not a "
+            + "consolation prize; most turns it is the whole point.\n\n"
+            + "Then there is what the same three hours become when they "
+            + "are aimed at ONE. The lifter is the only way off the "
+            + "surface, a cancelled pickup burns its slot, and anything "
+            + "still standing at Aurora is destroyed by the dawn wave along "
+            + "with its whole hold.\n\n"
+            + "So you do not jam their landing or their walk. You let them "
+            + "do all of it, and jam the hour they reach for the ride "
+            + "home. That means reading their queue from the outside: they "
+            + "landed on that hour, they have walked this many squares, so "
+            + "the lift is about now.\n\n"
+            + "Denial buys you a seam. The lifter buys you the harvester "
+            + "and everything in it.",
           todo: "Let them work. Flare on the hour you think their lift is "
             + "queued.",
         },

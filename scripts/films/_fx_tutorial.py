@@ -5,7 +5,7 @@ same way the other ``scripts/_fx_*.py`` harnesses do. Run it after any
 change to the teaching presets or the film modal.
 
     SOC_BACKEND=memory python run_web.py --no-reload --port 8022 &
-    python scripts/_fx_tutorial.py --port 8022
+    python scripts/films/_fx_tutorial.py --port 8022
 
 What it asserts, and why each one is here rather than in a unit test:
 

@@ -127,7 +127,7 @@ drive the real UI and take screenshots. Playwright is installed and its
 `new_context(record_video_dir=...)` is available, so the same harness
 pattern records `webm` instead of stills.
 
-**Proposed:** `scripts/make_tutorial_films.py`, one function per film,
+**Proposed:** `scripts/films/make_tutorial_films.py`, one function per film,
 sharing the `_fx_*` seeding helpers. Output committed to
 `server/static/films/*.webm`. Re-run after any UI change that a film
 shows.
@@ -280,7 +280,7 @@ is what lets a stale tooltip be found when a control is renamed.
 
 `scripts/_film_drop.py` proved the pipeline end to end. Output:
 11.6s, 1.4 MB `webm`. The script itself is **deleted** — everything it
-established was folded into `scripts/make_tutorial_films.py`, and a
+established was folded into `scripts/films/make_tutorial_films.py`, and a
 second, diverging copy of the cursor kit was the obvious way for the two
 to drift. This section is the record of what it taught.
 
@@ -326,8 +326,8 @@ What it exposed, all now folded into §4.3 above:
   `app.js` and coupled to it by exactly one DOM event. A missing film
   degrades to its prose; a broken modal cannot break a season.
 - **Nine Basic films**, in `server/static/films/`, shot by
-  `scripts/make_tutorial_films.py` and committed.
-- **`scripts/_fx_tutorial.py`** — the end-to-end check. Asserts the
+  `scripts/films/make_tutorial_films.py` and committed.
+- **`scripts/films/_fx_tutorial.py`** — the end-to-end check. Asserts the
   preset reaches the board, that no weapon control is *visible*, that
   the film actually plays (rather than 404ing into the placeholder),
   and that the reel **refreshes on the next turn**, which is the part
@@ -395,6 +395,12 @@ without Basic's forced bot seat.
   number moving is the lesson.
 
 ### The camera, and why it fought back
+
+> **Superseded by §12 (v1.35).** Every numbered point below is a patch on
+> the same underlying mistake — scaling a live element inside a fixed
+> layout — and the camera is now a post-process crop instead. Kept as
+> written because it is the case FOR that change, and because anyone who
+> proposes transforming the interface again should read what it costs.
 
 Films that turn on a collision need a close-up — a burst is a handful of
 pixels for under a second, and the product's own zoom dragger tops out
@@ -492,7 +498,7 @@ the reels has to assert that; the prices do it.
 costs nothing. Advanced's do not: it needs one bright blue smear to
 hot-drop into and two pure seams far enough apart to be one each, and
 the generator supplies that combination on roughly **10 seeds in 400**
-(`scripts/_probe_advseed.py` searches for it). An Advanced game that
+(`scripts/films/_probe_advseed.py` searches for it). An Advanced game that
 happens not to have it does not teach a slightly worse lesson — it
 teaches that the mode is broken.
 
@@ -510,9 +516,9 @@ than in a player's tutorial.
 |---|---|---|
 | `planning:1` | `adv_hotdrop` | The fog is not blank. A blue sign is static, season-old and vague; the hot drop commits a landing into a disk the probe has not cut yet. |
 | `orbit:2` | `adv_buy_emp` | Two currencies that do not convert. Credits arrive; blue is mined; only blue buys weapons. |
-| `planning:2` | `adv_redsign`, `adv_redsign_rival` | A pure seam mints a **public** beacon the moment anyone sees it. Shot from both sides — one you light, one that arrives out of empty fog. There is no quiet jackpot. |
+| `planning:2` | `adv_redsign`, `adv_redsign_rival`, `adv_smash_grab`, `adv_blind_grab` | A pure seam mints a **public** beacon the moment anyone sees it, from both sides — then what to *do* about one. Smash-and-grab prices the greedy line and throws it away for certainty; blind-and-grab attacks the situation instead of the square. |
 | `orbit:3` | `adv_buy_chaff` | A second hull, and the weapon that costs more blue than a season hands you. |
-| `planning:3` | `adv_emp`, `adv_chaff` | EMP takes the clock, not the ore. Chaff is not denial — it is a kill. |
+| `planning:3` | `adv_emp`, `adv_chaff` | EMP takes the clock, not the ore — and only if you wait for it. Chaff denies three hours, which is worth having; aimed at one hour it is a kill. |
 
 ### Things learned shooting these
 
@@ -551,3 +557,220 @@ Every chapter in both modes now carries a `todo` — one imperative line,
 rendered as a green strip. It is a **sibling of** `.soc-tut-body`, not
 the last thing inside it: the body scrolls, and on a long card the one
 line the player most needs was sitting below the fold.
+
+## 12. The camera moved out of the browser (v1.35, 2026-08-30)
+
+The verdict on §10's camera, after watching all sixteen films end to
+end: **almost every zoom looked wrong, and they looked wrong in the same
+way.** Not mistimed and not mis-aimed — §10's assertions had those
+covered — but plainly *not a camera move*. A push-in swelled the board
+inside a frame that stayed put while the ORDERS panel, both station
+rails and the replay bar sat there at their original size, so the eye
+read a rendering fault rather than a move toward something.
+
+### What was actually wrong
+
+Scaling one element inside a fixed layout is not a camera. Everything in
+§10's numbered list is a consequence of pretending otherwise:
+
+- the board clips against a frame that did not move with it;
+- the grid's dotted background magnifies into a pale grey slab;
+- four pixel-anchored overlays have to be chased and re-anchored on
+  every frame of the glide or they draw the previous board's geometry;
+- `#collision-fx-layer` has to be re-parented out of the transform,
+  because effects place themselves with a screen-space delta written
+  back as a local offset;
+- and the camera can only ever look at the map, because the map viewport
+  is the element being scaled.
+
+That last one is not a bug, it is a ceiling — and it is the one that
+mattered most. `basic_score` exists to show a load becoming a number,
+and the two things it is finally about, an arm throwing and a score
+climbing, both live in the station rail. The old camera could not point
+at either.
+
+### What it is now
+
+`Film.push_in` no longer touches the page. It **measures**: a moment, a
+rectangle in page pixels, a ramp. The shoot records keyframes and the
+zoom is applied afterwards, in the same ffmpeg pass that already trims
+the boot, as a time-varying crop and rescale.
+
+Because the frame is one image by then, nothing can be left behind — an
+overlay cannot fall off a board that is a photograph. The re-anchor
+chase, the FX re-parenting and the `expect_overlays_anchored` assertion
+all went with it. `push_in_on(selector...)` frames anything on the page,
+which is what unlocked the score beat.
+
+Three things worth knowing before touching it:
+
+- **`zoompan`, not `crop`.** `crop` evaluates its width and height once,
+  at configuration; only x and y are per-frame. A crop that changes size
+  over time — which is what a push-in is — cannot be expressed with it.
+- **Keep the piecewise expression flat.** Between keyframes the value is
+  a constant, the previous target, so each one adds a fixed amount of
+  expression. Writing it as "previous expression, then ramp from it"
+  instead doubles the string at every keyframe; seven of them produce a
+  filter megabytes wide.
+- **The trim and the keyframes share a clock origin** (`Film.t0`, set to
+  page creation). If the recorder starts a few frames late, both slip by
+  the same amount and the cues still land. No sync marker is needed, and
+  one was built and then deleted on realising this.
+
+### Do not try to shoot at 2x
+
+The camera crops into the finished frame, so magnification now costs
+resolution, and the obvious fix is to capture at 2x and deliver at 1x.
+It does not work. Playwright's screencast is captured at CSS resolution
+and `record_video_size` only ever scales **down** to fit: ask for
+2560x1600 with `device_scale_factor=2` and you get a 2560x1600 canvas
+with the 1280x800 page pasted in one corner and mid-grey over the other
+three quarters, which the camera then crops into believing it has twice
+the resolution it has. Raising `VIEWPORT` would genuinely work, but it
+is a different film — the app lays itself out against the window, so a
+2560-wide viewport shows attendees a product they will not see.
+
+So the picture softens when it is enlarged. That is the trade, and it
+is why the magnifications came down at the same time (`push_in` caps at
+2.6x, `push_in_on` at 3.2x).
+
+### The caption lives inside the crop (v1.36)
+
+The first cut of this camera shipped every close-up unnarrated, and the
+mistake is worth keeping written down because it is the shape of mistake
+this change invites. The caption is `position:fixed; bottom:28px`, which
+was correct under the transform camera — the board scaled underneath a
+caption that stayed put. Under a crop it is not: the delivered frame is
+a 492x308 window out of 1280x800, and the bottom of the *page* is not in
+it. The beats worth pushing in on were exactly the beats whose narration
+was thrown away.
+
+So the caption now tracks the window. `window.__film.frame(win)` puts it
+along the bottom of the current crop and scales it by `1/z`, floored at
+`0.65`: below the game's own 13px, glyphs render to mush that magnifying
+back up cannot recover, so a close-up caption is allowed to come out
+somewhat larger than a wide one rather than soft.
+
+Order differs by direction, and both are load-bearing. A push-in
+re-places the caption **before** the ramp — the window only ever shrinks
+toward its target, so a caption sitting in the target is in shot for
+every frame of the move. A pull-out re-places it **after** — the window
+grows away from where the caption is, so it stays in shot the whole way
+out, and resetting early would drop it for the length of the move.
+
+`say()` asserts it: the caption's box is compared against the live crop
+and the shoot fails if it is over the edge. That assertion, not the
+placement, is the real fix — the placement bug was invisible to a shoot
+that passed, produced a file of the right length, and had the subject
+correctly in shot.
+
+### Framing is the part no assertion can judge
+
+"Is the subject on screen?" is checkable and is checked. "Is this a good
+shot?" is not. `FILM_CAM=1` prints, for every move, the subject size,
+the solved scale, where the crop lands once clamped to the frame, and
+what fraction of the window the subject fills. Two things fell straight
+out of it that eyeballing exported frames had got wrong:
+
+- **A subject near an edge never gets centred.** The station rail is a
+  122px column hard against the left, so its close-ups clamp at x=0 and
+  sit in the left third whatever scale you ask for. The only lever is
+  how much of the rest of the screen comes along.
+- **Aim for the subject filling 50–80% of the window.** The wreck
+  close-ups read at 78%; the first cut of the score beat framed the
+  readout alone at 14% and looked like a wide shot with a caption on it.
+  The fix was to frame the number *with the station it hangs off* —
+  which is also how the beat is described.
+
+### The score beat, since it is the fiddly one
+
+The throw and the fold are about half a second apart and no single
+framing holds both: fitting the catapult and the score in together drops
+the pair to a fifth of the frame width. So it is two shots — leave the
+catapult late (1900ms after VESPERA, by which time the arm has thrown)
+and travel fast (a 380ms pan), which lands on the readout while it is
+still climbing. Arriving after it settles shows a total; the lesson is a
+payment arriving.
+
+## 13. Tactics, and a film in two takes (v1.37, 2026-08-30)
+
+### Prove it headless before you point a camera at it
+
+Every film added here is an argument about numbers — "waiting five
+hours is worth more than five hours of walking" — and an argument about
+numbers is a thing you can check for free. `scripts/films/_probe_tactics.py`
+runs each scenario through the real engine over HTTP and prints the
+hold, the harvester's state and the hour-by-hour log. A take costs two
+or three minutes; the probe costs one second.
+
+It earned its keep immediately. The EMP walk-in was designed as "wait,
+then walk in and harvest a bit more than you would otherwise". The
+control run — the same salvo, the same squares, no waits — banked
+**nothing at all**, because a hull inside a live cloud is not
+merely denied its harvest, it is *disabled* and cannot move either. The
+film that got made is a much better one than the film that was planned,
+and the difference came out of a probe, not a screening.
+
+`_probe_advboard.py` is the companion: it prints the board around a
+coordinate with tiers, purities, four-way comb paths scored, and the
+Manhattan-2 diamonds an EMP salvo would cover. Choreography for the
+blind grab (which squares to comb, where to put the wall so it does not
+cover them) came straight off it.
+
+### Splices
+
+`SPLICES` in `make_tutorial_films.py` maps a delivered clip to the takes
+it is cut from. A take is a whole session and a whole night, so
+**anything that has to show one move going two ways cannot be one
+take** — and for a timing rule, a before/after is often the only honest
+way to teach it. `adv_emp` is `adv_emp_rush` + `adv_emp_wait`: identical
+salvo, identical harvester, identical five squares, and the only
+difference is five WAITs.
+
+The join is a stream copy (`-c copy`), which is only safe because both
+takes come out of `_post` with the same codec, size and rate. If the
+concat is ever refused, that is a real signal — do not add a re-encode
+fallback, find out why the takes diverged. Parts are deleted after the
+join and `--only adv_emp` expands to them, so nothing outside the module
+knows they exist.
+
+One thing to watch: put queue padding **in front of** the landing, not
+between the landing and the walk. Same hours either way, but it keeps
+drop/walk/lift in one uninterrupted picker session, which is the
+sequence the ORDERS panel is built around.
+
+### `basic_drop` pins its board, and the others still do not
+
+§11 says Basic's lessons land on any terrain. That stopped being true
+when `basic_drop` grew a price list: it now hovers four named squares
+and says "255 × 3.0 = 765" out loud, then walks a named six-square seam.
+So it pins seed 14 (`BASIC_DROP_SEED`) while every other Basic film
+still runs on the batch seed.
+
+`scripts/films/_probe_basicseed.py` found it, searching for the one
+combination the generator will not promise: one of each RED tier close
+enough together to tour with a cursor, beside a six-square *orthogonal*
+RED chain. Seed 14 puts the quartet in a 2-square spread and ends the
+chain **on the pure**, so the walk pays off the lesson that preceded it.
+
+Two traps, both paid for:
+
+- **The rival wants that seam.** The first cut ran on the Basic preset,
+  and RED_HARVEST_LITE dropped onto the walk and rammed the harvester
+  head-on at hour five: both hulls damaged, nothing banked. The seam
+  this film needs is by construction the richest thing on the board, so
+  the bot is *drawn* to it. It is a duel now, rival parked in the far
+  corner, like every other outcome film.
+- **Do not put the probe on the walk.** A harvester entering a square
+  crushes the probe in it, and the film's last beat reads the tooltip of
+  a square the harvester walked over. With the eye on the seam that beat
+  plays over echo and the −100 never appears. `BASIC_TIER_EYE` sits one
+  square south.
+
+### Say the number the tooltip will actually print
+
+The narration quotes scores, so the film asserts them (`read()` checks
+the card before the caption claims it). Watch the rounding: the client
+does `Math.round`, which takes halves **up**, and Python's `round` does
+not. 203 × 1.5 is 305 on screen and 304 in a Python probe. Three of the
+four tier squares land on a half.

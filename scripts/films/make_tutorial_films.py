@@ -16,8 +16,8 @@ frames visibly changing.
 Usage::
 
     SOC_BACKEND=memory python run_web.py --no-reload --port 8022 --replace
-    python scripts/make_tutorial_films.py --base http://127.0.0.1:8022
-    python scripts/make_tutorial_films.py --only basic_probe
+    python scripts/films/make_tutorial_films.py --base http://127.0.0.1:8022
+    python scripts/films/make_tutorial_films.py --only basic_probe
 
 Point it at a server YOU started. See AGENTS.md — never at the user's.
 
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -41,7 +42,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from playwright.sync_api import sync_playwright
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from sea_of_colours.game import tutorial as soc_tutorial  # noqa: E402
@@ -49,6 +50,19 @@ from sea_of_colours.game import tutorial as soc_tutorial  # noqa: E402
 OUT = ROOT / "server" / "static" / "films"
 
 VIEWPORT = {"width": 1280, "height": 800}
+# DO NOT try to shoot at 2x for a sharper zoom. It looks like the
+# obvious win — the camera crops into the finished frame, so more pixels
+# in means more detail when magnified — and it does not work:
+# Playwright's screencast is captured at CSS resolution, and
+# `record_video_size` only ever scales DOWN to fit. Ask for 2560x1600
+# with `device_scale_factor=2` and you get a 2560x1600 canvas with the
+# 1280x800 page pasted in the corner and mid-grey over the other three
+# quarters, which then gets cropped into by a camera that thinks it has
+# twice the resolution it has. Cost an hour; the frames were unmistakable.
+# Raising the VIEWPORT instead would work, but it is not the same film:
+# the app lays itself out against the window, so a 2560-wide viewport
+# shows a differently proportioned product to the one attendees run.
+# The zoom softens the picture. That is the price of the trade.
 
 # ── the Advanced board ──────────────────────────────────────────────
 #
@@ -56,7 +70,7 @@ VIEWPORT = {"width": 1280, "height": 800}
 # board that does not happen to have them. Unlike the Basic films —
 # which work on any board and so ride whatever ``--seed`` the batch is
 # running under — these pin one seed, picked by
-# ``scripts/_probe_advseed.py`` against three things the generator only
+# ``scripts/films/_probe_advseed.py`` against three things the generator only
 # sometimes delivers on a 24x16:
 #
 #   * exactly ONE bright blue smear, so "that glow is a blue pocket"
@@ -92,6 +106,51 @@ ADV_QUIET2 = (8, 2)
 # jackpot so the salvo takes their eye off it.
 ADV_SALVO = [(2, 12), (4, 12), (6, 12)]
 ADV_BESIDE = (8, 11)      # clear of every diamond, one square outside
+
+# ── the tactical films (v1.37) ──────────────────────────────────────
+# Every square below was picked off _probe_advboard.py against the real
+# grid, not off a screenshot, and the arithmetic in the captions is that
+# script's numbers. If the seed ever moves, re-run it — a comb that
+# reads "five squares of ordinary ground" and walks four empty ones is
+# a film that teaches the opposite of its caption.
+
+#: The six-parcel comb out of ADV_MINE: R239 R7 R240 R166 R77 behind the
+#: jackpot. Worth 1815 over seven hours, which is the offer smash-and-grab
+#: turns down. Never walked on camera — it is priced, then rejected.
+ADV_GREEDY = [(20, 5), (21, 5), (22, 5), (22, 4), (23, 4)]
+
+#: Blind and grab. The salvo sits one row BELOW the rival's jackpot so it
+#: catches their probe at (4,12) on the diamond's top point while leaving
+#: the northern approach clear. Friendly fire is on and a cloud over the
+#: comb would deny the harvest on every square of it (§4.9.3), so the
+#: blast and the walk must not overlap — the first cut of this had the
+#: salvo centred on the seam and banked nothing at all.
+ADV_BLIND_SALVO = [(2, 14), (4, 14), (6, 14)]
+ADV_BLIND_EYE = (2, 11)     # our probe: lights the comb, clear of the blast
+ADV_BLIND_LAND = (3, 12)    # RED 220 — picked off the smear, before we can see
+ADV_BLIND_COMB = [(3, 11), (4, 11), (4, 10), (5, 10), (6, 10)]
+
+#: The EMP walk-in. ADV_BESIDE is the one square that is outside all
+#: three diamonds and adjacent to one, and the best walk out of it ends
+#: on the rival's jackpot — so the salvo denies them the seam for eight
+#: hours and the same salvo's expiry is the clock we arrive on.
+ADV_WALK_IN = [(7, 11), (7, 12), (6, 12), (5, 12), (4, 12)]
+
+# Two things off the board that the camera now needs to reach. Named
+# here rather than inlined because they are product selectors: if the
+# station rail is rebuilt these are what break, and one grep should
+# find them.
+CATAPULT = "#os-catapult"
+#: The hover readout. Framed WITH its square on the wreck close-ups —
+#: a cross on its own does not say what happened there.
+TOOLTIP = ".cell-tooltip"
+#: The station glyph with the score and the pending "+X" beneath it.
+#: The readout alone is a 17px number that fills a seventh of the frame
+#: even wide open; anchoring it to the platform it hangs off gives the
+#: shot something to be a close-up OF, and matches how the beat is
+#: described — the number under the station.
+SCOREBOARD = ('[data-os-vault="p1"]', '[data-os-score="p1"]',
+              '[data-os-score-delta="p1"]')
 
 
 # ── API helpers ─────────────────────────────────────────────────────
@@ -236,6 +295,34 @@ _KIT = """
   ].join(';');
   document.body.appendChild(cap);
 
+  // The crop the camera is currently holding, in page pixels, or null
+  // for the whole frame. The caption has to live INSIDE it: the camera
+  // is a crop over the finished frame, so a caption pinned to the
+  // bottom of the page is simply not in the picture during a close-up.
+  // That is not theoretical — the first cut of the post-crop camera
+  // shipped every close-up silently uncaptioned.
+  let camWin = null;
+
+  function placeCap() {
+    const win = camWin || {
+      x: 0, y: 0, w: window.innerWidth, h: window.innerHeight, z: 1,
+    };
+    // Shrink with the zoom so the caption reads at roughly its usual
+    // size once the crop is blown back up — but never below the game's
+    // own 13px, because text rendered smaller than that is mush no
+    // amount of magnification recovers.
+    const s = Math.max(1 / win.z, 0.65);
+    cap.style.transformOrigin = '0 0';
+    cap.style.transform = 'scale(' + s + ')';
+    cap.style.bottom = 'auto';
+    cap.style.maxWidth = Math.round(win.w * 0.88 / s) + 'px';
+    // Reads the post-transform box, so this is the size it occupies on
+    // screen rather than its layout size.
+    const r = cap.getBoundingClientRect();
+    cap.style.left = Math.round(win.x + (win.w - r.width) / 2) + 'px';
+    cap.style.top = Math.round(win.y + win.h - r.height - 20 * s) + 'px';
+  }
+
   window.__film = {
     cursor: c,
     caption: cap,
@@ -243,7 +330,14 @@ _KIT = """
     say(text) {
       if (!text) { cap.style.opacity = '0'; return; }
       cap.textContent = text;
+      placeCap();
       cap.style.opacity = '1';
+    },
+    frame(win) { camWin = win; placeCap(); },
+    capBox() {
+      const r = cap.getBoundingClientRect();
+      return {x: r.left, y: r.top, w: r.width, h: r.height,
+              lit: cap.style.opacity === '1'};
     },
     put(x, y) {
       c.style.left = x + 'px';
@@ -309,101 +403,81 @@ _CURTAIN_INIT = """
 })();
 """
 
-# Camera push-in, framed on a SET of squares.
+# ── the camera ──────────────────────────────────────────────────────
 #
-# Two lessons are baked in here. Origin is pinned to the viewport's
-# top-left and the framing done with an explicit translate, because
-# transform-origin ON the subject only guarantees the subject does not
-# MOVE — on a board sitting in the top half of a tall viewport that
-# leaves the close-up pointed at empty ground below it.
+# The camera does not touch the page. It MEASURES.
 #
-# And the scale is DERIVED, not passed. A hand-picked 2.1x framed a pair
-# of crash sites five squares apart so tightly that the second one was
-# off the bottom edge, and nothing failed: the film was a close-up of
-# blank terrain with the captions still narrating explosions. Solving
-# for a scale that fits every square the beat is about cannot make that
-# mistake.
-_PUSH_IN = """
-([cells, pad, maxK, ms]) => {
-  const vp = document.querySelector('.cc-map-viewport');
-  if (!vp) return null;
+# It used to be a CSS transform on `.cc-map-viewport`, and every fault
+# in the first cut of these films came from that one decision. Scaling
+# one element inside a fixed layout is not a camera move: the two
+# station platforms, the ORDERS panel and the replay bar all stay put
+# while the board swells inside its frame and clips against the edge,
+# which reads as a rendering bug rather than a push-in. The grid's own
+# dotted background magnifies with it into a pale grey slab. Four
+# pixel-anchored overlays measure cell rects at paint time, so all four
+# had to be chased and re-anchored on every frame of the glide or they
+# drew the previous board's geometry over the new one. And the FX layer
+# had to be re-parented out of the transform, because effects place
+# themselves with a screen-space delta written back as a local offset —
+# an identity that only holds while layer and cells share a scale.
+#
+# All of that is gone. `push_in` now records a KEYFRAME — a moment, a
+# rectangle in page pixels, and a ramp — and the zoom is applied
+# afterwards to the recorded frames, as a crop and rescale in ffmpeg.
+# The whole 1280x800 frame moves together because it is one image by
+# then, so nothing can be left behind: an overlay cannot fall off a
+# board that is a photograph. The picture softens when it is enlarged,
+# which is the honest cost and the reason for shooting at 2x below.
+#
+# It also unlocks the thing the transform could never do. The old camera
+# could only ever look at the map, because the map viewport was the
+# element being scaled. This one frames any rectangle on the page, which
+# is how the score film gets to push in on the catapult and then on the
+# score counting up under the station.
+#
+# The scale is still DERIVED, never passed. A hand-picked 2.1x once
+# framed a pair of crash sites five squares apart so tightly that the
+# second was off the bottom edge, and nothing failed: the film was a
+# close-up of blank terrain with the captions still narrating
+# explosions. Solving for a scale that fits every square the beat is
+# about cannot make that mistake.
+_MEASURE_CELLS = """
+([cells, pad]) => {
   const els = cells.map(([x, y]) =>
     document.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`));
   if (els.some((e) => !e)) return null;
-
-  // Lift the FX layer OUT of the part that gets scaled, once.
-  //
-  // Every effect in app.js places itself with `cellRect.left -
-  // hostRect.left` — a screen-space delta — and then writes that number
-  // as a local offset inside the layer. That identity only holds while
-  // the layer and the cells share a scale. Scale the cells with the
-  // layer still under the transform and a collision X lands about four
-  // hundred pixels off the board, over the left-hand station; undo the
-  // scale on the layer instead and it lands correctly but at 1:1, a
-  // hairline cross on a board zoomed 3x. Hosting the layer in the
-  // unscaled frame satisfies both at once: the delta is measured
-  // against zoomed cells and written into unzoomed local pixels, and
-  // the effect is sized from the zoomed cell rect it was measured from.
-  const frame = vp.closest('.cc-map-frame');
-  if (frame) {
-    frame.style.overflow = 'hidden';
-    frame.style.position = 'relative';
-    const fx = document.getElementById('collision-fx-layer');
-    if (fx && fx.parentElement !== frame) frame.appendChild(fx);
-  }
-  vp.style.transition = 'none';
-  vp.style.transform = 'none';
-  vp.style.transformOrigin = '0 0';
-  void vp.offsetWidth;
-
-  const vb = vp.getBoundingClientRect();
   const base = els[0].getBoundingClientRect().width;
   let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
   for (const e of els) {
-    const cb = e.getBoundingClientRect();
-    l = Math.min(l, cb.left - vb.left);
-    t = Math.min(t, cb.top - vb.top);
-    r = Math.max(r, cb.right - vb.left);
-    b = Math.max(b, cb.bottom - vb.top);
+    const b2 = e.getBoundingClientRect();
+    l = Math.min(l, b2.left); t = Math.min(t, b2.top);
+    r = Math.max(r, b2.right); b = Math.max(b, b2.bottom);
   }
-  // Breathing room is measured in CELLS, not pixels. The cinematic
-  // re-fits the board between hours, so a pixel pad that reads as half
-  // a square while planning reads as three squares once the night is
-  // playing — and the close-up quietly opens back out into a wide shot.
-  const padPx = pad * base;
-  l -= padPx; t -= padPx; r += padPx; b += padPx;
+  // Breathing room is measured in CELLS, not pixels, so a pad that
+  // reads as half a square on a 24-wide board still reads as half a
+  // square on a 40-wide one.
+  const p = pad * base;
+  return {x: l - p, y: t - p, w: (r - l) + 2 * p, h: (b - t) + 2 * p,
+          base: base};
+}
+"""
 
-  const k = Math.max(1, Math.min(maxK,
-    vb.width / Math.max(1, r - l), vb.height / Math.max(1, b - t)));
-  const cx = (l + r) / 2, cy = (t + b) / 2;
-  const tx = vb.width / 2 - cx * k;
-  const ty = vb.height / 2 - cy * k;
-
-  vp.style.transition = `transform ${ms}ms cubic-bezier(.4,0,.2,1)`;
-  vp.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
-
-  // Four overlays — planned orders, vision borders, blue sign, redsign
-  // — are positioned in absolute pixels snapshotted from cell rects, so
-  // a camera move strands all four exactly as the zoom dragger would.
-  // Left alone they draw the previous board's geometry over the new
-  // one: a vision border stapled across the middle of a zoomed map,
-  // with the terrain magnified underneath it.
-  // Re-anchor on EVERY frame of the glide, not just at both ends. The
-  // overlays measure the cells as they are now, so a single call pins
-  // them to a size the board is only passing through: the terrain
-  // swells for 700ms with a small border sitting still on top of it,
-  // which is the "zoom breaks the vision areas" the films were showing.
-  if (typeof window._osReanchorOverlays === 'function') {
-    if (window.__filmCam) cancelAnimationFrame(window.__filmCam);
-    const until = performance.now() + ms + 80;
-    const chase = () => {
-      window._osReanchorOverlays();
-      window.__filmCam =
-        performance.now() < until ? requestAnimationFrame(chase) : 0;
-    };
-    chase();
+_MEASURE_SEL = """
+([sels, pad]) => {
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity, n = 0;
+  for (const sel of sels) {
+    const e = document.querySelector(sel);
+    if (!e) continue;
+    const bb = e.getBoundingClientRect();
+    if (bb.width < 1 || bb.height < 1) continue;
+    n += 1;
+    l = Math.min(l, bb.left); t = Math.min(t, bb.top);
+    r = Math.max(r, bb.right); b = Math.max(b, bb.bottom);
   }
-  return {k: Math.round(k * 100) / 100, base: base};
+  if (!n) return null;
+  // Pad in PIXELS here: a panel has no cell size to measure against.
+  return {x: l - pad, y: t - pad, w: (r - l) + 2 * pad,
+          h: (b - t) + 2 * pad, base: 0};
 }
 """
 
@@ -434,9 +508,24 @@ class Film:
         #: picked its own target off the board would miss.
         self.plan: Dict[str, Any] = plan or {}
         #: The close-up currently held, as ``(cells, pad, max_scale)``.
-        #: Kept so it can be re-solved whenever the grid is rebuilt under
-        #: it — see ``_reaim``.
+        #: Kept so it can be re-measured whenever the grid is rebuilt
+        #: under it — see ``_reaim``.
         self._cam: Optional[tuple] = None
+        #: Camera keyframes, in the order they were called: each is a
+        #: moment (seconds after ``t0``), a centre and a zoom in PAGE
+        #: pixels, and a ramp. ``_post`` turns these into the crop.
+        self.cam: List[Dict[str, float]] = []
+        #: The crop the camera is holding, in page pixels, or ``None``
+        #: wide open. Anything the film wants SEEN has to be inside it.
+        self._win: Optional[Dict[str, float]] = None
+        #: Monotonic zero. Set by ``shoot`` to the instant the page was
+        #: created, which is also when the recording starts — so a
+        #: keyframe's ``t`` and the boot-trim are measured off the same
+        #: origin. That shared origin is the whole sync story: if the
+        #: recorder actually starts a few frames late, both the trim and
+        #: every keyframe slip by the same amount and the cues still
+        #: land on their beats.
+        self.t0: float = time.monotonic()
 
     def kit(self) -> None:
         self.pg.evaluate(_KIT)
@@ -447,8 +536,33 @@ class Film:
 
     def say(self, text: Optional[str], hold: int = 0) -> None:
         self.pg.evaluate("(t) => window.__film.say(t)", text)
+        if text:
+            self._expect_caption_in_shot(text)
         if hold:
             self.pg.wait_for_timeout(hold)
+
+    def _expect_caption_in_shot(self, text: str) -> None:
+        """A caption outside the crop is a caption nobody ever sees.
+
+        Worth a check of its own because it is invisible to every other
+        one: the shoot passes, the film plays, the beat happens — and
+        the line explaining it was cropped off. Exactly that shipped
+        once, in every close-up at the same time.
+        """
+        if not self._win:
+            return
+        box = self.pg.evaluate("() => window.__film.capBox()")
+        w = self._win
+        if (box["x"] < w["x"] - 2 or box["y"] < w["y"] - 2
+                or box["x"] + box["w"] > w["x"] + w["w"] + 2
+                or box["y"] + box["h"] > w["y"] + w["h"] + 2):
+            self.fails.append(
+                f"caption {text[:44]!r} sits at "
+                f"({box['x']:.0f},{box['y']:.0f} {box['w']:.0f}x{box['h']:.0f}) "
+                f"but the camera is cropped to "
+                f"({w['x']:.0f},{w['y']:.0f} {w['w']:.0f}x{w['h']:.0f}) — "
+                f"this line is off the edge of the delivered frame"
+            )
 
     def wait(self, ms: int) -> None:
         self.pg.wait_for_timeout(ms)
@@ -686,7 +800,8 @@ class Film:
                         self.wait(int(cue[2]))
                     self.say(cue[1])
                     if len(cue) > 3 and cue[3]:
-                        self.push_in(*cue[3], ms=560)
+                        self._aim(cue[3], ms=int(cue[4]) if len(cue) > 4
+                                  else 560)
             time.sleep(0.1)
         return pending, seen
 
@@ -713,15 +828,101 @@ class Film:
 
     # ── looking closely ─────────────────────────────────────────────
 
+    def at(self) -> float:
+        """Seconds since the recording started."""
+        return time.monotonic() - self.t0
+
+    def _aim(self, target: Any, ms: int = 560) -> None:
+        """Point the camera at whatever a cue asked for.
+
+        Squares as ``(x, y)`` pairs, panels as CSS selectors. A cue can
+        want either: ``basic_score`` follows one load off the ground and
+        onto the catapult, and only half of that journey happens on the
+        board.
+        """
+        if isinstance(target, str):
+            self.push_in_on(target, ms=ms)
+        elif target and isinstance(target[0], str):
+            self.push_in_on(*target, ms=ms)
+        else:
+            self.push_in(*target, ms=ms)
+
+    def _keyframe(self, rect: Dict[str, float], max_scale: float,
+                  ms: int, what: str = "") -> float:
+        """Record where the camera should be, and when.
+
+        Set ``FILM_CAM=1`` to have every move print what it measured and
+        what it solved for. Framing is the one thing no assertion here
+        can judge — "is this a good shot?" is a question for eyes — and
+        eyeballing a composition off exported frames without the numbers
+        behind it is how the catapult beat got tuned three times.
+        """
+        vw = float(VIEWPORT["width"])
+        vh = float(VIEWPORT["height"])
+        w = max(1.0, float(rect["w"]))
+        h = max(1.0, float(rect["h"]))
+        z = max(1.0, min(max_scale, vw / w, vh / h))
+        cx = float(rect["x"]) + w / 2.0
+        cy = float(rect["y"]) + h / 2.0
+        self.cam.append({"t": self.at(), "ms": float(ms), "z": z,
+                         "cx": cx, "cy": cy})
+
+        # Where the crop actually lands once it is clamped to the frame.
+        # A subject near an edge never gets centred, and that, not the
+        # scale, is usually what looks wrong.
+        win_w, win_h = vw / z, vh / z
+        self._win = {
+            "x": min(max(cx - win_w / 2, 0.0), vw - win_w),
+            "y": min(max(cy - win_h / 2, 0.0), vh - win_h),
+            "w": win_w, "h": win_h, "z": z,
+        }
+        # Move the caption inside the new crop NOW, at the start of the
+        # ramp rather than the end. The window only shrinks toward its
+        # target, so a caption placed in the target is in shot for every
+        # frame of the move; placed at the end it is missing for all of
+        # them.
+        self.pg.evaluate("(w) => window.__film.frame(w)", self._win)
+        if os.environ.get("FILM_CAM"):
+            print(f"    cam {what or 'move':22s} subject "
+                  f"{w:4.0f}x{h:4.0f} @ ({cx:4.0f},{cy:4.0f})  z={z:4.2f}  "
+                  f"window {win_w:4.0f}x{win_h:4.0f} @ "
+                  f"({self._win['x']:4.0f},{self._win['y']:4.0f})  "
+                  f"subject fills {100 * w / win_w:3.0f}% x {100 * h / win_h:3.0f}%")
+        return z
+
     def _reaim(self) -> None:
-        """Re-solve the current close-up against the grid as it is now."""
+        """Re-measure the held close-up against the board as it is now.
+
+        The cinematic rebuilds the grid between hours and a rebuilt grid
+        can sit at a different offset, so a close-up set up during
+        planning drifts off its subject the moment the night plays. The
+        old camera re-solved its transform; this one appends a snap
+        keyframe (``ms=0``) with the subject's new position. Invisible
+        mid-cinematic, and it keeps the crop pointed at the thing the
+        caption is talking about.
+        """
         if not self._cam:
             return
         cells, pad, max_scale = self._cam
-        self.pg.evaluate(_PUSH_IN,
-                         [[list(c) for c in cells], pad, max_scale, 0])
+        rect = self.pg.evaluate(
+            _MEASURE_CELLS, [[list(c) for c in cells], pad])
+        if not rect:
+            return
+        last = self.cam[-1] if self.cam else None
+        z = max(1.0, min(max_scale,
+                         float(VIEWPORT["width"]) / max(1.0, rect["w"]),
+                         float(VIEWPORT["height"]) / max(1.0, rect["h"])))
+        cx = float(rect["x"]) + float(rect["w"]) / 2.0
+        cy = float(rect["y"]) + float(rect["h"]) / 2.0
+        # Only if it actually moved. An unconditional keyframe every hour
+        # would pile up hundreds of no-op steps in the filter expression.
+        if last and abs(last["cx"] - cx) < 3 and abs(last["cy"] - cy) < 3 \
+                and abs(last["z"] - z) < 0.02:
+            return
+        self.cam.append({"t": self.at(), "ms": 0.0, "z": z,
+                         "cx": cx, "cy": cy})
 
-    def push_in(self, *cells: tuple, pad: float = 1.4, max_scale: float = 4.5,
+    def push_in(self, *cells: tuple, pad: float = 1.4, max_scale: float = 2.6,
                 ms: int = 900) -> None:
         """Move the CAMERA in until every given square is in frame.
 
@@ -732,98 +933,47 @@ class Film:
         under a second. The first cut of the crash film used it and the
         two explosions it was built around were invisible.
 
-        So this is a camera move — a CSS transform on the whole map
-        viewport, which carries the grid, the FX layer and the daylight
-        wash together. Scaling only the grid leaves the explosions
-        behind, since ``#collision-fx-layer`` is its sibling, not its
-        child.
+        Nothing happens on screen when this is called — see the camera
+        note above. It measures the squares, banks a keyframe, and waits
+        out the move so the beat still occupies the screen time a push-in
+        takes. The zoom itself is cropped in afterwards.
 
         Pass every square the beat is about; the scale is solved for,
         never guessed. ``pad`` is in SQUARES and buys room for the burst,
         which is drawn well outside its cell.
         """
-        self._cam = (cells, pad, max_scale)
-        got0 = self.pg.evaluate(
-            _PUSH_IN, [[list(c) for c in cells], pad, max_scale, ms])
-        if not got0:
+        rect = self.pg.evaluate(
+            _MEASURE_CELLS, [[list(c) for c in cells], pad])
+        if not rect:
             self.fails.append(f"cannot push in on {list(cells)} — those "
                               f"squares are not on the board, so the "
                               f"close-up shows nothing")
             return
+        self._cam = (cells, pad, max_scale)
+        self._keyframe(rect, max_scale, ms, f"cells {list(cells)}"[:22])
         self.wait(ms + 260)
 
-        # Confirm the camera actually ended up where it was sent. A
-        # close-up is the one effect that fails silently: the film still
-        # runs, the captions still say "watch this square", and the
-        # result is a wide shot with a caption lying over it. Measure the
-        # subject on screen instead of trusting the style we just wrote.
-        got = self.pg.evaluate("""(cells) => {
-          const vp = document.querySelector('.cc-map-viewport');
-          if (!vp) return null;
-          const vb = vp.getBoundingClientRect();
-          const out = [];
-          for (const [x, y] of cells) {
-            const e = document.querySelector(
-              `.cell[data-x="${x}"][data-y="${y}"]`);
-            if (!e) return null;
-            const b = e.getBoundingClientRect();
-            out.push([b.width, b.left >= vb.left - 1 && b.top >= vb.top - 1
-              && b.right <= vb.right + 1 && b.bottom <= vb.bottom + 1]);
-          }
-          return out;
-        }""", [list(c) for c in cells])
-        if not got:
-            self.fails.append(f"push in on {list(cells)}: the board went "
-                              f"away mid-move")
-            return
-        off = [c for c, g in zip(cells, got) if not g[1]]
-        if off:
-            self.fails.append(
-                f"push in on {list(cells)} left {off} outside the frame — "
-                f"the close-up is pointed at the wrong ground"
-            )
-        k, base = float(got0["k"]), float(got0["base"]) or 1.0
-        if k > 1.25 and got[0][0] < base * 1.2:
-            self.fails.append(
-                f"push in on {list(cells)} asked for {k}x but the squares "
-                f"came out {got[0][0]:.0f}px against {base:.0f}px unzoomed — "
-                f"something reset the camera, so this beat is a wide shot "
-                f"with a close-up's caption over it"
-            )
-        self.expect_overlays_anchored(f"after pushing in on {list(cells)}")
+    def push_in_on(self, *selectors: str, pad: float = 14.0,
+                   max_scale: float = 3.2, ms: int = 900,
+                   why: str = "") -> None:
+        """Push in on PANELS rather than squares.
 
-    def expect_overlays_anchored(self, where: str) -> None:
-        """The pixel-anchored overlays must match the grid they sit on.
-
-        Vision borders and the planned-orders layer snapshot cell rects
-        rather than living in the grid, so any camera move strands them
-        at the previous board's geometry. Nothing errors: you get a
-        vision border stapled across the middle of a magnified board and
-        harvester chips a quarter of the size of the squares they are
-        standing on. Compare the layer against the grid and say so.
+        The old transform could only ever magnify the map, because the
+        map viewport was the element it scaled. A crop over the finished
+        frame has no such loyalty, so the camera can look at the
+        catapult, the station, the vault — anywhere the lesson happens
+        to live. ``basic_score`` is built on this.
         """
-        got = self.pg.evaluate("""() => {
-          const grid = document.querySelector('#map-player .map-grid');
-          const svg = document.querySelector('.vision-border-layer');
-          if (!grid) return null;
-          const g = grid.getBoundingClientRect();
-          if (!svg) return {drift: 0, gw: g.width};
-          const s = svg.getBoundingClientRect();
-          return {drift: Math.max(Math.abs(s.width - g.width),
-                                  Math.abs(s.left - g.left),
-                                  Math.abs(s.top - g.top)),
-                  gw: g.width, sw: s.width};
-        }""")
-        if not got:
-            return
-        # A few pixels is rounding; anything more is the wrong geometry.
-        if float(got["drift"]) > 8:
+        rect = self.pg.evaluate(_MEASURE_SEL, [list(selectors), pad])
+        if not rect:
             self.fails.append(
-                f"{where}: the vision border is drawn on the old grid "
-                f"({got.get('sw', 0):.0f}px wide against a {got['gw']:.0f}px "
-                f"board, off by {got['drift']:.0f}px) — it will sit across "
-                f"the map at the wrong scale"
-            )
+                f"cannot push in on {list(selectors)}{' — ' + why if why else ''}"
+                f" — nothing on screen matches, so the close-up is of the "
+                f"page background")
+            return
+        self._cam = None
+        self._keyframe(rect, max_scale, ms, selectors[0])
+        self.wait(ms + 260)
 
     def watch_lifters(self) -> None:
         """Start tallying how many Houses have a lifter in the air at once.
@@ -866,26 +1016,22 @@ class Film:
             )
 
     def pull_out(self, ms: int = 700) -> None:
-        self.pg.evaluate("""(ms) => {
-          const vp = document.querySelector('.cc-map-viewport');
-          if (!vp) return;
-          vp.style.transition = `transform ${ms}ms cubic-bezier(.4,0,.2,1)`;
-          vp.style.transform = 'none';
-          const fx = document.getElementById('collision-fx-layer');
-          if (fx && fx.parentElement !== vp) vp.appendChild(fx);
-          if (typeof window._osReanchorOverlays === 'function') {
-            if (window.__filmCam) cancelAnimationFrame(window.__filmCam);
-            const until = performance.now() + ms + 80;
-            const chase = () => {
-              window._osReanchorOverlays();
-              window.__filmCam =
-                performance.now() < until ? requestAnimationFrame(chase) : 0;
-            };
-            chase();
-          }
-        }""", ms)
+        """Back out to the whole frame."""
         self._cam = None
+        if not self.cam:
+            return  # never pushed in; nothing to come back from
+        self.cam.append({
+            "t": self.at(), "ms": float(ms), "z": 1.0,
+            "cx": float(VIEWPORT["width"]) / 2.0,
+            "cy": float(VIEWPORT["height"]) / 2.0,
+        })
+        # Caption last, unlike a push-in. Going out, the window GROWS
+        # away from where the caption is sitting, so it stays in shot
+        # all the way; sending it to the page bottom now would drop it
+        # out for the length of the move.
         self.wait(ms + 200)
+        self._win = None
+        self.pg.evaluate("() => window.__film.frame(null)")
 
     def score(self) -> str:
         return str(self.pg.evaluate("""() => {
@@ -963,6 +1109,17 @@ class Film:
 # ── film registry ───────────────────────────────────────────────────
 
 FILMS: Dict[str, Callable[..., None]] = {}
+
+#: Films delivered as one clip but shot in more than one take (v1.37).
+#: A take is a whole session and a whole night, so anything that needs
+#: to show the SAME move going two different ways cannot be one take —
+#: and a before/after is often the only honest way to teach a timing
+#: rule. Parts are ordinary films: they stage, shoot and get their
+#: camera pass exactly like everything else, and the join is a stream
+#: copy of two finished files, which is why they must share an encode.
+#: The parts are deleted once joined; nothing outside here knows they
+#: existed.
+SPLICES: Dict[str, List[str]] = {}
 
 #: What must be on screen before a film starts. Per-film because the
 #: ORDERS panel does not exist during ORBIT and vice versa — waiting on
@@ -1119,80 +1276,152 @@ def _lit_cells(pg) -> List[Dict[str, int]]:
 
 @film("basic_drop")
 def _drop(f: Film, base: str, sid: str) -> None:
-    """Night two: the whole harvesting turn, done correctly.
+    """Night two: what RED is worth, and what taking it costs.
 
-    Drop, walk AND lift in one film, deliberately. Splitting the lift
-    into its own film left this one ending on a harvester the UI had
-    already stickered STRANDED — a film whose last frame is the game
-    telling you that you have made a mistake. See ``basic_stranded``,
-    which shows that on purpose.
+    Three lessons that only make sense together, which is why they are
+    one film (v1.37).
+
+    First the price list. The tooltip already does the arithmetic —
+    purity x tier multiplier — but a player reading one card has
+    nothing to compare it against. Four cards in a row, on a board
+    pinned so the numbers can be said out loud, turns four abstract
+    multipliers into an ordering: trace is a wasted hour, vein pays if
+    you get a run of it, two mass is most of a jackpot, and a pure is
+    worth thirty-three trace squares.
+
+    Then the turn itself. An earlier cut landed on ``lit[0]`` — the
+    first live square, whatever it was — so the film that teaches
+    harvesting mostly harvested nothing, and never showed the walk
+    paying. This one lands ON red and walks a real seam, ending on the
+    pure it just priced.
+
+    Then the bill. Every RED square harvested becomes GREEN 255, worth
+    -100 to whoever banks it, and entry harvests are not optional
+    (§3.4). The last shot is the 765 square reading -100, because the
+    trail you leave is the other half of the move and the one nobody
+    plans for.
+
+    Drop, walk AND lift stay in one film, as before: splitting the lift
+    out left this ending on a harvester the UI had already stickered
+    STRANDED. See ``basic_stranded``, which shows that on purpose.
     """
-    lit = _lit_cells(f.pg)
-    if len(lit) < 6:
-        f.fails.append(
-            f"only {len(lit)} live squares — nothing legal to land on, so the "
-            "film would teach a drop the engine refuses"
-        )
-        return
-    land = lit[0]
+    tiers = {t: tuple(c) for t, c in f.plan["tiers"].items()}
+    seam = [tuple(c) for c in f.plan["seam"]]
 
-    f.say("Seeing RED scores nothing. Harvesting it is the game.", hold=2000)
+    def read(tier: str) -> None:
+        """Hover a square, frame its card, and check it says what the
+        narration is about to claim."""
+        x, y = tiers[tier]
+        f.hover_cell(x, y, ms=520, hold=620)
+        f.push_in_on(f.cell(x, y), TOOLTIP, pad=30.0, max_scale=2.5,
+                     ms=760, why=f"the {tier} square and its card")
+        f.wait(700)
+        tip = f.tooltip()
+        want = str(BASIC_TIER_SCORE[tier])
+        if want not in tip or tier not in tip.lower():
+            f.fails.append(
+                f"the {tier} square at {tiers[tier]} reads {tip!r} — the "
+                f"narration says {want}, so either the board moved or the "
+                f"tooltip stopped pricing cells"
+            )
 
-    f.say("DROP puts a harvester on the surface")
+    f.say("RED in the vault is the whole game. Seeing it scores nothing.",
+          hold=3000)
+    f.say("And no two RED squares are worth the same.", hold=2600)
+    f.say("Hover one. The card prices it for you.", hold=2600)
+
+    read("trace")
+    f.say("TRACE. Purity 30 \u2014 and a 0.75 penalty on top. Twenty-three.",
+          hold=3200)
+    f.say("That is one hour of a 21-hour night, and one slot of a "
+          "six-slot hold, for twenty-three points.", hold=3800)
+
+    read("vein")
+    f.say("VEIN. 107 at 1.0 \u2014 what you see is what you bank.", hold=3000)
+    f.say("Ordinary. But there is a lot of vein, and seven of these is a "
+          "jackpot.", hold=3400)
+
+    read("mass")
+    f.say("MASS. 203 at 1.5 \u2014 three hundred and five.", hold=3000)
+    f.say("The workhorse. Two good MASS squares are worth about one "
+          "jackpot, and they are far easier to find.", hold=3800)
+
+    read("pure")
+    f.say("PURE. 255 at 3.0. Seven hundred and sixty-five.", hold=3000)
+    f.say("One square. One hour. Thirty-three TRACE squares.", hold=3200)
+    f.say("A pure changes the pace of a game \u2014 which is why nobody "
+          "lets you keep one quietly.", hold=3600)
+    f.pull_out()
+
+    f.say("So: never walk for trace. Walk a run of vein. Fight for mass. "
+          "And take a pure the hour you can reach it.", hold=4200)
+
+    f.say("DROP puts a harvester on the surface \u2014 and only where you "
+          "can see RIGHT NOW", hold=3200)
     f.click('.cc-fleet-row .cc-fleet-verb', before=460, after=460)
-
-    f.say("You can only land where you can see RIGHT NOW")
-    f.click(f.cell(land["x"], land["y"]), before=520, after=800, ms=700)
+    f.click(f.cell(*seam[0]), before=520, after=800, ms=700)
 
     # The picker re-arms as STEP after a landing, by design, so the walk
     # is just more clicks — which is the point worth showing.
-    f.say("Keep clicking to walk it \u2014 each step harvests that square")
-    walked = 0
-    for stepc in _neighbour_chain(lit, land, 3):
-        sel = f.cell(stepc["x"], stepc["y"])
+    f.say("Every square you enter is harvested automatically. Keep "
+          "clicking.", hold=3000)
+    for step in seam[1:]:
+        sel = f.cell(*step)
         if not f.pg.locator(sel).count():
-            continue
-        f.click(sel, before=240, after=480, ms=360)
-        walked += 1
-    if walked < 2:
-        f.fails.append(f"only walked {walked} step(s) — no chain to show")
+            f.fails.append(f"no square at {step} — the pinned seam has "
+                           f"moved, so the walk is off the board")
+            return
+        f.click(sel, before=240, after=480, ms=380)
     f.escape(after=300)
+    f.say("Six squares \u2014 a landing and five steps. That is the whole "
+          "hold, and the last one is the 765.", hold=3800)
 
     lift = '.cc-fleet-row .cc-fleet-verb:has-text("LIFT")'
     if not f.pg.locator(lift).count():
         f.fails.append("no LIFT verb on the fleet row")
         return
-    f.say("Then LIFT, always \u2014 that is the whole turn")
+    f.say("Then LIFT, always. Ore on the surface at dawn is not ore.",
+          hold=3000)
     f.click(lift, before=460, after=1000)
-    f.expect_slots(4, "drop + walk + lift")
+    f.expect_slots(7, "a landing, five steps and a lift")
+
+    f.praxis(cues=[
+        ("H01", "The landing harvests the square it lands on \u2014 237, "
+         "mass", 800, [seam[0]]),
+        ("H04", "Up the seam, one square an hour", 800),
+        # No H07 cue: the lift is the last thing that happens, and the
+        # clock runs straight from the hour of the last harvest to
+        # AURORA rather than showing an hour with nothing left in it.
+        ("H06", "And the last one is the pure. 765.", 1200, [seam[5]]),
+        ("AURORA", "Lifted on hour seven with a full hold \u2014 2188 off "
+         "one seam.", 1000),
+    ])
+    f.pull_out()
+
+    f.say("Now look at what you left behind.", hold=2800)
+    px, py = tiers["pure"]
+    f.hover_cell(px, py, ms=620, hold=700)
+    f.push_in_on(f.cell(px, py), TOOLTIP, pad=30.0, max_scale=2.5, ms=860,
+                 why="the jackpot square, after the harvest")
+    f.wait(900)
+    tip = f.tooltip()
+    if "GREEN" not in tip.upper() or "100" not in tip:
+        f.fails.append(
+            f"the harvested jackpot at {(px, py)} reads {tip!r} — this "
+            f"film ends on it being GREEN and worth -100"
+        )
+    f.say("The same square. An hour ago it was 765.", hold=3000)
+    f.say("Every RED square you harvest turns GREEN. Green is worth "
+          "MINUS one hundred.", hold=3600)
+    f.say("And harvesting is automatic \u2014 anything that walks in here "
+          "has no choice about picking it up.", hold=3800)
+    f.pull_out()
+    f.say("So you did not just bank 2188. You laid six of those across "
+          "the best seam on the board.", hold=4000)
+    f.say("Including for yourself. Never walk back over your own trail.",
+          hold=3600)
     f.say(None)
     f.wait(600)
-
-
-def _neighbour_chain(lit: List[Dict[str, int]], start: Dict[str, int],
-                     n: int) -> List[Dict[str, int]]:
-    """A short walk of adjacent LIVE squares from ``start``.
-
-    Adjacency matters: a step to a non-adjacent square is refused, so a
-    film that jumps is a film of an order that never happens.
-    """
-    live = {(c["x"], c["y"]) for c in lit}
-    chain: List[Dict[str, int]] = []
-    cur = (start["x"], start["y"])
-    used = {cur}
-    for _ in range(n):
-        nxt = None
-        for dx, dy in STEP_RING:
-            cand = (cur[0] + dx, cur[1] + dy)
-            if cand in live and cand not in used:
-                nxt = cand
-                break
-        if nxt is None:
-            break
-        used.add(nxt)
-        chain.append({"x": nxt[0], "y": nxt[1]})
-        cur = nxt
-    return chain
 
 
 @film("basic_stranded")
@@ -1244,9 +1473,15 @@ def _stranded(f: Film, base: str, sid: str) -> None:
     ])
 
     f.say("Gone. Harvester and cargo both.", hold=2000)
-    f.push_in(grave)
+    # Hover FIRST, then frame the cell and its readout together. Framing
+    # the square alone and hovering afterwards puts the tooltip half off
+    # the right edge — the close-up exists to make the wreck legible and
+    # the card is the half that says what it is.
+    f.hover_cell(grave[0], grave[1], ms=700, hold=900)
+    f.push_in_on(f.cell(*grave), TOOLTIP, pad=26.0, max_scale=2.5,
+                 why="the wreck and the card that names it")
     f.say("That cross is a permanent wreck")
-    f.hover_cell(grave[0], grave[1], ms=700, hold=1900)
+    f.wait(1400)
     # The tooltip renders a wreck as the dagger glyph plus the dead
     # unit's id and the day it died — the word "destroyed" is only the
     # ARIA label, so matching on it passes a film that shows bare ground.
@@ -1331,7 +1566,6 @@ def _crash(f: Film, base: str, sid: str) -> None:
         f.replay_step(1, hold=2600)
         f.say("Both set down on the same ground. Both bounce.")
         f.replay_step(1, hold=3000)
-    f.pull_out()
 
     # By now the night has resolved, so the ORDERS roster is gone and
     # the aftermath lives in the ORBIT panel: two damaged hulls and a
@@ -1448,8 +1682,39 @@ def _score(f: Film, base: str, sid: str) -> None:
     f.click(f.cell(int(v["width"] * 0.5), int(v["height"] * 0.25)),
             before=280, after=520, ms=520)
     f.escape(after=250)
+
+    # The last act is not on the board at all, and the old camera could
+    # not have shot it: it only ever scaled the map viewport, so the two
+    # things this film is finally ABOUT — an arm throwing a load, and a
+    # number climbing — were permanently out of shot. A crop over the
+    # finished frame has no such loyalty.
+    #
+    # Get tight on the catapult BEFORE committing, so the throw happens
+    # in a frame we are already holding rather than one we are chasing.
+    # Tight, and tighter than it looks like it needs to be. The station
+    # rail is a 122px column hard against the left edge, so a crop can
+    # never centre it — it clamps at x=0 and the subject sits in the
+    # left third whatever you ask for. The only lever left is how much
+    # of the REST of the screen comes along, and at a gentler scale that
+    # rest was the replay bar and half the board, which is how the first
+    # cut ended up looking like an arbitrary corner of the page.
+    f.push_in_on(CATAPULT, pad=12.0, max_scale=3.2,
+                 why="the catapult is the subject of this film's last beat")
     f.praxis(cues=[
-        ("VESPERA", "The catapult loads \u2014 and throws"),
+        ("VESPERA", "The catapult loads \u2014 and throws", 0),
+        # Same hour, later. Two things happen a beat apart inside this
+        # one frame — the arm throws at roughly 1.8s, and the "+X" then
+        # folds into a readout that tweens up over about two thirds of a
+        # second — and no single framing holds both, because the station
+        # rail is a narrow column and fitting the catapult and the score
+        # in together drops the pair to a fifth of the width.
+        #
+        # So: leave late and travel fast. The throw has happened by the
+        # time the camera lets go of the catapult, and a 380ms pan lands
+        # on the number while it is still climbing. Arriving after it
+        # settles shows a total, which is not the lesson — the lesson is
+        # a payment arriving.
+        ("VESPERA", "\u2014 and the number climbs", 1900, SCOREBOARD, 380),
     ])
 
     after = f.score()
@@ -1459,8 +1724,8 @@ def _score(f: Film, base: str, sid: str) -> None:
             f"last beat is its whole point and it did not happen"
         )
     f.say("There it is \u2014 banked, and on the board")
-    f.point_near('[data-os-score="p1"]', dx=46, ms=760)
     f.wait(2400)
+    f.pull_out()
     f.park()
 
     f.say("Harvest tonight, ship tomorrow. That is the whole loop.",
@@ -1682,6 +1947,13 @@ def _adv_redsign(f: Film, base: str, sid: str) -> None:
     same beacon. A jackpot you find quietly would be worth hoarding; a
     jackpot that announces itself is a race, and that is the whole
     reason the Advanced board plays differently from Basic.
+
+    Say ASYMMETRY out loud, though, because "everyone gets told" on its
+    own is a reason not to bother probing. §4.11 jitters the smear's
+    centre off the seam and spreads it well past the footprint, and
+    paints it on fog only — so the finder is looking at the square in
+    live vision while every rival gets a neighbourhood. That gap is the
+    prize, and the first cut of this film never mentioned it.
     """
     mine = tuple(f.plan["mine"])
 
@@ -1703,7 +1975,8 @@ def _adv_redsign(f: Film, base: str, sid: str) -> None:
 
     f.praxis(cues=[
         ("H01", "Hour one \u2014 the disk opens", 400),
-        ("H02", "A RED SIGN. You have found a pure seam.", 900, [mine]),
+        ("H02", "A REDSIGN. Your probe has walked onto a pure seam.",
+         900, [mine]),
     ])
     f.wait(1400)
 
@@ -1713,9 +1986,16 @@ def _adv_redsign(f: Film, base: str, sid: str) -> None:
             "no redsign painted after probing a pure-255 cell \u2014 this "
             "film's entire subject is missing from the frame"
         )
-    f.say("And so has everybody else.", hold=2400)
-    f.say("A red sign is PUBLIC. It does not name who lit it, but the "
-          "beacon is on every House's map from this hour.", hold=3400)
+    f.say("And every other House just got one too.", hold=2400)
+    f.say("A REDSIGN is public. Same hour for everyone, and it never "
+          "says who lit it.", hold=3200)
+    # The asymmetry is the lesson, and the first cut of this film left it
+    # out entirely — it said the beacon was "minted over" the seam, which
+    # reads as a pin on the square and makes finding one worth nothing.
+    f.say("But it is not a pin. The smear sits OFF the real seam and "
+          "spreads past it: a pure is somewhere around here.", hold=3600)
+    f.say("You are the only House that can see the actual square. "
+          "That gap is your head start.", hold=3400)
     f.pull_out()
     f.say("Pures are rationed \u2014 a couple on a board this size. That "
           "makes every one of them contested by default.", hold=3400)
@@ -1749,7 +2029,7 @@ def _adv_redsign_rival(f: Film, base: str, sid: str) -> None:
 
     f.praxis(cues=[
         ("H01", "Your probes open, over here", 400),
-        ("H02", "\u2014 and a RED SIGN blazes over there.", 1100, [theirs]),
+        ("H02", "\u2014 and a REDSIGN blazes over there.", 1100, [theirs]),
     ])
     f.wait(1500)
 
@@ -1760,10 +2040,11 @@ def _adv_redsign_rival(f: Film, base: str, sid: str) -> None:
             "reached this seat, which is the one thing the film claims"
         )
     f.say("You have no probe within a mile of it. That is the other "
-          "House finding a pure seam.", hold=3200)
-    f.say("You learn the same hour they do, and roughly where. You do "
-          "NOT learn which square, or what they mean to do about it.",
-          hold=3600)
+          "House walking onto a pure seam.", hold=3200)
+    f.say("Same hour they got it \u2014 but only the rough area. Not the "
+          "square, not who, not how much.", hold=3600)
+    f.say("Only the finder knows exactly where. The smear paints on FOG, "
+          "so probe into it and it burns off as you close in.", hold=3600)
     f.pull_out()
     f.say("Which is the point: a jackpot cannot be hidden. It can only "
           "be reached first.", hold=3000)
@@ -1771,22 +2052,186 @@ def _adv_redsign_rival(f: Film, base: str, sid: str) -> None:
     f.wait(600)
 
 
-@film("adv_emp")
-def _adv_emp(f: Film, base: str, sid: str) -> None:
-    """Night three: take their eye off the jackpot, then use it yourself.
+@film("adv_smash_grab")
+def _adv_smash_grab(f: Film, base: str, sid: str) -> None:
+    """Night three: take the pure you can see, and take it badly.
 
-    Two halves, and the second is the one people miss. Frying a probe
-    is satisfying; the reason to do it is that ``live_only`` drops mean
-    a House with no eye on a square cannot land on it. Eight hours of
-    cloud is eight hours in which that seam is yours alone.
+    The instinct on finding a jackpot is to work the seam around it,
+    and the arithmetic says otherwise. A pure is 255 x 3.0 = 765 in ONE
+    hour; the five squares behind it are 1050 spread over five more,
+    plus the lift. So the greedy line is worth 73% more and costs three
+    and a half times the exposure — and every extra hour is an hour the
+    765 is still sitting on the board, where a rival who can see it can
+    land on it.
+
+    The film prices both and then throws the better one away, because
+    that is the actual decision. Certainty is the thing being bought.
+    """
+    mine = tuple(f.plan["mine"])
+    greedy = [tuple(c) for c in f.plan["greedy"]]
+
+    f.say("Night two found this. Your probe is still sitting on it.",
+          hold=2800)
+    f.hover_cell(mine[0], mine[1], ms=900, hold=700)
+    f.push_in_on(f.cell(*mine), TOOLTIP, pad=26.0, max_scale=2.4, ms=900,
+                 why="the jackpot and the card that prices it")
+    f.wait(1900)
+    tip = f.tooltip()
+    if "765" not in tip:
+        f.fails.append(
+            f"the pure at {mine} is not showing its 765 in the tooltip: "
+            f"{tip!r} — this film's whole argument is that number"
+        )
+    f.say("PURE. 255 x 3.0 = 765, in one square.", hold=3000)
+    f.pull_out()
+
+    f.say("And a seam behind it \u2014 five more squares, 1050 between them",
+          hold=3000)
+    for c in greedy[:3]:
+        f.hover_cell(c[0], c[1], ms=420, hold=420)
+    f.park()
+
+    f.say("So the greedy line banks 1815. It also keeps you on the "
+          "surface for seven hours.", hold=3600)
+    f.say("And for every one of them, that 765 is still on the board, "
+          "where anyone who can see it can land on it.", hold=3800)
+
+    f.say("SMASH AND GRAB: land ON the pure, and leave.", hold=2800)
+    f.click('.cc-fleet-row .cc-fleet-verb', before=460, after=460)
+    f.click(f.cell(*mine), before=560, after=860, ms=720)
+    f.escape(after=300)
+    lift = '.cc-fleet-row .cc-fleet-verb:has-text("LIFT")'
+    if not f.pg.locator(lift).count():
+        f.fails.append("no LIFT verb after the landing — no smash, no grab")
+        return
+    f.click(lift, before=420, after=780)
+    f.expect_slots(2, "a landing and a lift, and nothing else")
+
+    f.praxis(cues=[
+        ("H01", "Landing harvests the square it lands on. 765, banked.",
+         700, [mine]),
+        ("H02", "Hour two \u2014 and it is off the planet.", 900),
+        ("AURORA", "Two hours. One parcel. Five slots of hold you never "
+         "opened.", 700),
+    ])
+    f.pull_out()
+    f.say("You walked away from 1050 of good red. That is the price.",
+          hold=3200)
+    f.say("What you bought is CERTAINTY \u2014 ore in the hold cannot be "
+          "harvested, contested or found by anybody.", hold=3800)
+    f.say("Two things still beat it. CHAFF on your lift hour: no ride "
+          "home, and dawn takes the hull and the hold with it.", hold=3800)
+    f.say("Or a House with its own eye on that square, dropping into it "
+          "the same hour. Then nobody lands and both hulls come home "
+          "damaged.", hold=4000)
+    f.say(None)
+    f.wait(600)
+
+
+@film("adv_blind_grab")
+def _adv_blind_grab(f: Film, base: str, sid: str) -> None:
+    """Night three: attack a jackpot you cannot see.
+
+    The counterpart to smash-and-grab, and the harder sell, because it
+    does not get the pure. What it gets is everything around getting
+    the pure: their eye is out so they cannot land on it either, five
+    squares of ordinary red are in the hold, and the probe that led the
+    harvester in has lit the exact square for tomorrow.
+
+    The trap this film exists to show is friendly fire. The obvious
+    salvo — three diamonds centred on the beacon — denies the harvest
+    on every square you were going to walk (§4.9.3). So the wall goes
+    UNDER the seam: it still catches their probe on the diamond's top
+    point, and leaves the northern approach clean.
     """
     theirs = tuple(f.plan["theirs"])
-    salvo = [tuple(c) for c in f.plan["salvo"]]
-    beside = tuple(f.plan["beside"])
+    salvo = [tuple(c) for c in f.plan["blind_salvo"]]
+    eye = tuple(f.plan["blind_eye"])
+    land = tuple(f.plan["blind_land"])
+    comb = [tuple(c) for c in f.plan["blind_comb"]]
 
-    f.say("The other House has an eye on their jackpot", hold=2400)
-    f.hover_cell(theirs[0], theirs[1], ms=900, hold=1600)
+    f.say("Their beacon. You have never been within four squares of it.",
+          hold=3000)
+    f.hover_cell(land[0], land[1], ms=900, hold=1400)
+    f.say("Fog. No tier, no purity, no number \u2014 the smear says a pure "
+          "is around HERE and nothing else.", hold=3600)
+    f.park()
 
+    f.say("First: take the eye that lit it", hold=2600)
+    f.click(_adv_deploy(f, "EMP"), before=520, after=520)
+    for c in salvo:
+        f.click(f.cell(c[0], c[1]), before=300, after=520, ms=420)
+    f.escape(after=400)
+    f.say("UNDER the seam, not over it. Your own cloud denies your own "
+          "harvest \u2014 there is no friendly fire switch.", hold=3800)
+
+    f.say("Then an eye of your own, on the northern edge")
+    f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=460, after=420)
+    f.click(f.cell(eye[0], eye[1]), before=520, after=820, ms=660)
+    f.escape(after=300)
+
+    f.say("And the harvester \u2014 queued NOW, before that probe has told "
+          "you one thing", hold=3600)
+    f.click('.cc-fleet-row .cc-fleet-verb', before=460, after=460)
+    f.click(f.cell(*land), before=560, after=860, ms=720)
+    f.say("Five steps, picked off a smear. This is the blind part.",
+          hold=2600)
+    for c in comb:
+        f.click(f.cell(c[0], c[1]), before=220, after=460, ms=360)
+    f.escape(after=300)
+    lift = '.cc-fleet-row .cc-fleet-verb:has-text("LIFT")'
+    if not f.pg.locator(lift).count():
+        f.fails.append("no LIFT verb after the blind landing")
+        return
+    f.click(lift, before=420, after=780)
+    f.expect_slots(9, "salvo, probe, blind landing, five steps and a lift")
+
+    f.praxis(cues=[
+        ("H01", "Their probe is gone. The beacon stays lit \u2014 and now "
+         "only one House can look at it.", 900, salvo + [theirs]),
+        ("H02", "Your eye opens on the edge of the smear", 700, [eye]),
+        ("H03", "And the landing you already committed to", 800, [land]),
+        ("H07", "Combing: 220, 129, 184, 124, 121 \u2014 and one bare "
+         "square, because you were guessing.", 800),
+        ("AURORA", "980 in the vault. Not a jackpot.", 700),
+    ])
+    f.pull_out()
+
+    f.say("You missed the pure. Look what you bought anyway.", hold=3000)
+    f.hover_cell(theirs[0], theirs[1], ms=900, hold=700)
+    f.push_in_on(f.cell(*theirs), TOOLTIP, pad=26.0, max_scale=2.4, ms=900,
+                 why="the seam the comb walked past, now readable")
+    f.wait(1900)
+    tip = f.tooltip()
+    if "255" not in tip:
+        f.fails.append(
+            f"the rival jackpot at {theirs} did not come into vision: "
+            f"{tip!r} — the pay-off of this film is being able to read it"
+        )
+    f.say("Your probe lit it on the way past. You know the square now.",
+          hold=3200)
+    f.pull_out()
+    f.say("Blind and grab is not a jackpot play. It is a TEMPO play.",
+          hold=2800)
+    f.say("Their eye is out, so they cannot land on it either. You have "
+          "980, the exact square, and the whole of tomorrow.", hold=4000)
+    f.say(None)
+    f.wait(600)
+
+
+# ── the walk-in, in two takes ───────────────────────────────────────
+#
+# One night cannot show a timing rule and its consequence, so this is
+# spliced: the same salvo, the same harvester, the same five squares,
+# walked impatiently and then patiently. Both takes were run headless
+# first (_probe_tactics.py) and the gap is not rhetorical — rushing
+# banks literally nothing, because the cloud does not merely deny the
+# harvest, it freezes the hull for four hours.
+SPLICES["adv_emp"] = ["adv_emp_rush", "adv_emp_wait"]
+
+
+def _emp_open(f: Film, salvo: List[tuple], theirs: tuple) -> None:
+    """The half both takes share: fire the wall, park a hull outside."""
     f.say("One EMP launch is a salvo of three")
     f.click(_adv_deploy(f, "EMP"), before=520, after=520)
     f.say("Each missile is a radius-2 diamond. Overlap them and you get "
@@ -1795,33 +2240,111 @@ def _adv_emp(f: Film, base: str, sid: str) -> None:
         f.click(f.cell(c[0], c[1]), before=300, after=520, ms=420)
     f.escape(after=400)
 
-    f.say("Now a probe of your own \u2014 just OUTSIDE the wall")
+
+@film("adv_emp_rush")
+def _adv_emp_rush(f: Film, base: str, sid: str) -> None:
+    """Take one: everything right except the clock."""
+    theirs = tuple(f.plan["theirs"])
+    salvo = [tuple(c) for c in f.plan["salvo"]]
+    beside = tuple(f.plan["beside"])
+    walk = [tuple(c) for c in f.plan["walk_in"]]
+
+    f.say("The other House has an eye on their jackpot", hold=2400)
+    f.hover_cell(theirs[0], theirs[1], ms=900, hold=1500)
+    f.park()
+    _emp_open(f, salvo, theirs)
+
+    f.say("Eight hours of cloud over their seam. Now go and take it.",
+          hold=3000)
     f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=460, after=420)
     f.click(f.cell(beside[0], beside[1]), before=520, after=800, ms=640)
     f.escape(after=300)
-
-    f.say("And land on it. Beside a cloud still harvests \u2014 inside one "
-          "does not.", hold=2800)
     f.click('.cc-fleet-row .cc-fleet-verb', before=460, after=460)
-    f.click(f.cell(beside[0], beside[1]), before=520, after=800, ms=640)
+    f.click(f.cell(beside[0], beside[1]), before=520, after=820, ms=660)
+    f.say("Land clear of the wall, then walk straight in. Five squares, "
+          "ending on their 255.", hold=3400)
+    for c in walk:
+        f.click(f.cell(c[0], c[1]), before=220, after=440, ms=340)
     f.escape(after=300)
     lift = '.cc-fleet-row .cc-fleet-verb:has-text("LIFT")'
     if f.pg.locator(lift).count():
         f.click(lift, before=380, after=700)
-    f.expect_slots(4, "salvo + probe + drop + lift")
+    f.expect_slots(9, "salvo, probe, landing, five steps and a lift")
 
     f.praxis(cues=[
         ("H01", "Three missiles, one wall", 500, salvo + [theirs]),
-        ("H02", "Their probe is gone. The beacon stays lit.", 1200),
-        ("H03", "They still know the seam is there \u2014 and can no longer "
-         "see it, so they cannot land on it.", 900),
-        ("H04", "You land one square clear of the cloud, and harvest "
-         "normally.", 800, [beside]),
-        ("AURORA", "Eight hours of denial. You choose when that ground "
-         "is open.", 600),
+        ("H03", "You land one square outside it", 700, [beside]),
+        ("H04", "First step in \u2014 and the cloud denies the harvest",
+         900, [walk[0]]),
+        ("H07", "Disabled. Inside a live cloud a hull does not act at "
+         "all.", 900),
+        ("AURORA", "Lifted on hour nine with an empty hold.", 700),
     ])
     f.pull_out()
-    f.say("EMP does not take the red. It takes the CLOCK.", hold=2800)
+    f.say("Nothing. Not a reduced haul \u2014 nothing.", hold=2800)
+    f.say("You spent the EMP, the probe and the whole night walking "
+          "through your own weapon.", hold=3600)
+    f.say(None)
+    f.wait(700)
+
+
+@film("adv_emp_wait")
+def _adv_emp_wait(f: Film, base: str, sid: str) -> None:
+    """Take two: the same night, played on the clock you set."""
+    theirs = tuple(f.plan["theirs"])
+    salvo = [tuple(c) for c in f.plan["salvo"]]
+    beside = tuple(f.plan["beside"])
+    walk = [tuple(c) for c in f.plan["walk_in"]]
+
+    f.say("Again. Same salvo, same hull, same five squares.", hold=2800)
+    _emp_open(f, salvo, theirs)
+
+    f.say("The cloud is live from hour one to hour EIGHT. You know that "
+          "because you set it.", hold=3600)
+    f.click('.cc-deploy-btn:has-text("LAUNCH PROBE")', before=460, after=420)
+    f.click(f.cell(beside[0], beside[1]), before=520, after=800, ms=640)
+    f.escape(after=300)
+
+    # The waits go in FRONT of the landing rather than between it and
+    # the walk. Same hours either way — the hull is off the board until
+    # hour eight and steps in on nine — but this keeps drop, walk and
+    # lift in one uninterrupted picker session, which is the sequence
+    # the panel is built for.
+    f.say("So spend the hours first. Five of them, on nothing.",
+          hold=3000)
+    for _ in range(5):
+        f.click('.cc-deploy-btn:has-text("WAIT")', before=220, after=320)
+    f.say("Five hours of a 21-hour night, burned on purpose", hold=2800)
+
+    f.say("Now land, and walk in behind the clock", hold=2600)
+    f.click('.cc-fleet-row .cc-fleet-verb', before=460, after=460)
+    f.click(f.cell(beside[0], beside[1]), before=520, after=820, ms=660)
+    for c in walk:
+        f.click(f.cell(c[0], c[1]), before=220, after=440, ms=340)
+    f.escape(after=300)
+    lift = '.cc-fleet-row .cc-fleet-verb:has-text("LIFT")'
+    if f.pg.locator(lift).count():
+        f.click(lift, before=380, after=700)
+    f.expect_slots(14, "salvo, probe, landing, five waits, five steps, lift")
+
+    f.praxis(cues=[
+        ("H01", "Three missiles, one wall", 500, salvo + [theirs]),
+        ("H05", "Nothing happening, deliberately", 800),
+        ("H08", "Landing outside the wall on the hour it expires", 900,
+         [beside]),
+        ("H09", "Hour nine. The cloud is gone, and you step in.", 1000,
+         [walk[0]]),
+        ("H12", "Harvesting all the way down the row", 800),
+        ("H13", "And the last square is their jackpot. 765.", 1100,
+         [theirs]),
+        ("AURORA", "1078 banked, off a seam they lit and never reached.",
+         700),
+    ])
+    f.pull_out()
+    f.say("They could read that timer too. The difference is you were "
+          "already standing next to it when it ran out.", hold=4000)
+    f.say("EMP does not take the red. It takes the CLOCK \u2014 and the "
+          "clock is only worth having if you wait for it.", hold=4000)
     f.say(None)
     f.wait(600)
 
@@ -1854,21 +2377,34 @@ def _adv_buy_chaff(f: Film, base: str, sid: str) -> None:
 
 @film("adv_chaff")
 def _adv_chaff(f: Film, base: str, sid: str) -> None:
-    """Night four: cancel a lift, and let the sunrise do the rest.
+    """Night four: denial first, and then what denial becomes.
 
-    Chaff reads like a delay weapon — three hours where nobody acts —
-    and used as one it mostly wastes your own turn too. Its real use is
-    surgical: the lifter is the only way off the surface, a cancelled
-    pickup cannot be re-queued, and dawn kills whatever is still down
-    there. Three hours of jamming, aimed at one of them, is a kill.
+    An earlier cut opened by calling denial "an expensive shrug" on the
+    way to the kill, which is wrong and teaches badly. Three hours in
+    which no House can land, walk or lift is three hours of a contested
+    seam being nobody's — and if you are the one already walking toward
+    it, that is the whole seam. Denial is the weapon; most turns it is
+    all you need.
+
+    The kill is what the same flare becomes when it is aimed at one
+    hour instead of three. The lifter is the only way off the surface,
+    a cancelled pickup burns its slot, and dawn takes whatever is still
+    standing. That is the advanced move, and it is built on the
+    ordinary one.
     """
     grave = tuple(f.plan["grave"])
 
     f.say("Chaff jams every House for three hours. Yours included.",
           hold=2800)
-    f.say("Used for denial that is an expensive shrug", hold=2400)
-    f.say("Aim it at one hour instead \u2014 the hour they reach for the "
-          "lifter", hold=2800)
+    f.say("Three hours where nobody lands, nobody walks, nobody lifts. "
+          "That is DENIAL, and denial takes seams.", hold=3600)
+    f.say("Fire it over a pure nobody has grabbed yet and it is simply "
+          "not available \u2014 while you are already walking at it.",
+          hold=3800)
+    f.say("Most turns that is the whole use, and it is worth the flare "
+          "on its own.", hold=3000)
+    f.say("Now aim the same three hours at ONE hour \u2014 the hour they "
+          "reach for the lifter", hold=3400)
 
     # Four waits, so the flare goes up on H05 and smothers H05-H07.
     # Three was a hour too early: it ate the rival's last STEP as well,
@@ -1898,8 +2434,10 @@ def _adv_chaff(f: Film, base: str, sid: str) -> None:
     f.wait(1600)
 
     f.say("A harvester, and everything in its hold", hold=2400)
-    f.push_in(grave, pad=2.4, ms=900)
-    f.hover_cell(grave[0], grave[1], ms=800, hold=2400)
+    f.hover_cell(grave[0], grave[1], ms=800, hold=900)
+    f.push_in_on(f.cell(*grave), TOOLTIP, pad=26.0, max_scale=2.5, ms=900,
+                 why="the wreck and the card that names it")
+    f.wait(1600)
     tip = f.tooltip()
     if "\u2020" not in tip and "lost" not in tip.lower():
         f.fails.append(
@@ -1910,6 +2448,8 @@ def _adv_chaff(f: Film, base: str, sid: str) -> None:
     f.pull_out()
     f.say("You never touched it. You just took away the ride home.",
           hold=3000)
+    f.say("Denial buys you a seam. The lifter buys you the harvester and "
+          "everything in it. Same flare \u2014 different hour.", hold=4000)
     f.say(None)
     f.wait(600)
 
@@ -1920,6 +2460,81 @@ def _adv_chaff(f: Film, base: str, sid: str) -> None:
 #: so ``setup_for`` routes on membership and nobody has to remember which
 #: constructor a film wanted.
 DUEL_FILMS = {"basic_crash", "basic_stranded", "basic_score"}
+
+
+# ── the tier board ──────────────────────────────────────────────────
+#
+# Every other basic film runs on the batch seed, because none of them
+# says a number out loud — "spread your probes" is true on any terrain.
+# `basic_drop` is the exception: it prices four named squares and walks
+# a named seam, so it pins its board (v1.37).
+#
+# Found with `_probe_basicseed.py`, which searched for the one thing the
+# generator will not promise — one of each RED tier close enough
+# together to tour with the cursor, next to a six-square orthogonal RED
+# chain (a landing plus five steps, which is exactly the hold). Seed 14
+# puts the quartet inside a 2-square spread and ends the chain ON the
+# pure, so the walk pays off the lesson that preceded it.
+#
+# A single probe at BASIC_TIER_EYE covers all eight squares; the second
+# probe only goes somewhere else because the reel spends the previous
+# card telling players to spread them, and a film that contradicts its
+# own card teaches the card is optional.
+BASIC_DROP_SEED = 14
+#: Deliberately one square SOUTH of the seam rather than on it. A
+#: harvester entering a square crushes the probe in it, and this film
+#: ends by reading the tooltip of a square the harvester walked over —
+#: with the eye on the walk, that last beat plays over echo and the
+#: −100 never appears.
+BASIC_TIER_EYE = (14, 12)
+BASIC_FAR_EYE = (6, 6)
+
+#: (x, y) -> the purity the tooltip must read. Asserted in the film,
+#: because a generator change that moves these turns the narration into
+#: confident nonsense rather than a failure.
+BASIC_TIERS: Dict[str, tuple] = {
+    "trace": (13, 11),   # purity  30  x0.75 ->  23
+    "vein": (15, 11),    # purity 107  x1.0  -> 107
+    "mass": (14, 10),    # purity 203  x1.5  -> 305
+    "pure": (14, 11),    # purity 255  x3.0  -> 765
+}
+BASIC_TIER_PURITY = {"trace": 30, "vein": 107, "mass": 203, "pure": 255}
+BASIC_TIER_SCORE = {"trace": 23, "vein": 107, "mass": 305, "pure": 765}
+
+#: Landing plus five steps. Ends on the pure the tour just priced.
+BASIC_SEAM = [(12, 10), (13, 10), (13, 9), (14, 9), (14, 10), (14, 11)]
+
+
+#: Where the rival is sent so it is nowhere near the lesson. The far
+#: corner, both nights, and no harvester — see BASIC_TIER_EYE's note on
+#: what the lite bot did to the first take of this film.
+BASIC_RIVAL_EYE = (3, 2)
+
+
+def _setup_tiers(base: str) -> tuple[str, Plan]:
+    """Night two on the pinned tier board, with the quartet lit.
+
+    A duel rather than the preset, for the reason in BASIC_DROP_SEED's
+    note: this seam is the richest thing on the board and the lite bot
+    goes for it. The rival's night two is posted here, before the
+    camera rolls, because an unsubmitted rival leaves TRANSMIT disabled
+    and the film times out on its own commit.
+    """
+    sid = seed_duel(base, BASIC_DROP_SEED, cap=3)
+    submit_night(base, sid, [
+        {"a": "probe", "at": list(BASIC_TIER_EYE)},
+        {"a": "probe", "at": list(BASIC_FAR_EYE)},
+    ], "p1")
+    submit_night(base, sid, [{"a": "probe", "at": list(BASIC_RIVAL_EYE)}],
+                 "p2")
+    submit_orbit(base, sid, [{"a": "build_probe", "count": 2}], "p1")
+    submit_orbit(base, sid, [], "p2")
+    submit_night(base, sid, [{"a": "probe", "at": list(BASIC_RIVAL_EYE)}],
+                 "p2")
+    return sid, {
+        "tiers": {t: list(c) for t, c in BASIC_TIERS.items()},
+        "seam": [list(c) for c in BASIC_SEAM],
+    }
 
 
 def setup_for(base: str, name: str, seed: int) -> tuple[str, Plan]:
@@ -1933,6 +2548,8 @@ def setup_for(base: str, name: str, seed: int) -> tuple[str, Plan]:
         return _setup_advanced(base, name)
     if name in DUEL_FILMS:
         return _setup_duel(base, name, seed)
+    if name == "basic_drop":
+        return _setup_tiers(base)
 
     sid = seed_game(base, seed)
     st = status(base, sid)
@@ -1950,15 +2567,6 @@ def setup_for(base: str, name: str, seed: int) -> tuple[str, Plan]:
         if str(st.get("phase", "")).lower().startswith("orbit"):
             return sid, {}
         submit_night(base, sid, _probe_opening(base, sid))
-        return sid, {}
-
-    if name == "basic_drop":
-        # Night two, with ground already lit. The film needs a harvester
-        # in orbit AND live vision to land it on, and a probe outlives
-        # the night that launched it (probe_lifetime_nights), so night
-        # one's pair are still open here.
-        submit_night(base, sid, _probe_opening(base, sid))
-        submit_orbit(base, sid, [{"a": "build_probe", "count": 2}])
         return sid, {}
 
     if name == "basic_buy_harvester":
@@ -2048,7 +2656,8 @@ def _setup_duel(base: str, name: str, seed: int) -> tuple[str, Plan]:
 #: Advanced films, all of them duels — see ``_setup_advanced``.
 ADVANCED_FILMS = {
     "adv_hotdrop", "adv_buy_emp", "adv_redsign", "adv_redsign_rival",
-    "adv_emp", "adv_buy_chaff", "adv_chaff",
+    "adv_smash_grab", "adv_blind_grab",
+    "adv_emp_rush", "adv_emp_wait", "adv_buy_chaff", "adv_chaff",
 }
 
 #: Where in the storyline each film opens. Order matters: the setup
@@ -2059,7 +2668,18 @@ _ADV_TURN = {
     "adv_redsign": 2,        # night 2
     "adv_redsign_rival": 2,  # night 2, mirrored
     "adv_buy_chaff": 3,      # orbit 3
-    "adv_emp": 4,            # night 3
+    # Three films open on night 3, each a session of its own. They all
+    # want the same board — two beacons lit, an EMP in stock, a hull
+    # spare — and then do completely different things with it.
+    "adv_smash_grab": 4,     # night 3: take the pure you can see
+    "adv_blind_grab": 4,     # night 3: take a guess at the one you cannot
+    # Both takes of the spliced walk-in open on the same turn, which is
+    # the point — the two halves differ only in what the player does
+    # with the hours. `adv_emp` itself is kept here so the headless
+    # probe can still stage "night three" by the name humans use.
+    "adv_emp": 4,
+    "adv_emp_rush": 4,       # night 3: take the clock, ignore it
+    "adv_emp_wait": 4,       # night 3: take the clock, and use it
     "adv_chaff": 6,          # night 4
 }
 
@@ -2091,6 +2711,12 @@ def _setup_advanced(base: str, name: str) -> tuple[str, Plan]:
         "step": list(ADV_BLUE_STEP), "mine": list(ADV_MINE),
         "theirs": list(ADV_THEIRS), "quiet": list(ADV_QUIET),
         "salvo": [list(c) for c in ADV_SALVO], "beside": list(ADV_BESIDE),
+        "greedy": [list(c) for c in ADV_GREEDY],
+        "blind_salvo": [list(c) for c in ADV_BLIND_SALVO],
+        "blind_eye": list(ADV_BLIND_EYE),
+        "blind_land": list(ADV_BLIND_LAND),
+        "blind_comb": [list(c) for c in ADV_BLIND_COMB],
+        "walk_in": [list(c) for c in ADV_WALK_IN],
     }
     mine_h = harvester_ids(base, sid, "p1")[0]
 
@@ -2344,14 +2970,140 @@ def _probe_opening(base: str, sid: str) -> List[dict]:
 
 # ── shoot ───────────────────────────────────────────────────────────
 
-def _post(final: pathlib.Path, lead: float, trim: bool) -> str:
-    """Cut the boot off the front and re-encode.
+def _ramp(kfs: List[Dict[str, float]], key: str, v0: float,
+          mul: float = 1.0) -> str:
+    """A piecewise ffmpeg expression through the keyframes for one value.
 
-    Two problems, one pass. The recording starts when the page is
+    Between keyframes the value is a CONSTANT — the previous target —
+    which is what keeps this linear in the number of keyframes. Writing
+    it as "previous expression, then ramp from it" instead doubles the
+    string at every step and a seven-keyframe film produces a filter
+    megabytes wide.
+
+    ``T`` is output time, spliced in by the caller.
+    """
+    if not kfs:
+        return f"{v0 * mul:.3f}"
+    last = kfs[-1][key] * mul
+    expr = f"{last:.3f}"
+    for i in range(len(kfs) - 1, -1, -1):
+        t = kfs[i]["t"]
+        d = max(0.001, kfs[i]["ms"] / 1000.0)
+        v = kfs[i][key] * mul
+        prev = (v0 if i == 0 else kfs[i - 1][key]) * mul
+        # Smoothstep, so the move eases in and out rather than jerking
+        # into motion — the CSS transition it replaces was a
+        # cubic-bezier for the same reason.
+        p = f"clip((T-{t:.3f})/{d:.4f},0,1)"
+        s = f"({p}*{p}*(3-2*{p}))"
+        ramp = f"({prev:.3f}+({v:.3f}-{prev:.3f})*{s})"
+        if i == len(kfs) - 1:
+            expr = f"if(lt(T,{t + d:.3f}),{ramp},{v:.3f})"
+        else:
+            nxt = kfs[i + 1]["t"]
+            expr = (f"if(lt(T,{t + d:.3f}),{ramp},"
+                    f"if(lt(T,{nxt:.3f}),{v:.3f},{expr}))")
+        if i == 0:
+            expr = f"if(lt(T,{t:.3f}),{prev:.3f},{expr})"
+    return expr
+
+
+def _camera_filter(cam: List[Dict[str, float]], start: float,
+                   vw: int, vh: int, fps: int = 25) -> Optional[str]:
+    """Turn the recorded keyframes into one ``zoompan`` filter.
+
+    ``zoompan`` and not ``crop`` because crop evaluates its WIDTH and
+    HEIGHT once, at configuration — only x and y are per-frame. A crop
+    that changes size over time is therefore not expressible, which is
+    exactly what a push-in is.
+
+    Keyframes are in CSS pixels against ``VIEWPORT``; the recording is
+    at a higher device scale, so everything is multiplied up to video
+    pixels here rather than at record time. Measuring in CSS px is what
+    lets the shoot resolution change without touching a single film.
+    """
+    kfs = sorted(({"t": k["t"] - start, "ms": k["ms"], "z": k["z"],
+                   "cx": k["cx"], "cy": k["cy"]} for k in cam),
+                 key=lambda k: k["t"])
+    # Anything wholly before the cut sets the opening state instead.
+    z0, cx0, cy0 = 1.0, VIEWPORT["width"] / 2.0, VIEWPORT["height"] / 2.0
+    live: List[Dict[str, float]] = []
+    for k in kfs:
+        if k["t"] + k["ms"] / 1000.0 <= 0:
+            z0, cx0, cy0 = k["z"], k["cx"], k["cy"]
+        else:
+            live.append(k)
+    if not live and z0 == 1.0:
+        return None
+
+    sx = vw / float(VIEWPORT["width"])
+    sy = vh / float(VIEWPORT["height"])
+    z = _ramp(live, "z", z0)
+    cx = _ramp(live, "cx", cx0, mul=sx)
+    cy = _ramp(live, "cy", cy0, mul=sy)
+    tv = f"({'on'}/{fps})"
+    z, cx, cy = (e.replace("T", tv) for e in (z, cx, cy))
+    # x/y are the TOP-LEFT of the window in input pixels, and the window
+    # is iw/zoom wide — so clamp against the frame or the crop walks off
+    # the edge and ffmpeg clips it to a black bar.
+    x = f"clip(({cx})-(iw/zoom)/2,0,iw-iw/zoom)"
+    y = f"clip(({cy})-(ih/zoom)/2,0,ih-ih/zoom)"
+    return (f"zoompan=z='max(1,{z})':x='{x}':y='{y}'"
+            f":d=1:s={VIEWPORT['width']}x{VIEWPORT['height']}:fps={fps}")
+
+
+def _splice(whole: str, parts: List[str]) -> str:
+    """Join finished takes into the delivered clip, and bin the takes.
+
+    A stream copy, not a re-encode: every take came out of ``_post``
+    with the same codec, size and rate, so there is nothing to
+    reconcile and a second encode would only cost quality. If the copy
+    is refused the join is wrong in a way worth hearing about rather
+    than papering over, so it reports instead of falling back.
+    """
+    srcs = [OUT / f"{p}.webm" for p in parts]
+    missing = [s.name for s in srcs if not s.exists()]
+    if missing:
+        return f"take(s) not on disk: {missing}"
+
+    listing = OUT / f"{whole}.parts.txt"
+    listing.write_text("".join(f"file '{s.resolve()}'\n" for s in srcs))
+    out = OUT / f"{whole}.webm"
+    tmp = OUT / f"{whole}.joining.webm"
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat",
+           "-safe", "0", "-i", str(listing), "-c", "copy", str(tmp)]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = getattr(exc, "stderr", b"") or b""
+        listing.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
+        return f"concat refused: {detail.decode(errors='replace')[:200]}"
+
+    out.unlink(missing_ok=True)
+    tmp.rename(out)
+    listing.unlink(missing_ok=True)
+    for s in srcs:
+        s.unlink(missing_ok=True)
+    kb = out.stat().st_size / 1024
+    print(f"  {whole:24s} {'':5s}  {kb:6.0f} KB  {out.name}  "
+          f"(joined {len(parts)} takes)")
+    return ""
+
+
+def _post(final: pathlib.Path, lead: float, trim: bool,
+          cam: Optional[List[Dict[str, float]]] = None) -> str:
+    """Cut the boot off the front, apply the camera, and re-encode.
+
+    Three problems, one pass. The recording starts when the page is
     created, so every film opens on several seconds of curtain — dead
-    weight in a clip the modal LOOPS. And Playwright's raw webm is ~3x
-    larger than it needs to be for a near-static UI, which matters
-    because these ship in the repo and load in a modal.
+    weight in a clip the modal LOOPS. The push-ins recorded during the
+    shoot have to be cropped in. And Playwright's raw webm is ~3x larger
+    than it needs to be for a near-static UI, which matters because
+    these ship in the repo and load in a modal.
+
+    The trim and the camera share a clock origin (see ``Film.t0``), so
+    a keyframe's output time is just its offset minus the cut.
 
     Best-effort: no ffmpeg, or a failed encode, leaves the raw file in
     place. A slightly long film is worth having; no film is not.
@@ -2359,25 +3111,53 @@ def _post(final: pathlib.Path, lead: float, trim: bool) -> str:
     if not trim:
         return ""
     start = max(0.0, lead - 0.35)  # keep a beat of black, then the fade
+    vw, vh = _dims(final)
+    zoom = _camera_filter(cam or [], start, vw, vh) if cam else None
     tmp = final.with_suffix(".post.webm")
-    cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-ss", f"{start:.2f}", "-i", str(final),
+    script = final.with_suffix(".filter.txt")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error",
+           "-ss", f"{start:.2f}", "-i", str(final)]
+    if zoom:
+        # Via a file: a seven-keyframe camera is tens of kilobytes of
+        # expression and long enough to trip the argument limit.
+        script.write_text(zoom)
+        cmd += ["-filter_script:v", str(script)]
+    elif (vw, vh) != (VIEWPORT["width"], VIEWPORT["height"]):
+        cmd += ["-vf", f"scale={VIEWPORT['width']}:{VIEWPORT['height']}"]
+    cmd += [
         "-c:v", "libvpx", "-crf", "32", "-b:v", "0",
         "-qmin", "4", "-qmax", "44",
         "-deadline", "good", "-cpu-used", "2", "-an", str(tmp),
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
-    except (OSError, subprocess.SubprocessError):
+        subprocess.run(cmd, check=True, capture_output=True, timeout=900)
+    except (OSError, subprocess.SubprocessError) as exc:
         tmp.unlink(missing_ok=True)
-        return "  (raw — no ffmpeg?)"
+        script.unlink(missing_ok=True)
+        err = getattr(exc, "stderr", b"") or b""
+        tail = err.decode(errors="replace").strip().splitlines()[-1:] or [""]
+        return f"  (raw — post pass failed: {tail[0][:90]})"
+    script.unlink(missing_ok=True)
     if tmp.stat().st_size < 20_000:
         tmp.unlink(missing_ok=True)
         return "  (raw — post-pass output looked empty)"
     final.unlink()
     tmp.rename(final)
-    return f"  (-{start:.1f}s boot)"
+    moves = len(cam or [])
+    return f"  (-{start:.1f}s boot{f', {moves} camera move(s)' if moves else ''})"
+
+
+def _dims(path: pathlib.Path) -> tuple[int, int]:
+    """The recording's real pixel size, so the camera can scale to it."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0",
+             str(path)], check=True, capture_output=True, timeout=60)
+        w, h = out.stdout.decode().strip().split(",")[:2]
+        return int(w), int(h)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return VIEWPORT["width"], VIEWPORT["height"]
 
 
 def shoot(base: str, name: str, seed: int, keep_raw: bool,
@@ -2412,6 +3192,7 @@ def shoot(base: str, name: str, seed: int, keep_raw: bool,
         pg.on("pageerror", lambda e: errors.append(str(e)))
 
         f = Film(pg, plan)
+        f.t0 = t_page  # keyframes and the boot-trim share this origin
         try:
             pg.goto(f"{base}/?session={sid}&player=p1", wait_until="networkidle")
             pg.wait_for_selector(READY[name], state="visible", timeout=25000)
@@ -2441,7 +3222,7 @@ def shoot(base: str, name: str, seed: int, keep_raw: bool,
             final.write_bytes(src.read_bytes())
         else:
             src.rename(final)
-        note = _post(final, lead, trim)
+        note = _post(final, lead, trim, f.cam)
         kb = final.stat().st_size / 1024
         print(f"  {name:24s} {secs:5.1f}s  {kb:6.0f} KB  {final.name}{note}")
     else:
@@ -2470,7 +3251,13 @@ def main() -> int:
         return 0
 
     base = args.base.rstrip("/")
-    names = args.only or list(FILMS)
+    # A spliced name is a delivery, not a film: asking for it means
+    # asking for its takes. Expanding here rather than in `shoot` keeps
+    # `--only adv_emp` meaning what a reader expects.
+    wanted = args.only or (list(FILMS) + list(SPLICES))
+    names: List[str] = []
+    for n in wanted:
+        names.extend(SPLICES.get(n, [n]))
     unknown = [n for n in names if n not in FILMS]
     if unknown:
         print(f"unknown film(s): {unknown}. --list to see them all.")
@@ -2483,6 +3270,18 @@ def main() -> int:
                       trim=not args.no_trim)
         if not ok:
             bad.append(n)
+
+    for whole, parts in SPLICES.items():
+        if not all(p in names for p in parts):
+            continue
+        if any(p in bad for p in parts):
+            print(f"  {whole:24s} not joined — a take failed")
+            bad.append(whole)
+            continue
+        err = _splice(whole, parts)
+        if err:
+            bad.append(whole)
+            print(f"  FAIL [{whole}] {err}")
 
     print()
     if bad:

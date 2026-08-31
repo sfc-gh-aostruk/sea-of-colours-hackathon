@@ -273,9 +273,9 @@ recorder:
 
 ```bash
 SOC_BACKEND=memory python run_web.py --no-reload --port 8022 &
-python scripts/make_tutorial_films.py --base http://127.0.0.1:8022
-python scripts/make_tutorial_films.py --list          # what there is
-python scripts/make_tutorial_films.py --only basic_drop   # just one
+python scripts/films/make_tutorial_films.py --base http://127.0.0.1:8022
+python scripts/films/make_tutorial_films.py --list          # what there is
+python scripts/films/make_tutorial_films.py --only basic_drop   # just one
 ```
 
 Each film drives the real UI in a real browser, so a film cannot show an
@@ -283,9 +283,12 @@ order the engine would refuse — several assert their own outcome and
 fail the shoot if the game did not do what the caption claims. The reel
 text and the turn each reel belongs to live in
 `server/static/tutorial.js`; the presets live in
-`sea_of_colours/game/tutorial.py`. Re-shooting needs `ffmpeg` on PATH
-for the trim/compress pass, and falls back to the raw capture without
-it.
+`sea_of_colours/game/tutorial.py`. Re-shooting needs `ffmpeg` on PATH —
+it does the trim, the camera moves and the compress in one pass, and
+falls back to the raw capture without it.
+
+The whole filming kit is contained in `scripts/films/` and nothing else
+in the repo imports any of it; `scripts/films/README.md` is the guide.
 
 ---
 

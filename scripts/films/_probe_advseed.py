@@ -10,7 +10,7 @@ costs a minute a take, so pick the seed here.
 Prints a table over a seed range and then the full detail for the best
 few, including bluesign centres and pure clusters.
 
-    python scripts/_probe_advseed.py --n 60
+    python scripts/films/_probe_advseed.py --n 60
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import argparse
 import pathlib
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from sea_of_colours.game import tutorial as soc_tutorial  # noqa: E402

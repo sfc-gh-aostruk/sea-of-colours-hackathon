@@ -10634,7 +10634,7 @@ button.cli-btn.cc-advisor-tab[hidden] { display: none; }
  * does not jump when the video's real dimensions arrive. */
 .soc-tut-stage {
   position: relative;
-  aspect-ratio: 8 / 5; /* == VIEWPORT in scripts/make_tutorial_films.py */
+  aspect-ratio: 8 / 5; /* == VIEWPORT in scripts/films/make_tutorial_films.py */
   background: #07070b;
   border-bottom: 1px solid var(--frame);
   overflow: hidden;

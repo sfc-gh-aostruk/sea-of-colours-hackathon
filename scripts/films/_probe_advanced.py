@@ -21,7 +21,7 @@ Board is seed 2351 on the Advanced preset, chosen by _probe_advseed.py:
 one unambiguous blue smear at (12,4)-(12,6) and two jackpots far apart
 at (19,5) and (4,12).
 
-    python scripts/_probe_advanced.py
+    python scripts/films/_probe_advanced.py
 """
 from __future__ import annotations
 

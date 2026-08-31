@@ -1436,7 +1436,12 @@
       out.push(`trail · ×${t.n} crossing${t.n === 1 ? "" : "s"} (older)`);
     }
     if (t.harvested) {
-      out.push("harvested (synthetic green — banking scores 0)");
+      // v1.37 — this used to read "banking scores 0", which is wrong and
+      // sat directly under the score block already showing -100. A GREEN
+      // parcel is charged GREEN_ENDGAME_PENALTY per parcel at settlement
+      // (§4.7), and entry harvests are not optional (§3.4), so the trail
+      // is a liability for whoever walks it next — including its author.
+      out.push("harvested (synthetic green — costs whoever picks it up)");
     }
     return out;
   }
@@ -21043,11 +21048,6 @@
   // fit-to-width baseline as "100%". No effect when the station UI is off.
   window._osApplyMapZoom      = applyMapZoom;
   window._osSetMapZoomDefault = (px) => { MAP_ZOOM_DEFAULT = clampZoom(px); };
-  // The film harness moves a camera the product does not have (a CSS
-  // transform on the viewport), which resizes cells the same way a zoom
-  // does and strands the same four overlays.
-  window._osReanchorOverlays  = reanchorOverlays;
-
   /** @param {number} delta */
   function nudgeMapZoom(delta) {
     const cur = clampZoom(

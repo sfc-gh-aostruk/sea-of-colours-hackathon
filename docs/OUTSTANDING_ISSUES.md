@@ -1304,7 +1304,7 @@ removing the button. Old un-scoped entries are ignored rather than migrated;
 worst case someone mid-game sees one reel a second time. The list is capped
 so a browser that plays many tutorials does not grow it forever.
 
-**Why no test caught it:** `scripts/_fx_tutorial.py` gets a clean browser
+**Why no test caught it:** `scripts/films/_fx_tutorial.py` gets a clean browser
 profile on every run, and this bug only exists on the *second* game in one
 profile. It now plays a second tutorial in the same context and asserts the
 modal opens again, plus a third with mute set to assert mute still wins. Both
@@ -1333,10 +1333,16 @@ measure the cells as they are now, so a single call pins them to a size the
 board is only passing through, and the 700ms move plays with the border
 sitting still on top of swelling terrain.
 
-Measured with `scripts/_probe_camera.py` (before: a 433px-wide border on a
-1299px board; after: both 1299px), and `Film.expect_overlays_anchored` now
-fails a shoot if the layer drifts more than 8px from the grid. The probe cost
-an hour to a scratch-script bug, not a product one — see issue 30.
+Measured with a scratch probe (before: a 433px-wide border on a 1299px board;
+after: both 1299px), and `Film.expect_overlays_anchored` now fails a shoot if
+the layer drifts more than 8px from the grid. The probe cost an hour to a
+scratch-script bug, not a product one — see issue 30.
+
+**Superseded by issue 34 (v1.35).** All of this was scaffolding around the
+transform camera. That camera is gone — the zoom is now a crop over the
+recorded frame, where an overlay cannot be left behind at all — so the
+re-anchor hook, the per-frame chase, `expect_overlays_anchored` and the probe
+that measured them have all been deleted.
 
 ## 30. ✅ (DONE, v1.33) Only one lifter showed up to a two-House pile-up
 
@@ -1428,6 +1434,134 @@ re-fires that hour's animations, so the same collision plays at a speed a
 first-timer can follow. No product speed control was added — the film crew
 should not get to slow the game down for everybody.
 
+## 34. ✅ (DONE, v1.35) Every close-up in the tutorial films read as a layout bug
+
+**Symptom:** reported after watching all sixteen v1.34 films — "almost all the
+zooms look bad because we're trying to zoom in the interface". Not one bad
+film: the same wrongness in every close-up, and the reason issues 29 and 33
+kept looking like separate faults.
+
+**Root cause:** `Film.push_in` was a CSS transform on `.cc-map-viewport`, and
+scaling one live element inside a fixed layout is not a camera move. The board
+swelled while the ORDERS panel, both station rails and the replay bar stayed
+exactly where they were, which the eye reads as a rendering fault rather than
+a move toward something. The grid's dotted background magnified into a pale
+grey slab along with it. Issue 29 (overlays stranded on the old geometry), the
+FX-layer re-parenting, and the per-frame `_osReanchorOverlays` chase were all
+patches on this one decision rather than bugs in their own right.
+
+It also had a ceiling that no amount of patching would lift: the camera could
+only ever look at the map, because the map viewport was the element being
+scaled. `basic_score` exists to show a load becoming a number, and both halves
+of its last beat — a catapult throwing, a score climbing — live in the station
+rail, permanently out of shot.
+
+**Fix:** the camera moved out of the browser. `push_in` measures a rectangle
+and banks a keyframe; the zoom is a time-varying crop applied afterwards in the
+ffmpeg pass that already trims the boot. The whole frame moves together because
+it is one image by then, so an overlay cannot fall off a board that is a
+photograph — the re-anchor chase, the FX re-parenting and
+`expect_overlays_anchored` were all deleted. `push_in_on(selector...)` frames
+anything on the page, which is what let the score beat finally be shot.
+
+`zoompan`, not `crop`: `crop` evaluates its width and height once at
+configuration and only x/y per frame, so a crop that changes size over time —
+a push-in — cannot be expressed with it. Full design note, including why
+shooting at 2x for sharpness does not work and what `FILM_CAM=1` prints, in
+`docs/TUTORIAL_PLAN.md` §12.
+
+---
+
+## 35. ✅ (DONE, v1.36) Moving the camera out of the browser cropped every caption away
+
+**Symptom:** found while re-cutting the redsign films — the close-ups played
+silent. Not one film: every push-in in all sixteen, at once, from the moment
+issue 34 shipped.
+
+**Root cause:** the caption is a `position:fixed; bottom:28px` element, which
+was exactly right when the camera was a transform on `.cc-map-viewport` — the
+board scaled underneath it and the caption stayed put. A post-process crop is
+not that. It keeps a 492×308 window out of a 1280×800 frame, and a caption
+pinned to the bottom of the *page* is simply not inside it. So the beats the
+films push in on for emphasis — the grave, the catapult, the pure seam — were
+the exact beats whose narration got thrown away.
+
+Nothing caught it, and nothing could have: the shoot passed, the file was the
+right length, the beat was in shot. Only the line explaining it was gone, and
+no check knew captions were supposed to be anywhere in particular.
+
+**Fix:** the caption tracks the crop. `window.__film.frame(win)` re-places it
+along the bottom of the current window and scales it by `1/z`, floored at
+`0.65` so it never renders below the game's own 13px — text smaller than that
+turns to mush when the crop magnifies it back up. Order matters in each
+direction: a push-in re-places *before* the ramp (the window only shrinks
+toward its target, so the caption is in shot for every frame of the move), a
+pull-out *after* it (the window grows away from the caption, so it stays in
+shot until it is wide again).
+
+And `say()` now asserts it, comparing the caption's box against the live crop
+and failing the shoot if it is over the edge. That is the check that was
+missing, not the placement.
+
+---
+
+## 36. 🔴 (OPEN) RULEBOOK §4.11 says a redsign never clears; the engine retires it
+
+**Found:** while checking the redsign mechanic against the tutorial copy, not
+from a play report — so nobody has been bitten by it yet that we know of.
+
+**The disagreement:** §4.11 says the beacon "does **not** clear when the seam is
+harvested out (mirroring blue-sign's persistence)", and makes a strategic point
+of it: "Depletion must be inferred from observed rival activity, not from the
+sign." The engine does the opposite. `_retire_redsign_if_spent` flips
+`region["live"] = False`, stamps `spent_day` / `spent_by` and logs `RED SIGN
+spent — the pure seam near (~x,~y) is exhausted`, with
+`_sweep_redsign_liveness` as a backstop.
+
+That is not a small difference in play. Under the prose a stale beacon is bait
+and reading it is a skill; under the engine the board tells you for free when a
+jackpot is gone.
+
+**Not resolved here** because it is a genuine design question, not a typo —
+either the prose is stale and §4.11 needs rewriting plus a changelog entry, or
+the retirement is the regression. Whoever picks it up: the surfaces are §4.11,
+the agent view's `redsign` block, the map smear in `app.js`, and the Advanced
+tutorial's night-two card, which currently follows the engine by staying silent
+on the question.
+
+## 37. ✅ (DONE, v1.37) The cell card told you a harvested square banks 0, right under the −100
+
+**Found:** by shooting it. `basic_drop` now ends on a close-up of a square the
+harvester just harvested, and the frame contains both of these lines, three
+apart:
+
+```
+-100        charged per parcel at settlement
+harvested (synthetic green — banking scores 0)
+```
+
+**Root cause:** the trail note in `_trailBits` (`server/static/app.js`) predates
+the green penalty being surfaced in the tooltip at all. When the only thing the
+card said about a farmed square was that note, "banking scores 0" was a rough
+way of saying "there is no RED left here to bank". Once the score block started
+pricing GREEN properly the note stopped being a simplification and became a
+contradiction — and the wrong half is the one a player is likelier to believe,
+because it is the one written in words.
+
+It is also wrong on its own terms. A GREEN parcel is charged
+`GREEN_ENDGAME_PENALTY` (100) per parcel at settlement (§4.7,
+`orbit_resolver._settle_green_auto`), and entry harvests are not optional
+(§3.4), so a harvested square is not inert — it is a liability for whoever
+walks it next, its author included.
+
+**Fix:** the note now reads `harvested (synthetic green — costs whoever picks it
+up)`, which agrees with the score block instead of arguing with it.
+
+**Worth noting for the next person:** no test caught this and no test easily
+could — both strings were individually correct-looking and the bug only exists
+when they are read together. It surfaced because a film pointed a camera at the
+card and held it there for four seconds.
+
 | # | Area | Severity | Blocking multiplayer? |
 |---|------|----------|-----------------------|
 | 1 | Vision / trails (echo coverage — now fog-frozen) | ✅ done (v1.8) | no |
@@ -1463,3 +1597,7 @@ should not get to slow the game down for everybody.
 | 31 | `POST /policy` and `/orbit` silently discarded a queue sent under the wrong field name and reported `ok` — a typo and a deliberate pass were indistinguishable | ✅ done (v1.33) | no |
 | 32 | The board parked top-left in a frame wider than itself. Centred via `margin: auto` on the grid rather than `justify-content` on the scroll container, which would have made a zoomed map's left column unreachable | ✅ done (v1.34) | no |
 | 33 | `basic_crash` pushed in before the landing collision, so two converging orbital arcs both started off-screen. Hour one now plays wide, and the beat is repeated hand-cranked off the replay bar | ✅ done (v1.34) | no |
+| 34 | Every film close-up was a CSS transform on one live element inside a fixed layout, which reads as a rendering fault, drags four overlays out of alignment (issue 29) and can only ever point at the map. Replaced by a post-process crop over the recorded frame | ✅ done (v1.35) | no |
+| 35 | Fallout from 34: the caption is pinned to the bottom of the page, so a crop that keeps 492×308 of a 1280×800 frame left every close-up unnarrated. Caption now tracks the crop, and `say()` fails the shoot if it lands off the edge | ✅ done (v1.36) | no |
+| 36 | RULEBOOK §4.11 says a redsign persists after its seam is harvested out and depletion must be inferred; the engine retires it as `spent`. Design question, not a typo — flagged, not resolved | 🔴 open | no |
+| 37 | The cell card called a harvested square "banking scores 0" three lines under its own `-100` score block. Stale note from before green was priced in the tooltip; green costs 100/parcel at settlement and entry harvests are compulsory | ✅ done (v1.37) | no |

@@ -52,8 +52,8 @@ TUTORIAL_OPPONENT = "red_harvest_lite"
 #: Pinning it buys a second thing worth more than the first: the
 #: Advanced films are shot on this seed, so the blue smear in the video
 #: is the blue smear on the player's own map. Chosen by
-#: ``scripts/_probe_advseed.py`` — see the header of
-#: ``scripts/make_tutorial_films.py`` for what it was chosen against.
+#: ``scripts/films/_probe_advseed.py`` — see the header of
+#: ``scripts/films/make_tutorial_films.py`` for what it was chosen against.
 ADVANCED_TUTORIAL_SEED = 2351
 
 
