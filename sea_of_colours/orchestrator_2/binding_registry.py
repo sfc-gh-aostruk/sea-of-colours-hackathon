@@ -32,12 +32,15 @@ Resolution order (most explicit first):
 3. ``SOC_AGENT_RUNTIME=heuristic`` → kind=heuristic.
 4. Default: heuristic.
 
-**Registering your own agent (the hackathon path).** Add one entry to
-:data:`AGENT_LABEL_BINDINGS` and you are done — the seat routes, and the
-New Game dropdown picks it up automatically because the web UI builds
-its roster from :func:`selectable_agents` rather than a hardcoded list.
-``scripts/new_agent.py`` writes that entry for you. See
-``harnesses/tabula_v12/README.md`` for what to change once it exists.
+**Registering your own agent (the hackathon path).** You do not edit
+this file. Any directory under ``harnesses/`` containing an
+``agent.json`` is discovered and registered at import (v1.39) — the seat
+routes, and the New Game dropdown lists it because the web UI builds its
+roster from :func:`selectable_agents` rather than a hardcoded list.
+``scripts/new_agent.py`` creates the directory and its manifest for you.
+See :mod:`sea_of_colours.orchestrator_2.agent_manifest` for the schema
+and why registration works this way, and ``harnesses/tabula_v12/README.md``
+for what to change inside your fork once it exists.
 """
 
 from __future__ import annotations
@@ -145,9 +148,64 @@ AGENT_LABEL_BINDINGS = {
     "red_harvest_lite": HEURISTIC_LITE_BINDING,
     "red_harvest": HEURISTIC_BINDING,
     "tabula_v12": KNOWN_AGENT_BINDINGS["SOC_RED_REAPER_TABULA_V12"],
-    # SOC_NEW_AGENT_LABEL_ANCHOR — forks land above this line, e.g.
-    #   "redwatch_reaper": KNOWN_AGENT_BINDINGS["SOC_REDWATCH_REAPER"],
+    # SOC_NEW_AGENT_LABEL_ANCHOR — kept for hand-written entries. Forks
+    # no longer land here; see the discovery pass below.
 }
+
+
+# ── Discovered forks ────────────────────────────────────────────────
+#
+# v1.39. Every directory under ``harnesses/`` with an ``agent.json`` is
+# registered automatically, so a fork is one self-contained folder and
+# nothing shared has to be edited to add one.
+#
+# This replaced two inserted lines per fork in this very file. With one
+# fork that was fine; with a room of forty it meant every team's push
+# conflicted with every other team's, and collecting the agents at the
+# end of the day meant forty manual merges — each an opportunity to drop
+# somebody's entry. See ``agent_manifest.py`` for the reasoning in full.
+#
+# Two deliberate properties:
+#
+# * **Built-ins win.** A discovered manifest never overwrites a label
+#   already in the dict above, so no fork can shadow ``tabula_v12`` and
+#   quietly become the thing everyone is benchmarked against.
+# * **A bad manifest is skipped, not fatal.** Import-time discovery runs
+#   on every server start and every test collection; one team's trailing
+#   comma must not stop the room. ``soc doctor`` surfaces the problems.
+def _register_discovered() -> list[str]:
+    """Fold ``agent.json`` forks into the roster. Returns any problems."""
+    try:
+        from . import agent_manifest
+    except Exception as exc:  # pragma: no cover - import guard
+        return [f"agent discovery unavailable: {exc}"]
+
+    manifests, problems = agent_manifest.discover()
+    for man in manifests:
+        if man.label in AGENT_LABEL_BINDINGS:
+            problems.append(
+                f"{man.directory / agent_manifest.MANIFEST_NAME}: "
+                f"{man.label!r} is already a built-in agent — pick another "
+                f"--team/--name so yours is scored separately."
+            )
+            continue
+        binding = AgentBinding(
+            kind="harness_in_process",
+            locator=man.locator,
+            agent_label=man.label.upper(),
+            menu_label=man.menu_label
+            or f"{man.label.upper()} — {man.team}'s agent",
+            needs_llm=man.needs_llm,
+        )
+        KNOWN_AGENT_BINDINGS.setdefault(man.const, binding)
+        AGENT_LABEL_BINDINGS[man.label] = binding
+    return problems
+
+
+# Recorded rather than printed: importing a module should not write to
+# anyone's console, and the one caller that genuinely wants to nag about
+# a broken fork (``soc doctor``) can read this.
+DISCOVERY_PROBLEMS: list[str] = _register_discovered()
 
 # Labels that mean "just play the in-process heuristic".
 _HEURISTIC_LABELS = {"human", "red_harvest", "heuristic"}

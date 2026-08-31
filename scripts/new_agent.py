@@ -5,8 +5,14 @@
 
 That copies the shipped V12 harness to
 ``sea_of_colours/orchestrator_2/harnesses/redwatch_reaper/``, repoints its
-imports, and registers it in ``binding_registry``. Restart the server and
+imports, and writes an ``agent.json`` declaring it. Restart the server and
 ``REDWATCH_REAPER`` is in the New Game dropdown, playable against V12.
+
+**Your agent is one directory.** Registration is discovery over
+``agent.json`` (v1.39), so nothing outside your fork is touched when it
+is created and nothing outside it needs to change again. That is what
+lets forty teams push to one repo without conflicting, and what makes
+the end-of-day league a directory scan instead of forty merges.
 
 **Why fork instead of editing V12 in place.** V12 is the baseline you are
 trying to beat. Edit it directly and you lose the control: "better than
@@ -21,6 +27,7 @@ two teams can't collide on ``reaper``.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import sys
@@ -32,8 +39,6 @@ _SOURCE = _HARNESSES / "tabula_v12"
 _REGISTRY = _REPO / "sea_of_colours" / "orchestrator_2" / "binding_registry.py"
 
 _SOURCE_NAME = "tabula_v12"
-_KNOWN_ANCHOR = "    # SOC_NEW_AGENT_ANCHOR"
-_LABEL_ANCHOR = "    # SOC_NEW_AGENT_LABEL_ANCHOR"
 
 # Same rule as a Python identifier, minus the right to be weird: the name
 # becomes a package directory, a dict key, and a Snowflake-ish agent
@@ -93,45 +98,46 @@ def _copy_harness(dest: Path, label: str, *, dry_run: bool) -> int:
 
 def _check_registrable(label: str) -> None:
     """Fail before anything is written, not halfway through."""
+    # Built-ins are the one thing a fork must not shadow: take the
+    # ``tabula_v12`` label and you become the baseline everyone is scored
+    # against, which is exactly the comparison the fork exists to make.
     text = _REGISTRY.read_text(encoding="utf-8")
-    # Ignore comments: the anchors carry a worked example, and matching
-    # that would refuse the very name the docs tell people to try.
-    code = "\n".join(
-        line.split("#", 1)[0] for line in text.splitlines()
-    )
+    code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
     if f'"{label}"' in code:
         _die(
-            f"{label!r} is already registered in binding_registry.py — "
-            f"pick another --name, or remove the old entry first"
+            f"{label!r} is a built-in agent name — pick another --team or "
+            f"--name so your agent is scored separately from it"
         )
-    for anchor in (_KNOWN_ANCHOR, _LABEL_ANCHOR):
-        if anchor not in text:
-            _die(
-                f"anchor {anchor.strip()} missing from binding_registry.py — "
-                f"register by hand (see orchestrator_2/README.md)"
-            )
+    existing = _HARNESSES / label / "agent.json"
+    if existing.exists():
+        _die(
+            f"{existing.relative_to(_REPO)} already exists — pick another "
+            f"--name, or delete that directory first"
+        )
 
 
-def _register(label: str, const: str, menu_label: str, *, dry_run: bool) -> None:
-    text = _REGISTRY.read_text(encoding="utf-8")
+def _write_manifest(dest: Path, team: str, name: str, menu_label: str,
+                    *, dry_run: bool) -> None:
+    """Declare the fork inside its own directory.
 
-    known_entry = (
-        f'    "{const}": AgentBinding(\n'
-        f'        kind="harness_in_process",\n'
-        f'        locator="sea_of_colours.orchestrator_2.harnesses.'
-        f'{label}.harness:run",\n'
-        f'        agent_label="{label.upper()}",\n'
-        f'        menu_label="{menu_label}",\n'
-        f"        needs_llm=True,\n"
-        f"    ),\n"
+    This is the whole of registration (v1.39). Nothing shared is edited,
+    which is what makes forty teams pushing to one repo work: two agents
+    can never touch the same file, so two agents can never conflict. It
+    is also what makes the end-of-day league collation a directory scan
+    rather than a merge.
+    """
+    if dry_run:
+        return
+    payload = {
+        "team": team,
+        "name": name,
+        "menu_label": menu_label,
+        "entry": "harness:run",
+        "needs_llm": True,
+    }
+    (dest / "agent.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
     )
-    label_entry = f'    "{label}": KNOWN_AGENT_BINDINGS["{const}"],\n'
-
-    text = text.replace(_KNOWN_ANCHOR, known_entry + _KNOWN_ANCHOR, 1)
-    text = text.replace(_LABEL_ANCHOR, label_entry + _LABEL_ANCHOR, 1)
-
-    if not dry_run:
-        _REGISTRY.write_text(text, encoding="utf-8")
 
 
 def main() -> int:
@@ -170,7 +176,7 @@ def main() -> int:
 
     n = _copy_harness(dest, label, dry_run=args.dry_run)
     try:
-        _register(label, const, menu_label, dry_run=args.dry_run)
+        _write_manifest(dest, team, name, menu_label, dry_run=args.dry_run)
     except BaseException:
         if not args.dry_run and dest.exists():
             shutil.rmtree(dest)
@@ -178,12 +184,16 @@ def main() -> int:
 
     rel = dest.relative_to(_REPO)
     if args.dry_run:
-        print(f"--dry-run: would create {rel}/ ({n} files)")
-        print(f"--dry-run: would register {label!r} as {const}")
+        print(f"--dry-run: would create {rel}/ ({n} files + agent.json)")
+        print(f"--dry-run: would register {label!r} by discovery")
         return 0
 
     print(f"created  {rel}/  ({n} files, forked from tabula_v12)")
-    print(f"registered  {label}  ->  {const}")
+    print(f"declared  {rel}/agent.json  ->  {label}")
+    print()
+    print("Everything your agent is lives in that one directory. Nothing")
+    print("outside it was touched, and nothing outside it needs to be —")
+    print("that is what lets the whole room push to one repo.")
     print()
     print("next:")
     print("  1. restart the server (python run_web.py)")
@@ -191,9 +201,11 @@ def main() -> int:
     print(f"  3. read {rel}/README.md — the two gaps V12 ships with are")
     print("     the exercise; that file says exactly where they live")
     print()
-    print("  benchmark it once it plays:")
-    print(f"    python -m sea_of_colours.orchestrator_2.evals.cli \\")
-    print(f"        --config {label} --runtime cortex --backend memory")
+    print("  score it against the redsign battles:")
+    print(f"    python scripts/soc.py suite --agent {label}")
+    print()
+    print("  publish it (your folder only):")
+    print(f"    python scripts/soc.py push")
     return 0
 
 
