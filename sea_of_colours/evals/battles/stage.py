@@ -6,8 +6,13 @@ of getting an honest board out of ``WorldBuilder``.
 The ordering below is not arbitrary and changing it will quietly break
 fixtures, so it is worth stating once:
 
-1. **Terrain first.** ``reveal_red`` and friends overwrite whatever the
-   noise generator produced. Anything that reads the grid — vision,
+1. **Terrain first, on a blank board.** ``reveal_red`` and friends only
+   overwrite the cells they are given, so the noise generator's ore has
+   to be scrubbed first or it survives underneath. It used to, and the
+   consequence was bad: every board carried a handful of undeclared
+   purity-255 cells, so ``lone_pure`` boards had four pures on them and
+   an agent could be marked down for walking to a real one the board
+   never admitted existed. Anything that reads the grid — vision,
    ledgers, the redsign region — has to see the final terrain, so this
    goes before everything.
 2. **Synthetic green after red.** Green marks a cell a rival already
@@ -59,6 +64,31 @@ def _seats(rung: Rung) -> list[str]:
     return ["p1"] + [f"p{i}" for i in range(2, rung.opponents + 2)]
 
 
+def _blank_ore(wb: WorldBuilder) -> None:
+    """Scrub the noise generator's RED so the board is only what it declares.
+
+    A battle board is an argument — "one pure, watched, four hours left"
+    — and the argument is void if the generator scattered three more
+    pures across the map. It did: before this pass, ``early_solo_seam``
+    shipped one declared pure and three undeclared ones, so an agent
+    could be marked down for taking a real pure the board denied having.
+    Undeclared mass and vein are the same problem one rung quieter: they
+    move the value calculus the board's prose reasons about.
+
+    Only RED. GREEN and BLUE stay, because neither changes what these
+    scenarios ask. Natural green is texture the agent must learn to
+    ignore (and the thing synthetic green is scored against), and blue
+    is currency the boards set explicitly with ``give_blue_purity``.
+    """
+    from sea_of_colours.game.session import Cell, Tile
+
+    sess = wb._ensure_session()
+    for row in sess.grid:
+        for x, cell in enumerate(row):
+            if cell.tile == Tile.RED:
+                row[x] = Cell(tile=Tile.EMPTY, purity=0)
+
+
 def _clamp(x: int, y: int, w: int, h: int) -> tuple[int, int]:
     return max(0, min(w - 1, x)), max(0, min(h - 1, y))
 
@@ -101,6 +131,7 @@ def stage(
     )
 
     # 1. terrain -----------------------------------------------------
+    _blank_ore(wb)
     red_cells: list[tuple[int, int, int]] = [
         (x, y, PURE) for x, y in board.pures
     ]
@@ -196,7 +227,19 @@ def stage(
         wb.grant_live_vision(list(board.pures), player="p1")
 
     # 7. ordnance ----------------------------------------------------
-    wb.give_weapon_stock(player="p1", emp=loadout.emp, chaff=loadout.chaff)
+    #
+    # The loadout is the axis that arms US, so it wins where it says
+    # anything. But a rung may ALSO declare our stock — ``siege`` does,
+    # and its own summary line ends "and you are armed too". That was
+    # being silently dropped: only the loadout was read, so `siege` ran
+    # with an empty rack and the rung's promise was false. Take the
+    # larger of the two, which keeps the loadout authoritative while
+    # letting a rung establish a floor.
+    wb.give_weapon_stock(
+        player="p1",
+        emp=max(loadout.emp, rung.our_emp),
+        chaff=max(loadout.chaff, rung.our_chaff),
+    )
     blue = loadout.blue or rung.our_blue
     if blue:
         wb.give_blue_purity(player="p1", purity_total=blue)

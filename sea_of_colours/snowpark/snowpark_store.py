@@ -23,7 +23,17 @@ is also one statement.
 from __future__ import annotations
 
 import json
+import os
+import queue
+import threading
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+
+# v1.42 — kill-switch for the empty-parcel DELETE skip in
+# :meth:`SnowparkSocStore._replace_parcels`. Default ON; export
+# ``SOC_SKIP_EMPTY_PARCELS=0`` to restore the unconditional DELETE.
+_SKIP_EMPTY_PARCELS = os.environ.get(
+    "SOC_SKIP_EMPTY_PARCELS", "1"
+).strip().lower() not in {"0", "false", "no"}
 
 
 def _json(value: Any) -> str:
@@ -84,12 +94,104 @@ class SnowparkSocStore:
         "SOC_GAME_SESSION",
     )
 
-    def __init__(self, session) -> None:
+    def __init__(
+        self,
+        session,
+        *,
+        session_factory=None,
+        max_connections: int = 1,
+    ) -> None:
+        """
+        :param session_factory: zero-arg callable returning a NEW Snowpark
+            session. Supplying it turns on the connection pool; without
+            it every statement runs on ``session`` exactly as before.
+        :param max_connections: ceiling on live connections, counting
+            ``session``. ``1`` keeps the historical single-session
+            behaviour.
+
+        Why a pool at all: ``engine.save_session_full`` fans seven table
+        writes across a thread pool, but they all shared this one
+        session, and the connector serialises per connection — so the
+        "parallel" save was largely a queue. Measured, a 4-row write
+        took as long as a 1120-row one (~1s each) because the cost was
+        waiting, not work.
+
+        Why borrow/return rather than thread-locals: that fan-out builds
+        a NEW ``ThreadPoolExecutor`` per save, so thread-affine sessions
+        would open fresh connections every save — and a connection costs
+        ~4.5s to establish, far more than the save it was meant to speed
+        up. A pool outlives the threads that borrow from it.
+        """
         self.session = session
+        self._factory = session_factory
+        self._max_connections = max(1, int(max_connections))
+        self._idle: "queue.LifoQueue" = queue.LifoQueue()
+        self._idle.put(session)
+        self._live = 1
+        self._pool_lock = threading.Lock()
+        # v1.42 — (table, session_id, owner-set) scopes this instance has
+        # already emptied, so a repeat empty bundle can skip its DELETE.
+        # See :meth:`_replace_parcels`.
+        self._empty_parcel_scopes: set = set()
 
     # ── SQL helpers ───────────────────────────────────────────────
-    def _exec(self, sql: str) -> List[Any]:
-        return list(self.session.sql(sql).collect())
+    def _borrow(self):
+        """A session nobody else is using, growing the pool if allowed.
+
+        LIFO so a small working set stays hot rather than round-robining
+        every connection. Falls back to blocking for a free session once
+        the ceiling is reached, which bounds connections without ever
+        failing a statement.
+        """
+        if self._factory is None:
+            return self.session
+        try:
+            return self._idle.get_nowait()
+        except queue.Empty:
+            pass
+        with self._pool_lock:
+            grow = self._live < self._max_connections
+            if grow:
+                self._live += 1
+        if grow:
+            try:
+                return self._factory()
+            except Exception:
+                # A warehouse that will not give us a second connection
+                # is not a reason to fail the turn — wait for a free one.
+                with self._pool_lock:
+                    self._live -= 1
+        return self._idle.get()
+
+    def _release(self, session) -> None:
+        if self._factory is not None:
+            self._idle.put(session)
+
+    def _exec(
+        self, sql: str, params: Optional[Sequence[Any]] = None,
+    ) -> List[Any]:
+        """Run one statement, optionally with bind parameters.
+
+        v1.41 — BIND, DO NOT INLINE. Snowflake charges
+        ``compilation_time`` roughly in proportion to the SIZE OF THE SQL
+        TEXT, and this store used to inline every value as a literal. The
+        authoritative session MERGE shipped ~510KB of JSON as one string
+        literal and spent ~400ms being *parsed* before any work began; a
+        replay-frame insert shipped 1.17MB and spent ~1400ms. Measured
+        against ``query_history``, compilation was ~40% of a 13s turn.
+
+        A bind sends the payload out-of-band, so the SQL text stays a
+        couple of hundred bytes, compiles in tens of ms, and — because
+        the text is now identical every turn — Snowflake can reuse the
+        compiled plan. See ``docs/SNOWFLAKE_LATENCY_BRIEF.md``.
+        """
+        session = self._borrow()
+        try:
+            if params:
+                return list(session.sql(sql, params=list(params)).collect())
+            return list(session.sql(sql).collect())
+        finally:
+            self._release(session)
 
     # ── season lifecycle ──────────────────────────────────────────
     def wipe_all_sessions(self) -> None:
@@ -166,17 +268,22 @@ class SnowparkSocStore:
 
     # ── SOC_GAME_SESSION ──────────────────────────────────────────
     def save_session(self, row: Mapping[str, Any]) -> None:
+        # The hot statement of the whole app: ``json_state`` is the ONLY
+        # row the replay engine reads back, and it is ~510KB of JSON.
+        # Inlined as a literal it cost ~1105ms, of which ~400ms was pure
+        # parse. Bound, the SQL text is ~600 bytes and constant across
+        # turns, so the plan caches (v1.41).
         sql = (
             "MERGE INTO SOC_GAME_SESSION t "
             "USING (SELECT "
-            f"{_quote(row['session_id'])} AS session_id, "
-            f"{_quote(row.get('season_name'))} AS season_name, "
-            f"{_quote(int(row['width']))}::INT AS width, "
-            f"{_quote(int(row['height']))}::INT AS height, "
-            f"{_quote(int(row['seed']))}::INT AS seed, "
-            f"{_quote(int(row['day']))}::INT AS day, "
-            f"{_quote(str(row['phase']))} AS phase, "
-            f"PARSE_JSON({_quote(_json(row.get('json_state')))}) AS json_state"
+            "? AS session_id, "
+            "? AS season_name, "
+            "?::INT AS width, "
+            "?::INT AS height, "
+            "?::INT AS seed, "
+            "?::INT AS day, "
+            "? AS phase, "
+            "PARSE_JSON(?) AS json_state"
             ") s ON t.session_id = s.session_id "
             "WHEN MATCHED THEN UPDATE SET "
             "  season_name = s.season_name, "
@@ -188,7 +295,16 @@ class SnowparkSocStore:
             "  VALUES (s.session_id, s.season_name, s.width, s.height, "
             "          s.seed, s.day, s.phase, s.json_state)"
         )
-        self._exec(sql)
+        self._exec(sql, [
+            str(row["session_id"]),
+            row.get("season_name"),
+            int(row["width"]),
+            int(row["height"]),
+            int(row["seed"]),
+            int(row["day"]),
+            str(row["phase"]),
+            _json(row.get("json_state")),
+        ])
 
     def load_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         sql = (
@@ -521,34 +637,6 @@ class SnowparkSocStore:
         owners = sorted(by_owner.keys())
         if not owners:
             return
-        # Session-scoped DELETE: when EVERY owner is being replaced
-        # at once we don't need a per-owner WHERE filter. Callers
-        # that only refresh ONE player still get correctness via
-        # the owner filter (legacy single-owner code path).
-        if len(owners) == 1:
-            (only_owner,) = owners
-            self._exec(
-                f"DELETE FROM {table} WHERE session_id = {_quote(session_id)} "
-                f"AND owner = {_quote(only_owner)}"
-            )
-        else:
-            self._exec(
-                f"DELETE FROM {table} WHERE session_id = {_quote(session_id)} "
-                f"AND owner IN ({', '.join(_quote(o) for o in owners)})"
-            )
-        cols = (
-            "session_id, owner, slot, square_id, origin_x, origin_y, "
-            "origin_tile, origin_purity, harvested_day, site_uid, payload"
-        )
-        alias_list = (
-            "session_id, owner, slot, square_id, origin_x, origin_y, "
-            "origin_tile, origin_purity, harvested_day, site_uid, payload_j"
-        )
-        select_list = (
-            "session_id, owner, slot, square_id, origin_x, origin_y, "
-            "origin_tile, origin_purity, harvested_day, site_uid, "
-            "PARSE_JSON(payload_j)"
-        )
         value_tuples: List[str] = []
         for owner in owners:
             for r in (by_owner.get(owner) or []):
@@ -567,9 +655,49 @@ class SnowparkSocStore:
                     _quote(payload_json),
                 ]
                 value_tuples.append("(" + ", ".join(parts) + ")")
+
+        # v1.42 — skip the DELETE when we are replacing empty with empty.
+        #
+        # Hoards are empty for most of the early game, so a season spent ~8.2s
+        # of server time issuing DELETEs that matched no rows, plus ~300ms of
+        # client latency each (docs/SNOWFLAKE_LATENCY_BRIEF.md §T1.1).
+        #
+        # The guard is deliberately narrow: we only skip when THIS store
+        # instance has already emptied this exact (table, session, owner-set)
+        # scope, so the first call for any scope always issues the DELETE and
+        # establishes the fact. We never skip when there are rows to write.
+        #
+        # Soundness limit, stated plainly: if a DIFFERENT process inserts
+        # parcels for the same session behind our back, we would skip a DELETE
+        # that should have removed them. Parcels are only ever written by
+        # ``save_session_full`` for a session, and the backend is per-game, so
+        # there is one writer in practice. Set ``SOC_SKIP_EMPTY_PARCELS=0`` to
+        # disable and restore the unconditional DELETE.
+        scope = (table, session_id, ",".join(owners))
         if not value_tuples:
-            # All owners cleared to empty — DELETE already did the job.
+            if _SKIP_EMPTY_PARCELS and scope in self._empty_parcel_scopes:
+                return
+            self._delete_parcels(table, session_id, owners)
+            # Single set mutation, atomic under the GIL. ``save_session_full``
+            # runs hoard and shipped concurrently but they are different
+            # tables, hence different scopes — no contention on a key.
+            self._empty_parcel_scopes.add(scope)
             return
+        self._empty_parcel_scopes.discard(scope)
+        self._delete_parcels(table, session_id, owners)
+        cols = (
+            "session_id, owner, slot, square_id, origin_x, origin_y, "
+            "origin_tile, origin_purity, harvested_day, site_uid, payload"
+        )
+        alias_list = (
+            "session_id, owner, slot, square_id, origin_x, origin_y, "
+            "origin_tile, origin_purity, harvested_day, site_uid, payload_j"
+        )
+        select_list = (
+            "session_id, owner, slot, square_id, origin_x, origin_y, "
+            "origin_tile, origin_purity, harvested_day, site_uid, "
+            "PARSE_JSON(payload_j)"
+        )
         sql = (
             f"INSERT INTO {table} ({cols}) "
             f"SELECT {select_list} FROM (VALUES "
@@ -577,6 +705,29 @@ class SnowparkSocStore:
             + f") AS v({alias_list})"
         )
         self._exec(sql)
+
+    def _delete_parcels(
+        self, table: str, session_id: str, owners: List[str],
+    ) -> None:
+        """Session-scoped DELETE for ``owners`` in ``table``.
+
+        Split out of :meth:`_replace_parcels` in v1.42 so the empty-bundle
+        fast path can reuse it. Behaviour is unchanged: when EVERY owner is
+        being replaced at once we don't need a per-owner WHERE filter, but
+        callers that only refresh ONE player still get correctness via the
+        owner filter (legacy single-owner code path).
+        """
+        if len(owners) == 1:
+            (only_owner,) = owners
+            self._exec(
+                f"DELETE FROM {table} WHERE session_id = {_quote(session_id)} "
+                f"AND owner = {_quote(only_owner)}"
+            )
+        else:
+            self._exec(
+                f"DELETE FROM {table} WHERE session_id = {_quote(session_id)} "
+                f"AND owner IN ({', '.join(_quote(o) for o in owners)})"
+            )
 
     def list_hoard(self, session_id: str, owner: str) -> List[Dict[str, Any]]:
         rows = self._exec(
@@ -600,11 +751,11 @@ class SnowparkSocStore:
     ) -> None:
         sql = (
             "MERGE INTO SOC_POLICY_QUEUE t USING (SELECT "
-            f"{_quote(session_id)} AS session_id, "
-            f"{_quote(int(day))} AS day, "
-            f"{_quote(player)} AS player, "
-            f"PARSE_JSON({_quote(_json(queue))}) AS queue, "
-            f"{_quote(len(queue))} AS move_count) s "
+            "? AS session_id, "
+            "?::INT AS day, "
+            "? AS player, "
+            "PARSE_JSON(?) AS queue, "
+            "?::INT AS move_count) s "
             "ON t.session_id = s.session_id AND t.day = s.day "
             "AND t.player = s.player "
             "WHEN MATCHED THEN UPDATE SET queue = s.queue, "
@@ -614,7 +765,10 @@ class SnowparkSocStore:
             "  queue, move_count) VALUES "
             "  (s.session_id, s.day, s.player, s.queue, s.move_count)"
         )
-        self._exec(sql)
+        self._exec(sql, [
+            str(session_id), int(day), str(player),
+            _json(queue), len(queue),
+        ])
 
     def list_policies(
         self, session_id: str, day: int
@@ -642,25 +796,26 @@ class SnowparkSocStore:
     ) -> None:
         if not entries:
             return
-        rows = self._exec(
-            "SELECT COALESCE(MAX(seq), 0) AS s FROM SOC_GAME_LOG "
-            f"WHERE session_id = {_quote(session_id)}"
-        )
-        next_seq = (rows[0][0] if rows else 0) + 1 if rows else 1
-        values = ",".join(
-            "(" + ",".join([
-                _quote(session_id),
-                _quote(int(day)),
-                _quote(next_seq + offset),
-                _quote(str(entry.get("level", "info"))),
-                _quote(str(entry.get("text", ""))),
-            ]) + ")"
-            for offset, entry in enumerate(entries)
-        )
+        # v1.41 — ONE statement, was two. The MAX(seq) lookup is now a
+        # cross-joined scalar rather than a separate round-trip, and the
+        # rows ride as a bound JSON array instead of inlined literals.
+        # FLATTEN's ``index`` is 0-based, so ``base + index + 1`` numbers
+        # the batch exactly as the old ``next_seq + offset`` did.
+        payload = [
+            {
+                "level": str(e.get("level", "info")),
+                "text": str(e.get("text", "")),
+            }
+            for e in entries
+        ]
         self._exec(
             "INSERT INTO SOC_GAME_LOG (session_id, day, seq, level, text) "
-            f"SELECT * FROM (VALUES {values}) "
-            "AS v(session_id, day, seq, level, text)"
+            "SELECT ?, ?::INT, m.base + v.index + 1, "
+            "       v.value:level::STRING, v.value:text::STRING "
+            "FROM TABLE(FLATTEN(input => PARSE_JSON(?))) v, "
+            "     (SELECT COALESCE(MAX(seq), 0) AS base FROM SOC_GAME_LOG "
+            "      WHERE session_id = ?) m",
+            [str(session_id), int(day), _json(payload), str(session_id)],
         )
 
     def list_log(
@@ -721,12 +876,6 @@ class SnowparkSocStore:
             "DELETE FROM SOC_REPLAY_FRAME "
             f"WHERE session_id = {_quote(session_id)} AND day = {int(day)}"
         )
-        rows = self._exec(
-            "SELECT COALESCE(MAX(global_idx), -1) AS g FROM SOC_REPLAY_FRAME "
-            f"WHERE session_id = {_quote(session_id)}"
-        )
-        next_global = (rows[0][0] if rows else -1) + 1
-
         # The VARIANT columns we round-trip via PARSE_JSON. Keep this
         # list in the SAME order as the VALUES tuple below — the
         # SELECT references them by positional alias.
@@ -760,25 +909,46 @@ class SnowparkSocStore:
             "outcome, hour, emp, mine, chaff, emp_clouds, mines_active, "
             "cells_player_p3, cells_player_p4"
         )
-        # Alias list mirrors ``cols`` so the SELECT can lift PARSE_JSON
-        # against the right positional name in the VALUES table.
-        alias_list = (
-            "session_id, day, frame_idx, global_idx, caption, tag, owner, "
-            "cells_j, cells_p1_j, cells_p2_j, entities_j, hoard_j, "
-            "collisions_j, crushed_probes_j, scheduled_orders_j, attempted, "
-            "outcome, hour, emp_j, mine_j, chaff_j, emp_clouds_j, "
-            "mines_active_j, cells_p3_j, cells_p4_j"
+        # v1.41 — ONE BOUND JSON ARRAY PER CHUNK, flattened server-side.
+        #
+        # This was the most expensive statement in the app. The old shape
+        # pasted every frame's JSON in as a quoted literal inside a VALUES
+        # list: 1.17MB of SQL text per 50 frames, of which ~1400ms of the
+        # statement's ~3.2s was Snowflake merely PARSING the text. The SQL
+        # is now ~1KB and byte-identical every time, so it compiles in tens
+        # of ms and the plan caches across nights.
+        #
+        # No PARSE_JSON per column any more either: once the array is
+        # parsed, ``v.value:cells`` is ALREADY a VARIANT. Only the scalars
+        # need a cast, and ``hour`` still yields SQL NULL when the frame
+        # predates the planetary night clock (JSON null casts to NULL),
+        # which preserves the per-row writer's original contract.
+        _SCALARS = {
+            "session_id": "STRING", "day": "INT", "frame_idx": "INT",
+            "caption": "STRING", "tag": "STRING", "owner": "STRING",
+            "attempted": "STRING", "outcome": "STRING", "hour": "INT",
+        }
+        col_names = [c.strip() for c in cols.split(",") if c.strip()]
+        select_list = ", ".join(
+            # ``global_idx`` is assigned SERVER-SIDE off the running max
+            # rather than read back first — one whole round-trip saved per
+            # night, and at ~270ms of protocol floor per statement
+            # (measured) round-trips are now the dominant cost.
+            #
+            # Chunks need no offset: each chunk is its own statement, so
+            # it recomputes MAX over the rows the previous chunk already
+            # committed. The subquery reads a pre-insert snapshot, so the
+            # max cannot shift underneath the rows being written.
+            "m.base + v.index" if c == "global_idx"
+            else (f"v.value:{c}::{_SCALARS[c]}" if c in _SCALARS
+                  else f"v.value:{c}")
+            for c in col_names
         )
-        select_list = (
-            "session_id, day, frame_idx, global_idx, caption, tag, owner, "
-            "PARSE_JSON(cells_j), PARSE_JSON(cells_p1_j), "
-            "PARSE_JSON(cells_p2_j), PARSE_JSON(entities_j), "
-            "PARSE_JSON(hoard_j), PARSE_JSON(collisions_j), "
-            "PARSE_JSON(crushed_probes_j), PARSE_JSON(scheduled_orders_j), "
-            "attempted, outcome, hour, PARSE_JSON(emp_j), PARSE_JSON(mine_j), "
-            "PARSE_JSON(chaff_j), PARSE_JSON(emp_clouds_j), "
-            "PARSE_JSON(mines_active_j), PARSE_JSON(cells_p3_j), "
-            "PARSE_JSON(cells_p4_j)"
+        sql = (
+            f"INSERT INTO SOC_REPLAY_FRAME ({cols}) SELECT {select_list} "
+            "FROM TABLE(FLATTEN(input => PARSE_JSON(?))) v, "
+            "     (SELECT COALESCE(MAX(global_idx), -1) + 1 AS base "
+            "      FROM SOC_REPLAY_FRAME WHERE session_id = ?) m"
         )
 
         # Build rows lazily so the chunker can slice arbitrary windows
@@ -786,51 +956,31 @@ class SnowparkSocStore:
         # global_idx assigned to it).
         indexed = list(enumerate(frames))
 
-        # 50 rows/statement is a safe ceiling for ~12 JSON blobs/row
-        # (the cells blob is the heaviest, ~5–20 KB serialised). With
-        # 50 rows that's ~1 MB worst-case which fits Snowflake's SQL
-        # text cap with headroom; smaller batches degrade gracefully
-        # but a typical night still finishes in 2–3 statements.
-        for chunk in _chunks(indexed, 50):
-            value_tuples: List[str] = []
+        # 100 rows/statement. The bind is a payload, not SQL text, so the
+        # old 1MB text cap no longer binds the chunk size — this is now
+        # only about keeping one request a sane size (~2MB at the heaviest
+        # frames) and halving the statement count while we are here.
+        for chunk in _chunks(indexed, 100):
+            payload: List[Dict[str, Any]] = []
             for offset, frame in chunk:
-                # ``hour`` falls back to NULL (not 0) when the frame
-                # predates the planetary night clock — same contract
-                # the per-row writer used to honour.
                 hour_val = frame.get("hour")
-                hour_sql = (
-                    _quote(int(hour_val))
-                    if isinstance(hour_val, int)
-                    else "NULL"
-                )
-                parts = [
-                    _quote(session_id),
-                    _quote(int(day)),
-                    _quote(int(frame.get("frame_idx", offset))),
-                    _quote(next_global + offset),
-                    _quote(frame.get("caption")),
-                    _quote(frame.get("tag")),
-                    _quote(frame.get("owner")),
-                ]
-                # JSON-bearing columns ride as string literals; the
-                # outer SELECT lifts each via PARSE_JSON.
-                parts.extend(
-                    _quote(_json(frame.get(k))) for k in json_keys[:8]
-                )
-                parts.append(_quote(frame.get("attempted")))
-                parts.append(_quote(frame.get("outcome")))
-                parts.append(hour_sql)
-                parts.extend(
-                    _quote(_json(frame.get(k))) for k in json_keys[8:]
-                )
-                value_tuples.append("(" + ", ".join(parts) + ")")
-            sql = (
-                f"INSERT INTO SOC_REPLAY_FRAME ({cols}) "
-                f"SELECT {select_list} FROM (VALUES "
-                + ", ".join(value_tuples)
-                + f") AS v({alias_list})"
-            )
-            self._exec(sql)
+                rec: Dict[str, Any] = {
+                    "session_id": session_id,
+                    "day": int(day),
+                    "frame_idx": int(frame.get("frame_idx", offset)),
+                    "caption": frame.get("caption"),
+                    "tag": frame.get("tag"),
+                    "owner": frame.get("owner"),
+                    "attempted": frame.get("attempted"),
+                    "outcome": frame.get("outcome"),
+                    "hour": hour_val if isinstance(hour_val, int) else None,
+                }
+                for k in json_keys:
+                    rec[k] = frame.get(k)
+                payload.append(rec)
+            # Bind order follows the order the ``?`` marks appear in the
+            # text: the payload, then the session id in the max lookup.
+            self._exec(sql, [_json(payload), str(session_id)])
 
     def list_replay_frames(
         self, session_id: str,
@@ -927,36 +1077,37 @@ class SnowparkSocStore:
         if not rows:
             return
         sid = str(rows[0]["session_id"])
-        seq_rows = self._exec(
-            "SELECT COALESCE(MAX(seq), 0) AS s FROM SOC_AGENT_INVOCATION "
-            f"WHERE session_id = {_quote(sid)}"
-        )
-        base_seq = (seq_rows[0][0] if seq_rows else 0)
-        values = ",".join(
-            "(" + ",".join([
-                _quote(str(r["session_id"])),
-                _quote(int(r["day"])),
-                _quote(base_seq + offset + 1),
-                _quote(str(r["agent_id"])),
-                _quote(str(r["player"])),
-                _quote(r.get("prompt_excerpt")),
-                _quote(_json(r.get("tool_calls") or [])),
-                _quote(r.get("rationale")),
-                _quote(r.get("response_text")),
-                _quote(r.get("ms_elapsed")),
-                _quote(r.get("status") or "ok"),
-            ]) + ")"
-            for offset, r in enumerate(rows)
-        )
+        # v1.41 — one bound statement, was a MAX(seq) SELECT plus an
+        # INSERT of inlined literals. ``prompt_excerpt`` / ``response_text``
+        # can be several KB apiece, so this one also stops shipping whole
+        # LLM transcripts through the SQL parser.
+        payload = [
+            {
+                "day": int(r["day"]),
+                "agent_id": str(r["agent_id"]),
+                "player": str(r["player"]),
+                "prompt_excerpt": r.get("prompt_excerpt"),
+                "tool_calls": r.get("tool_calls") or [],
+                "rationale": r.get("rationale"),
+                "response_text": r.get("response_text"),
+                "ms_elapsed": r.get("ms_elapsed"),
+                "status": r.get("status") or "ok",
+            }
+            for r in rows
+        ]
         self._exec(
             "INSERT INTO SOC_AGENT_INVOCATION (session_id, day, seq, agent_id, "
             " player, prompt_excerpt, tool_calls, rationale, response_text, "
-            " ms_elapsed, status) SELECT session_id, day, seq, agent_id, "
-            " player, prompt_excerpt, PARSE_JSON(tool_calls), rationale, "
-            " response_text, ms_elapsed, status FROM (VALUES "
-            f"{values}) AS v(session_id, day, seq, agent_id, player, "
-            " prompt_excerpt, tool_calls, rationale, response_text, "
-            " ms_elapsed, status)"
+            " ms_elapsed, status) "
+            "SELECT ?, v.value:day::INT, m.base + v.index + 1, "
+            "       v.value:agent_id::STRING, v.value:player::STRING, "
+            "       v.value:prompt_excerpt::STRING, v.value:tool_calls, "
+            "       v.value:rationale::STRING, v.value:response_text::STRING, "
+            "       v.value:ms_elapsed::INT, v.value:status::STRING "
+            "FROM TABLE(FLATTEN(input => PARSE_JSON(?))) v, "
+            "     (SELECT COALESCE(MAX(seq), 0) AS base "
+            "      FROM SOC_AGENT_INVOCATION WHERE session_id = ?) m",
+            [sid, _json(payload), sid],
         )
 
     def list_agent_invocations(

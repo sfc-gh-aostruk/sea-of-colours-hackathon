@@ -12,18 +12,29 @@ USE SCHEMA {{SOC_SCHEMA}};
 -- --------------------------------------------------------------------------
 -- V1) Leaderboard — total red harvested per House per session
 -- --------------------------------------------------------------------------
--- The SOC_ASSET_RECORD.total_red_harvested counter is the canonical
+-- The asset ledger's total_red_harvested counter is the canonical
 -- lifetime tally; sum across all of a player's harvesters.
+--
+-- v1.41 — DERIVED FROM json_state, not from SOC_ASSET_RECORD. That table
+-- was written on every save (~690ms a turn) and read by nothing except
+-- this view, so the write was pure cost. The ledger already lives inside
+-- SOC_GAME_SESSION.json_state, which is the authoritative row, so
+-- flattening it here is both free and impossible to get out of sync.
+-- See docs/SNOWFLAKE_LATENCY_BRIEF.md.
+--
+-- Cast destroyed_on_day before the NULL test: a JSON null is NOT a SQL
+-- NULL inside a VARIANT, but casting one yields SQL NULL.
 CREATE OR REPLACE VIEW SOC_LEADERBOARD AS
 SELECT
-    session_id,
-    owner                                AS player,
-    SUM(total_red_harvested)             AS total_red_harvested,
-    SUM(total_days_on_surface)           AS total_days_on_surface,
-    COUNT_IF(destroyed_on_day IS NULL)   AS alive_assets,
-    COUNT_IF(destroyed_on_day IS NOT NULL) AS destroyed_assets
-FROM SOC_ASSET_RECORD
-GROUP BY session_id, owner;
+    s.session_id,
+    r.value:owner::STRING                             AS player,
+    SUM(r.value:total_red_harvested::INT)             AS total_red_harvested,
+    SUM(r.value:total_days_on_surface::INT)           AS total_days_on_surface,
+    COUNT_IF(r.value:destroyed_on_day::INT IS NULL)     AS alive_assets,
+    COUNT_IF(r.value:destroyed_on_day::INT IS NOT NULL) AS destroyed_assets
+FROM SOC_GAME_SESSION s,
+     LATERAL FLATTEN(input => s.json_state:asset_records) r
+GROUP BY s.session_id, r.value:owner::STRING;
 
 -- --------------------------------------------------------------------------
 -- V2) Day index — frame counts + captions per (session, day)

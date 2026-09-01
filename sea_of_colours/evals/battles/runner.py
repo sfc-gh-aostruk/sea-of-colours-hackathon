@@ -31,16 +31,13 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from sea_of_colours.evals import dispatch
 from sea_of_colours.evals.battles import predicates
 from sea_of_colours.evals.battles.boards import Board
 from sea_of_colours.evals.battles.ladder import Loadout, Rung
 from sea_of_colours.evals.battles.stage import StagedBattle, stage
 from sea_of_colours.snowpark import engine as soc_engine
 
-# Labels the offline heuristic runtime can serve without credentials.
-# Anything else is dispatched through orchestrator_2, which is what
-# routes discovered forks and the shipped LLM agent.
-_OFFLINE_LABELS = {"red_harvest", "red_harvest_lite", "heuristic"}
 
 
 @dataclass
@@ -111,6 +108,21 @@ class BattleResult:
             sum(r.score for r in self.runs) / len(self.runs)
             if self.runs else 0.0
         )
+
+    @property
+    def weapons_fired(self) -> dict[str, int]:
+        """Ordnance spent across this battle's runs.
+
+        Summed rather than averaged: with ``--runs 3`` the question is
+        whether the agent EVER reaches for the rack on this shape of
+        night, and one salvo in three attempts is a different finding
+        from none in three.
+        """
+        out: dict[str, int] = {}
+        for r in self.runs:
+            for k, v in (r.weapons_fired or {}).items():
+                out[k] = out.get(k, 0) + int(v)
+        return out
 
     @property
     def flaky(self) -> bool:
@@ -201,6 +213,7 @@ def run_battle(
     runs: int = 1,
     card_dir: Path | None = None,
     seed: int = 4242,
+    recorder=None,
 ) -> BattleResult:
     """Stage one battle and play it ``runs`` times."""
     out = BattleResult(
@@ -213,13 +226,15 @@ def run_battle(
         # later runs quietly test a different position.
         battle = stage(board, rung, loadout, seed=seed + i)
         out.runs.append(
-            _play(battle, agent=agent, run_index=i, card_dir=card_dir)
+            _play(battle, agent=agent, run_index=i, card_dir=card_dir,
+                  recorder=recorder)
         )
     return out
 
 
 def _play(
-    battle: StagedBattle, *, agent: str, run_index: int, card_dir: Path | None
+    battle: StagedBattle, *, agent: str, run_index: int, card_dir: Path | None,
+    recorder=None,
 ) -> RunResult:
     result = RunResult(
         battle_id=battle.id,
@@ -229,6 +244,11 @@ def _play(
         run_index=run_index,
     )
     started = time.time()
+    env: Mapping[str, Any] | None = None
+    # The board BEFORE the agent moved — what it was looking at. Held for
+    # the recorder, which has to show the position that prompted the play
+    # rather than the wreckage afterwards.
+    sess = None
     try:
         sess = soc_engine._hydrate_session(battle.store, battle.session_id)
         day = int(sess.day)
@@ -255,6 +275,10 @@ def _play(
 
     if card_dir is not None:
         _write_card(card_dir, battle, result)
+    if recorder is not None and sess is not None:
+        # A crash still gets recorded — a turn that blew up is exactly
+        # the one you want to open in the room.
+        recorder.capture(battle, result, env=env, session=sess)
     return result
 
 
@@ -279,23 +303,9 @@ def _detect_fallback(env: Mapping[str, Any] | None, rationale: str) -> bool:
 
 def _dispatch(battle: StagedBattle, agent: str) -> Mapping[str, Any]:
     """Hand the turn to whichever runtime owns this agent."""
-    label = (agent or "").strip().lower()
-    if label in _OFFLINE_LABELS:
-        from sea_of_colours.agent.runtime import run_agent_turn
-
-        # The heuristic runtime spells its own default ``heuristic``
-        # rather than ``red_harvest``, and rejects the latter outright.
-        override = None if label in ("heuristic", "red_harvest") else label
-        return run_agent_turn(
-            battle.store, battle.session_id, battle.seat,
-            runtime_override=override,
-        ) or {}
-
-    from sea_of_colours.orchestrator_2.runtime import run_agent_turn
-
-    return run_agent_turn(
-        battle.store, battle.session_id, battle.seat, agent_label=label,
-    ) or {}
+    return dispatch.play_turn(
+        battle.store, battle.session_id, battle.seat, agent,
+    )
 
 
 def _write_card(card_dir: Path, battle: StagedBattle, result: RunResult) -> None:
@@ -345,6 +355,7 @@ def run_suite(
     card_dir: Path | None = None,
     seed: int = 4242,
     on_battle=None,
+    recorder=None,
 ) -> SuiteResult:
     """Every board against every rung against every loadout.
 
@@ -359,6 +370,7 @@ def run_suite(
                 res = run_battle(
                     board, rung, loadout,
                     agent=agent, runs=runs, card_dir=card_dir, seed=seed,
+                    recorder=recorder,
                 )
                 suite.battles.append(res)
                 if on_battle is not None:

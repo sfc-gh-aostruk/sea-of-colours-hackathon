@@ -122,9 +122,34 @@ sea_of_colours/
   snowpark/      Storage-agnostic engine wrappers (engine.py) + backend.py + stores
   agent/         RED_HARVEST heuristic + Cortex AI agent runtime/invoker
   evals/         Scenario/eval harness
-    battles/     The redsign battles — 9 captured boards x 5 difficulty rungs
-                 x 4 weapon loadouts, all offline. The hackathon's scoring
-                 suite; see its README.md.
+    dispatch.py  The one place that knows how to make an agent take a turn.
+               Two runtimes with different vocabularies (heuristic via
+               runtime_override, everything else via agent_label); call
+               play_turn and stop caring. Both the battles runner and the
+               season runner go through it.
+  seasons.py   Headless full seasons (v1.40) — any agent in any seat,
+               written through the same store the live server reads, so a
+               `soc season` run opens in the normal replay UI. Keeps a
+               Markdown card per turn (orbit and night kept separate).
+  cards.py     Renders one turn as Markdown, from a store row or a harness
+               envelope. Shared by seasons.py and /api/game/{id}/agent-cards.
+  battles/     The redsign battles — 10 boards x 5 difficulty rungs x 4
+                 weapon loadouts, all offline. The hackathon's scoring suite;
+                 see its README.md. Nine are redsign nights; the tenth,
+                 plain_night_armed, is the no-jackpot control that asks what
+                 an agent does with a rack on an ordinary seam.
+      baseline/  Stock V12's own run over the lot, frozen and checked in, so
+                 `soc why` can show a fork what it forked without a PAT or a
+                 model call. Re-record it when a board changes —
+                 tests/test_battles_baseline.py fails if you forget.
+      room/      The battle room (v1.40) — `soc suite --record` freezes each
+                 turn to reports/battles/ and copies room.html in beside it,
+                 so a turn can be replayed next to the card that produced it.
+                 A static page loaded over file://, so it registers its data
+                 with a <script> tag: never add a fetch(), it cannot work.
+                 Served at /battles/ too. scripts/_probe_battle_room.py drives
+                 it in a real browser — run that after touching room.html,
+                 because a static page cannot report its own breakage.
   orchestrator_2/  Agent orchestration + the plug-in contract — see its README.md
     agent_manifest.py  A fork is any harnesses/ dir holding an agent.json,
                  discovered at import (v1.39). Registering one edits nothing
@@ -142,9 +167,11 @@ server/
   app.py         FastAPI thin proxy (/, /api/game/*); static mounted no-cache
   static/        Web UI — app.js, styles.css, station.js, index.html
 scripts/         deploy_soc_schema.py, run_season*.py, run_evals.py, run_battery.py
-  soc.py         the hackathon front door — new / list / suite / why / doctor /
-                 push / league. One entry point on purpose; point attendees
-                 (and their coding agents) here rather than at four scripts.
+  soc.py         the hackathon front door — new / list / suite / why / weapons
+                 / season / doctor / push / league. One entry point on purpose;
+                 point attendees (and their coding agents) here, not at four
+                 scripts. `season` supersedes run_season.py for anything that
+                 needs a fork or an LLM seat — that script is heuristic-only.
   films/         the tutorial film rig — self-contained, see its README.md
 snowflake/       SOC_* schema, views, procedures, agent SQL
 ```

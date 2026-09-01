@@ -565,6 +565,83 @@ BOARDS: tuple[Board, ...] = (
             "a seam nobody could see."
         ),
     ),
+
+    # The odd one out, and deliberately so. Everything above is a
+    # redsign night; this is the other 80% of a season.
+    Board(
+        id="plain_night_armed",
+        day=4,
+        shape="NO redsign, no pure — an ordinary working night, rack loaded",
+        question=(
+            "Day 4 of 7. There is no pure anywhere and no redsign on "
+            "anybody's board: just a long vein-and-mass seam running "
+            "north-east, two harvesters, three probes. One rival probe sits "
+            "at (18,9) with live vision over the near half of our seam, and "
+            "two rival harvesters are working their own ground at "
+            "(9,20)/(10,20). Every other board in this suite asks what your "
+            "agent does about a jackpot. This one asks the question the "
+            "other 80% of a season actually asks: on an ordinary night, "
+            "with ordnance in the rack and nothing dramatic to spend it on, "
+            "does the agent still run a competent seam — and does it treat "
+            "the rack as a tool or as decoration?"
+        ),
+        canonical=(
+            "WORK THE SEAM, PROPERLY. Both harvesters out, both onto RED, "
+            "long combs up the mass at (16,10)-(18,12), lift both. That is "
+            "the whole scoring play and it is not sophisticated. "
+            "\n\n"
+            "The ordnance is the interesting part, and BOTH answers are "
+            "defensible — which is why nothing here scores it. Firing is "
+            "justifiable: their probe at (18,9) is the only eye on our seam, "
+            "an EMP removes it for the night and a chaff can strand the "
+            "committed pair on their lift. Holding is equally justifiable: "
+            "a charge spent here is a charge not available the night a pure "
+            "surfaces, and the hour it costs is an hour not walking ore. "
+            "What is NOT defensible is never having considered it. Read the "
+            "ORDNANCE line in the report against your own doctrine — if you "
+            "told your agent 'weapons only for redsigns' then silence here "
+            "is the correct result and you have just proved it; if you did "
+            "not, silence means the rack is decoration."
+        ),
+        pures=[],
+        red=[(15, 9, VEIN), (16, 10, MASS), (17, 10, MASS_HI),
+             (18, 11, MASS), (17, 12, MASS_LO), (16, 12, VEIN_HI),
+             (15, 11, VEIN), (19, 12, VEIN_LO), (14, 10, TRACE),
+             (18, 13, VEIN), (19, 13, MASS_LO)],
+        redsign_center=None,
+        harvesters=2,
+        probes_in_stock=3,
+        # Last night's probe, still lit over the seam. Every other board
+        # gets its drop legality from a pure; this one has none, and
+        # without a live beacon the seat cannot legally land at all
+        # (§3.9.7) — the board would be testing the drop rule rather
+        # than the night. A standing eye is also just what an ordinary
+        # day-4 seat actually has.
+        our_probes=[(16, 11)],
+        rival_probes=[(18, 9)],
+        rival_harvesters=[(9, 20), (10, 20)],
+        expect={
+            "deploy_all": True,
+            "no_green": True,
+            "min_red_cells": 6,
+            "probes_after_harvesters": True,
+            "compiler_clean": True,
+            "note": (
+                "the control board. No pure, no sign, no drama — if an "
+                "agent only performs on jackpot nights it is not actually "
+                "good, and this is the board that says so. Weapon use is "
+                "REPORTED here, never scored: doctrine on when to spend a "
+                "charge is the attendee's call, not the suite's"
+            ),
+        },
+        baseline=(
+            "V12 works this board competently and has never fired a weapon "
+            "on it. That is not a bug and not obviously a mistake — it is "
+            "the shipped doctrine, which holds charges for redsign nights. "
+            "It is here as the reference point for a fork that decides "
+            "otherwise."
+        ),
+    ),
 )
 
 

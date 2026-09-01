@@ -31,8 +31,7 @@ v1.31 — the caltrop mine track was REMOVED, not merely hidden. It had
 become actively wrong: at 100 blue it was the cheapest weapon, so every
 band drop widened ``mines_max`` further than either real weapon and the
 estimator's confidence was being spent inventing stock of something the
-engine will not sell. See ``docs/ADDING_A_WEAPON.md`` for what a third
-weapon has to add back here.
+engine will not sell.
 
 Sharper heuristic: a 2-pip drop in a single night with 0 launches is
 strong evidence of chaff OR ≥2 weapons total. We don't try to disambiguate

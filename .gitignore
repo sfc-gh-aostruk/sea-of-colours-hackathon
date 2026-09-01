@@ -56,3 +56,17 @@ secrets.toml
 # re-running the harness, and several MB a session. The frozen/*.json fixtures
 # under reports/ are deliberately tracked and unaffected by this.
 /reports/**/*.png
+
+# Battle-room bakes (`soc suite --record`). Output, not source: a bake is
+# one person's suite run, they accumulate, and the room itself is copied
+# in from sea_of_colours/evals/battles/room/. Committing these would put
+# every attendee's runs in everyone else's diff.
+/reports/battles/
+/reports/battle-room-probe/
+
+# Headless season records (`soc season`) and the local session stores
+# they write through. Same argument as the bakes: one person's runs,
+# regenerable, and a season's cards are megabytes of prompt text.
+/reports/seasons/
+/.soc_sessions/
+/.soc_probe*/

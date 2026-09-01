@@ -82,21 +82,32 @@ def test_session_blob_and_scores_round_trip(tmp_path):
 
 def test_tuple_keyed_tables_round_trip(tmp_path):
     """square_identity / grid_cells use (x,y) tuple keys; they must
-    serialize to JSON rows and rehydrate without loss."""
+    serialize to JSON rows and rehydrate without loss.
+
+    v1.41 — writes through the store method directly. ``save_session_full``
+    no longer persists grid cells: they are a write-only projection that
+    cost ~700ms of every Snowflake turn and that nothing read back (see
+    docs/SNOWFLAKE_LATENCY_BRIEF.md). The method survives for backfills,
+    and its tuple-key serialisation is still worth pinning — it just is no
+    longer reachable from the save path, so the test drives it itself.
+    """
     from sea_of_colours.snowpark import file_store as fs
 
     producer = FileSocStore(str(tmp_path))
     sid = _drive_one_resolved_night(producer)
+    producer.upsert_grid_cells(sid, [
+        {"x": 3, "y": 4, "tile": 1, "purity": 200, "last_mutated_day": 1},
+        {"x": 0, "y": 0, "tile": 0, "purity": 0, "last_mutated_day": None},
+    ])
 
     consumer = FileSocStore(str(tmp_path))
-    # grid_cells were persisted by save_session_full; the consumer must
-    # rebuild the (x,y)-keyed map with integer coordinates from its file.
     consumer._reload_part(sid, fs.F_GRID)
     grid = consumer._mem.grid_cells.get(sid, {})
     assert grid, "grid cells did not round-trip"
     for key in grid:
         assert isinstance(key, tuple) and len(key) == 2
         assert all(isinstance(c, int) for c in key)
+    assert (3, 4) in grid
 
 
 def test_append_only_sessions_accumulate(tmp_path):

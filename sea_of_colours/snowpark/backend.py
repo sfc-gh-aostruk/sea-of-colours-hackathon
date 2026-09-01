@@ -251,6 +251,32 @@ def _get_file_store() -> SocStore:
         return _file_store
 
 
+def _max_connections() -> int:
+    """How many Snowflake connections the store may hold open.
+
+    **Defaults to 1 (pool off), because measurement says it does not
+    help.** Kept because the mechanism is sound and the finding is
+    worth not re-discovering:
+
+    * ``save_session_full`` fans 7 writes across a thread pool sharing
+      one session, which looked like connector queuing.
+    * With 7 real connections, 7 concurrent ``SELECT 1`` cost 0.32s
+      wall against 0.30s for one — perfect parallelism, so connections
+      were never the constraint.
+    * A turn stayed at ~12.8s against ~13.1s single-session, while
+      opening the extra connections cost ~2.8s each.
+
+    The cost is per-statement latency (~0.3s floor, ~1-1.7s for real
+    DML) times a statement count that is mostly *sequential by design*.
+    Fewer statements is the lever; more connections is not.
+    """
+    raw = os.environ.get("SOC_SF_CONNECTIONS", "").strip()
+    try:
+        return max(1, int(raw)) if raw else 1
+    except ValueError:
+        return 1
+
+
 def _build_snowpark_session():
     """Create a Snowpark session from ``SF_CONFIG_FILE`` / ``~/.ssh/sf_config``."""
     config = _sf_config_path()
@@ -269,7 +295,28 @@ def _get_snowflake_store() -> SocStore:
 
             if _snowpark_session is None:
                 _snowpark_session = _build_snowpark_session()
-            _snowflake_store = SnowparkSocStore(_snowpark_session)
+            # ``save_session_full`` fans seven writes across a thread
+            # pool that all shared this one session, and the connector
+            # serialises per connection — so the save was a queue
+            # wearing a pool's clothes. Extra connections are opened
+            # lazily and only if the fan-out actually contends, so a
+            # single-threaded caller still uses exactly one.
+            _snowflake_store = SnowparkSocStore(
+                _snowpark_session,
+                session_factory=_build_snowpark_session,
+                max_connections=_max_connections(),
+            )
+            # v1.43 — optional write-coalescing / read-caching wrapper. Every
+            # store call on Snowflake costs ~300ms of request handling before
+            # it does any work, so the turn cost is statements x 300ms and the
+            # engine issues 11-14 of them, several redundant. Off by default;
+            # export SOC_BUFFERED_STORE=1. See buffered_store.py for the
+            # durability model and docs/SNOWFLAKE_LATENCY_BRIEF.md §T1.1 for
+            # the measurement.
+            from sea_of_colours.snowpark import buffered_store as _bufmod
+
+            if _bufmod.buffering_enabled():
+                _snowflake_store = _bufmod.BufferedSocStore(_snowflake_store)
         return _snowflake_store
 
 

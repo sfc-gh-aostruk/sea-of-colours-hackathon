@@ -260,9 +260,17 @@ def test_init_session_preserves_prior_season_data():
     new_sid = new["session_id"]
     assert new_sid != old_sid
 
-    # Both sessions must coexist across EVERY per-session structure.
-    for attr in ("square_identity", "asset_records", "entity_state",
-                 "grid_cells", "hoard", "shipped", "policies",
+    # Both sessions must coexist across every per-session structure the
+    # save path actually populates.
+    #
+    # v1.41 — ``square_identity`` / ``asset_records`` / ``entity_state`` /
+    # ``grid_cells`` dropped off this list because ``save_session_full``
+    # no longer writes them: they were write-only projections costing
+    # ~2.7s of every Snowflake turn and nothing ever read them back (see
+    # docs/SNOWFLAKE_LATENCY_BRIEF.md). Empty containers would make the
+    # assertion below vacuous rather than wrong, which is worse — it
+    # would keep passing while testing nothing.
+    for attr in ("hoard", "shipped", "policies",
                  "log_rows", "replay_frames", "agent_invocations"):
         container = getattr(store, attr)
         assert old_sid in container, (

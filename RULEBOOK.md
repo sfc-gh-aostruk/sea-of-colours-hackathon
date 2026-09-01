@@ -2184,9 +2184,7 @@ so tuning them is a one-file edit.
 **Two of the three are still in service** — the EMP salvo (§4.9.3) and
 the orbital chaff flare (§4.9.5). The caltrop mine was retired in v1.31
 and its slot is deliberately left open for a replacement; §4.9.4 records
-what happened to it, and
-[`docs/ADDING_A_WEAPON.md`](docs/ADDING_A_WEAPON.md) maps every place a
-third weapon has to plug back in.
+what happened to it.
 
 #### 4.9.1 Blue purity — the weapons currency
 
@@ -2325,10 +2323,6 @@ in the code, still resolve.
   (100 blue per caltrop). Credits are not refunded: the credit half was
   the build fee, and the vault is where the loss is felt. The migration
   writes a `[mineRetired]` log line saying how many of each it handled.
-
-[`docs/ADDING_A_WEAPON.md`](docs/ADDING_A_WEAPON.md) is the forward
-guide: every engine, view, agent, UI and doc surface a third weapon has
-to fill, with the caltrop as the worked example.
 
 #### 4.9.5 Orbital chaff flare — `{"a": "chaff_flare"}`
 

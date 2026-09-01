@@ -33,6 +33,8 @@ live Snowflake connectivity.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, List
 
 from sea_of_colours.snowpark.snowpark_store import SnowparkSocStore
@@ -56,18 +58,33 @@ class _FakeDF:
 
 
 class _FakeSession:
-    """Captures every SQL string the store hands to ``session.sql``."""
+    """Captures every SQL string the store hands to ``session.sql``.
+
+    v1.41 — also captures the bind parameters. The store no longer
+    inlines payloads as literals, so a test that only looks at the SQL
+    text can no longer see what was written; assertions about *content*
+    have to read ``binds`` instead.
+    """
 
     def __init__(self) -> None:
         self.statements: List[str] = []
+        self.binds: List[Any] = []
 
-    def sql(self, query: str) -> _FakeDF:
+    def sql(self, query: str, params: Any = None) -> _FakeDF:
         self.statements.append(query)
+        self.binds.append(params)
         # First SELECT against a fresh SOC_REPLAY_FRAME table returns
         # MAX(global_idx) = -1 → next_global starts at 0.
         if "MAX(global_idx)" in query:
             return _FakeDF([(-1,)])
         return _FakeDF([])
+
+    def bind_for(self, prefix: str) -> Any:
+        """The bind list of the first statement starting with ``prefix``."""
+        for sql, params in zip(self.statements, self.binds):
+            if sql.startswith(prefix):
+                return params
+        raise AssertionError(f"no statement began with {prefix!r}")
 
 
 def _make_frame(idx: int) -> dict:
@@ -103,10 +120,13 @@ def _make_frame(idx: int) -> dict:
 
 
 def test_append_replay_frames_batches_to_few_statements() -> None:
-    """150 frames must collapse to MAX_BATCH(50) inserts, not 150.
+    """150 frames must collapse to a couple of inserts, not 150.
 
     Pre-v0.9.5 this was 1 SELECT + 150 INSERTs (~30s+ on live
-    Snowflake). Post-v0.9.5 it's 1 SELECT + ceil(150/50)=3 INSERTs.
+    Snowflake). v1.41 binds the batch as one JSON array and flattens it
+    server-side, which lifts the chunk to 100 frames, and folds the
+    ``MAX(global_idx)`` lookup into the INSERT — so 150 frames is
+    1 DELETE + 2 INSERTs and no standalone SELECT at all.
     """
     sess = _FakeSession()
     store = SnowparkSocStore(sess)
@@ -115,14 +135,15 @@ def test_append_replay_frames_batches_to_few_statements() -> None:
     store.append_replay_frames("sess-batch", day=1, frames=frames)
 
     inserts = [s for s in sess.statements if s.startswith("INSERT INTO SOC_REPLAY_FRAME")]
-    selects = [s for s in sess.statements if "MAX(global_idx)" in s]
-    assert len(selects) == 1, (
-        f"expected 1 leading MAX(global_idx) select, got {len(selects)}"
+    standalone = [s for s in sess.statements if s.startswith("SELECT")]
+    assert standalone == [], (
+        f"the global_idx lookup must ride inside the INSERT, got {standalone}"
     )
-    assert len(inserts) == 3, (
-        f"expected 3 batched INSERTs for 150 frames (50/batch), "
+    assert len(inserts) == 2, (
+        f"expected 2 batched INSERTs for 150 frames (100/batch), "
         f"got {len(inserts)}"
     )
+    assert all("MAX(global_idx)" in s for s in inserts)
 
 
 def test_append_replay_frames_empty_is_a_noop() -> None:
@@ -151,20 +172,35 @@ def test_append_replay_frames_small_batch_is_single_insert() -> None:
 
     inserts = [s for s in sess.statements if s.startswith("INSERT INTO SOC_REPLAY_FRAME")]
     assert len(inserts) == 1
-    # Sanity-check: the single statement carries 30 row tuples
-    # rather than 30 separate INSERTs. We can't easily count tuples
-    # without parsing the SQL, so as a proxy assert the statement
-    # carries every PARSE_JSON column header exactly once.
     body = inserts[0]
-    for header in (
-        "PARSE_JSON(cells_j)",
-        "PARSE_JSON(entities_j)",
-        "PARSE_JSON(mines_active_j)",
-    ):
-        assert body.count(header) == 1, (
-            f"batched SELECT must reference {header} once, "
-            f"got {body.count(header)}"
-        )
+
+    # v1.41 — the rows travel as ONE bound JSON array, so the SQL text is
+    # short, constant, and mentions each column exactly once. That is the
+    # whole point of the change: SQL text length drove Snowflake's
+    # compilation time, which was ~40% of a turn.
+    # Two binds: the frame array, and the session id for the running
+    # global_idx max that is now folded into the same statement.
+    assert "FLATTEN" in body and body.count("?") == 2, body
+    assert len(body) < 2000, (
+        f"the statement should be ~1KB of constant text, got {len(body)} "
+        "bytes — something is being inlined again"
+    )
+    for col in ("cells", "entities", "mines_active"):
+        # ``\b`` keeps ``cells`` from also matching ``cells_player_p1``.
+        hits = re.findall(rf"v\.value:{col}\b", body)
+        assert len(hits) == 1, f"{col}: {len(hits)}"
+
+    # The payload really does carry all 30 frames. ``global_idx`` is NOT
+    # in it any more — the server derives it from the running max, which
+    # is what removed the extra round-trip.
+    binds = sess.bind_for("INSERT INTO SOC_REPLAY_FRAME")
+    payload = json.loads(binds[0])
+    assert binds[1] == "sess-small"
+    assert len(payload) == 30
+    assert "global_idx" not in payload[0]
+    assert [r["frame_idx"] for r in payload] == list(range(30))
+    assert payload[0]["cells"] == [{"x": 0, "y": 0, "ch": "  "}]
+    assert payload[0]["hour"] == 3
 
 
 def test_replace_entity_state_uses_one_delete_plus_one_insert() -> None:
@@ -323,15 +359,18 @@ def test_replace_shipped_bundle_empty_owner_keeps_the_delete() -> None:
     assert len(inserts) == 0, "no INSERT when every owner is empty"
 
 
-def test_save_session_full_parallel_writes_each_table_once() -> None:
-    """:func:`save_session_full` fans out across a thread pool but still
-    issues exactly one bundle/batched statement per SOC_* table.
+def test_save_session_full_writes_only_what_is_read_back() -> None:
+    """v1.41 — the save path must not write the write-only projections.
 
-    Pin the contract: enabling parallelism must not duplicate any
-    write (e.g. two threads racing on the same table). The fake
-    session is thread-safe because Python's GIL serialises list
-    appends; that's the same safety property the real Snowpark
-    session relies on for concurrent ``session.sql`` calls.
+    Square identity, asset records, entity state and grid cells were
+    written on every save and read by nothing (the store protocol has no
+    reader for any of them). On Snowflake that was ~2.7s of every turn.
+    They are derivable from ``json_state``, so the save path drops them
+    and ``SOC_LEADERBOARD`` flattens the ledger out of the blob instead.
+
+    This test is the guard against them creeping back in — reintroducing
+    one is a several-hundred-millisecond regression per turn that no
+    local timing would ever reveal.
     """
     import os as _os
     from sea_of_colours.snowpark import engine as _engine
@@ -384,17 +423,146 @@ def test_save_session_full_parallel_writes_each_table_once() -> None:
     finally:
         _engine._PARALLEL_SAVE = prev
 
-    # Each of the 7 phases must be invoked EXACTLY once.
     expected = {
         "save_session",
-        "upsert_square_identity",
-        "upsert_asset_records",
-        "replace_entity_state",
-        "upsert_grid_cells",
         "replace_hoard_bundle",
         "replace_shipped_bundle",
     }
-    assert set(call_log) == expected
-    assert len(call_log) == 7, (
-        f"each phase must run once, got {sorted(call_log)}"
+    assert set(call_log) == expected, (
+        f"save_session_full wrote {sorted(set(call_log) - expected)} — "
+        "those are write-only projections and must stay off the save path"
+    )
+    assert len(call_log) == 3, (
+        f"each phase must run exactly once, got {sorted(call_log)}"
+    )
+
+    # THE ORDERING GUARANTEE (E1b). ``json_state`` is the only row
+    # ``_hydrate_session`` reads, so it must land LAST — after every
+    # sibling write has completed. If it moves earlier, a following
+    # hydrate can observe a pre-resolution snapshot and the season runner
+    # re-resolves the same night, which is the "day 3 repeats three
+    # times" replay bug. That race only opens on real Snowflake, where
+    # writes are slow enough to interleave, so this static ordering check
+    # is the only cheap defence we have.
+    assert call_log[-1] == "save_session", (
+        f"the authoritative session row must be written last, got {call_log}"
+    )
+
+
+def test_repeat_empty_parcel_bundle_skips_the_delete() -> None:
+    """v1.42 — replacing empty with empty must not re-issue the DELETE.
+
+    Hoards are empty for most of the early game, so the unconditional
+    session-scoped DELETE ran dozens of times per season and matched no
+    rows — ~8.2s of server time plus ~300ms of client latency each (see
+    docs/SNOWFLAKE_LATENCY_BRIEF.md §T1.1).
+
+    The contract this pins:
+
+    * the FIRST empty bundle still DELETEs, because we cannot know the
+      table is empty until we have emptied it ourselves;
+    * a REPEAT empty bundle for the same scope issues nothing;
+    * a NON-EMPTY bundle re-arms the guard, so the next empty bundle
+      DELETEs again rather than silently leaving stale rows behind.
+
+    That last case is the one that would corrupt the score, and it is why
+    the guard is keyed on the exact (table, session, owner-set) scope.
+    """
+    sess = _FakeSession()
+    store = SnowparkSocStore(sess)
+
+    def _deletes() -> List[str]:
+        return [
+            s for s in sess.statements
+            if s.startswith("DELETE FROM SOC_HOARD_PARCEL")
+        ]
+
+    store.replace_hoard_bundle("sess-empty-skip", {"p1": [], "p2": []})
+    assert len(_deletes()) == 1, "the first empty bundle must still evict"
+
+    store.replace_hoard_bundle("sess-empty-skip", {"p1": [], "p2": []})
+    assert len(_deletes()) == 1, (
+        "a repeat empty bundle for a scope we already emptied must issue "
+        "no SQL at all"
+    )
+
+    # A different session is a different scope and must not inherit the fact.
+    store.replace_hoard_bundle("sess-other", {"p1": [], "p2": []})
+    assert len(_deletes()) == 2, "the guard must be per-session"
+
+    # Now write real rows, then clear again — the DELETE must come back.
+    store.replace_hoard_bundle(
+        "sess-empty-skip",
+        {"p1": [{"slot": 0, "square_id": "sq-1", "payload": {"a": 1}}], "p2": []},
+    )
+    assert len(_deletes()) == 3, "a non-empty bundle always DELETEs first"
+    store.replace_hoard_bundle("sess-empty-skip", {"p1": [], "p2": []})
+    assert len(_deletes()) == 4, (
+        "after rows were written the scope is dirty again, so clearing it "
+        "must re-issue the DELETE — otherwise stale parcels survive and "
+        "corrupt bulk_session_scores"
+    )
+
+
+def test_save_agent_rationale_writes_only_the_authoritative_row() -> None:
+    """v1.42 — a rationale must not trigger the full save fan-out.
+
+    ``save_agent_rationale`` appends one line to ``sess.log`` and nothing
+    else. Routing that through ``save_session_full`` re-wrote both parcel
+    tables with byte-identical data on every agent turn — 6 of the 13
+    saves in a 6-turn season, 4 redundant statements each.
+
+    This pins two things at once: that the parcel writes are gone, and
+    that the log line still survives a hydrate (which is the behaviour the
+    full save was there to provide, and what ``get_session_status`` reads
+    for its ``log_tail``).
+    """
+    from sea_of_colours.snowpark import engine as _engine
+    from sea_of_colours.snowpark.store import InMemorySocStore
+    from sea_of_colours.game.session import GameSession
+
+    call_log: List[str] = []
+
+    class _CountingStore(InMemorySocStore):
+        def save_session(self, row):  # type: ignore[override]
+            call_log.append("save_session")
+            super().save_session(row)
+
+        def replace_hoard_bundle(self, sid, by_owner):  # type: ignore[override]
+            call_log.append("replace_hoard_bundle")
+            super().replace_hoard_bundle(sid, by_owner)
+
+        def replace_shipped_bundle(self, sid, by_owner):  # type: ignore[override]
+            call_log.append("replace_shipped_bundle")
+            super().replace_shipped_bundle(sid, by_owner)
+
+    store = _CountingStore()
+    game = GameSession.new(8, 6, seed=42)
+    store.save_session(_engine._save_session_row(game))
+    call_log.clear()
+
+    _engine.save_agent_rationale(
+        store,
+        game.session_id,
+        day=1,
+        agent_id="probe_agent",
+        player="p1",
+        rationale="held position to bank purity",
+    )
+
+    assert "replace_hoard_bundle" not in call_log, (
+        "a rationale changes no parcel state — writing the parcel tables "
+        "here is pure waste"
+    )
+    assert "replace_shipped_bundle" not in call_log
+    assert call_log.count("save_session") == 1, (
+        f"exactly one authoritative write expected, got {call_log}"
+    )
+
+    # The line must be durable in the blob, or /status loses its log_tail.
+    reloaded = _engine._hydrate_session(store, game.session_id)
+    texts = [e.get("text", "") for e in (reloaded.log or [])]
+    assert any("held position to bank purity" in t for t in texts), (
+        "the rationale must survive the hydrate — get_session_status reads "
+        f"log_tail straight off sess.log, got {texts[-3:]}"
     )

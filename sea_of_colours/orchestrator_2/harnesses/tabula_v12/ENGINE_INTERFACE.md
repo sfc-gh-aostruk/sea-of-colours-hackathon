@@ -135,8 +135,7 @@ and the row still burns one of the 21 slots. A fork that carries a stale tag
 therefore loses a slot per occurrence and sees the reason on the card, which is
 the whole point of refusing by name rather than dropping silently. Note the v7
 sanitizer never filtered `mine_lay`, so nothing upstream of the engine will
-catch it for you. RULEBOOK §4.9.4 records the retirement, and
-`docs/ADDING_A_WEAPON.md` maps what a replacement weapon has to fill.
+catch it for you. RULEBOOK §4.9.4 records the retirement.
 
 ### 3.2 The read-only path
 

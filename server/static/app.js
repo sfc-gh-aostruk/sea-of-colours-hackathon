@@ -13664,6 +13664,38 @@
     return String(seat).toUpperCase();
   }
 
+  /** v1.40 — hand the whole season's agent cards over as a file. The
+   *  panel shows one turn at a time, which is right for watching and
+   *  useless for working out where a season went wrong; this is the
+   *  same rows, in play order, in something you can sit with.
+   *
+   *  v1.41 — two buttons over one endpoint. READ serves HTML into a new
+   *  tab (day rail, section tabs, colour); .MD downloads the Markdown,
+   *  which is the format you paste into a coding agent — HTML is much
+   *  worse for that, so neither replaces the other.
+   *
+   *  Plain navigation rather than fetch + blob: the endpoint already
+   *  sets Content-Disposition, so the browser does the whole job. */
+  function wireAgentCardsDownload() {
+    const read = document.getElementById("agent-cards-read");
+    const btn = document.getElementById("agent-cards-download");
+    if (read) {
+      read.disabled = !sessionId;
+      read.onclick = () => {
+        if (!sessionId) return;
+        window.open(
+          `/api/game/${sessionId}/agent-cards?fmt=html`, "_blank", "noopener",
+        );
+      };
+    }
+    if (!btn) return;
+    btn.disabled = !sessionId;
+    btn.onclick = () => {
+      if (!sessionId) return;
+      window.location.href = `/api/game/${sessionId}/agent-cards`;
+    };
+  }
+
   /** When loading a persisted season into replay/watch mode, pull
    *  the rationale rows for (day, seat) from the server and fold
    *  them into the in-memory bucket. */
@@ -13748,6 +13780,7 @@
    *  the day currently in view (replay cursor day, or live current
    *  day). Older days are hidden by design — "current turn only". */
   function renderAgentFeed() {
+    wireAgentCardsDownload();
     if (!agentFeedEl) return;
     const day = currentVisibleDay();
     const bucket = _agentBucketFor(agentSeat) || new Map();

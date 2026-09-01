@@ -51,6 +51,7 @@ from sea_of_colours.evals.assertions import (
     RationaleMentions,
 )
 from sea_of_colours.evals.builder import WorldBuilder
+from sea_of_colours.game.session import HARVESTER_HOLD_CAPACITY
 from sea_of_colours.snowpark.store import SocStore
 
 
@@ -859,25 +860,41 @@ def two_seams_choose_one() -> Scenario:
     seam_east = [(16, 13, 200), (17, 13, 200), (18, 13, 200)]
     seam_west_cells = [(x, y) for x, y, _ in seam_west]
     seam_east_cells = [(x, y) for x, y, _ in seam_east]
-    # Explicitly clear every cell in the radius-2 disk around the
-    # harvester AND around each seam cell that ISN'T part of a placed
-    # seam. The seed=42 noise generator otherwise speckles vein /
-    # mass / pure RED across the corridor, which lets a closest-first
-    # heuristic chase those phantom cells instead of committing to a
-    # placed seam — the eval would then test seed luck, not the
-    # spatial-reasoning we care about.
+    # Clear the noise generator's RED out of everything the harvester
+    # could reach or see, leaving only the two placed seams. Otherwise
+    # this measures seed luck rather than the spatial reasoning it is
+    # named for.
+    #
+    # This used to clear radius-2 disks around the harvester and each
+    # seam cell, which left the corridor BETWEEN them speckled — about
+    # thirty-five stray RED cells at seed 42, most of them trace. A
+    # closest-first heuristic walks the nearest of those instead of
+    # committing to either seam, and scores nothing: the run that
+    # exposed this chased purity 9, 12 and 2 three cells from the start.
+    #
+    # The rule is now stated in terms of the thing that matters — the
+    # step budget. Any cell the unit could plausibly walk to must be a
+    # placed seam cell or empty, so the only RED decision available is
+    # the one the scenario is asking about. The radius is the 5-step
+    # cap plus margin, so a cell just outside the budget cannot bait it
+    # either.
+    harvester_at = (12, 13)
+    reach = (HARVESTER_HOLD_CAPACITY - 1) + 4
     placed = set(seam_west_cells) | set(seam_east_cells)
     corridor_clear: List[Tuple[int, int]] = []
-    for cx, cy in [(12, 13)] + seam_west_cells + seam_east_cells:
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
-                if dx * dx + dy * dy > 4:
-                    continue
-                xx, yy = cx + dx, cy + dy
-                if (xx, yy) in placed:
-                    continue
-                if 0 <= xx < 40 and 0 <= yy < 28:
-                    corridor_clear.append((xx, yy))
+    for yy in range(28):
+        for xx in range(40):
+            if (xx, yy) in placed:
+                continue
+            near_start = (
+                abs(xx - harvester_at[0]) + abs(yy - harvester_at[1]) <= reach
+            )
+            near_seam = any(
+                (xx - sx) ** 2 + (yy - sy) ** 2 <= 4
+                for sx, sy in placed
+            )
+            if near_start or near_seam:
+                corridor_clear.append((xx, yy))
 
     def build():
         return (

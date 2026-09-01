@@ -21,7 +21,8 @@ reasoning behind it.
 |---|---|---|
 | One front door | `scripts/soc.py` | built — `new`, `list`, `suite`, `why`, `doctor`, `push`, `league` |
 | Fork registration without conflicts | `orchestrator_2/agent_manifest.py` | built — directory discovery over `agent.json` |
-| The scenario suite | `evals/battles/` | built — 9 boards x 5 rungs x 4 loadouts, offline |
+| The scenario suite | `evals/battles/` | built — 10 boards x 5 rungs x 4 loadouts, offline. Nine redsign nights plus `plain_night_armed`, the no-jackpot control |
+| The V12 baseline | `evals/battles/baseline/` | built — stock V12's frozen run, checked in, shown under `soc why` |
 | Verdict after an edit | `soc suite` | built — 45 turns in ~1s against the heuristic |
 | "Why did it do that" | `soc why <board> [agent]` | built — question, canonical, V12's baseline, then every move against every check |
 | Per-run cards | `soc suite --cards DIR` | built |
@@ -54,14 +55,76 @@ exist — the common inner-loop command is one board at one rung.
 
 ### Still open
 
-- **`two_seams_choose_one` is red** (`tests/test_eval_scenarios.py`), a
-  pre-existing heuristic regression unrelated to this work. It should be
-  green before attendees are told to trust scenario results.
+- **The score is the wrong headline.** `soc suite` answers "better or
+  worse", which does not tell an attendee *what to teach the agent*.
+  `docs/SITUATION_LIBRARY.md` is the design for the layer that does —
+  competence-scoped situations, saved cards, and paired boards for
+  conditional policy. It also records three blockers found on
+  2026-09-01, the worst being that a fork cannot edit its own buying
+  policy because `plan_orbit_actions` is shared.
 - **No LLM verification.** Everything above was exercised against the
   offline heuristic. The V12 path needs one real run with a PAT before
   the day.
-- **The prompt-diff idea in §5 is not built.** `soc why` covers the
-  "what did it see" half; comparing two runs' cards is still manual.
+ - **Tournament night is not built.** `soc season` plays one season;
+   the end-of-day event runs every submitted agent and ranks them. It
+   is a different job from the attendee loop — unattended, **Snowflake
+   only**, and its output is a ranking and a post-mortem rather than a
+   replay. Deferred deliberately (2026-09-01), but the shape is decided:
+
+   **Format: four-seat melees into 1v1, eliminating each round.** Groups
+   of four play a season, the field is cut, and it narrows to a 1v1
+   final. Chosen over round-robin for two reasons: four-seat is how the
+   game is actually played, and round-robin does not survive the clock.
+   Every LLM seat calls a model every night, so a season is minutes —
+   ten teams round-robin over three seeds is ~135 seasons against ~20
+   for melees.
+
+   **The analysis is the deliverable, not the table.** Wanted:
+
+   | | |
+   |---|---|
+   | Head-to-head | who beat whom, and by how much |
+   | What separated the winners | where the leaders' scores diverged from the field, and the turn that did it |
+   | Best moves | highest-value single turns of the night, with their cards |
+   | Biggest gaffes | the worst turns, same treatment — the fun half, and the most instructive |
+   | Economy vs combat | who won on buying, who won on contesting pures |
+   | Integrity flags | fell back to the heuristic, crashed, or timed out |
+
+   Most of this is already reachable: `seasons.py` keeps a card per
+   turn with phase, orders and reasoning, `SeasonResult` carries scores
+   and fallback counts, and per-turn scoring deltas give the divergence
+   and the best/worst turns without new engine work.
+
+Closed since:
+
+- `two_seams_choose_one` is green (2026-09-01) — the scenario now clears
+  generator noise within the harvester's step budget, derived from
+  `HARVESTER_HOLD_CAPACITY` rather than a hardcoded 5, so the board
+  offers only the two seams it is named for.
+- **The "where do I see what it did" gap is closed** (2026-09-01).
+  `soc suite --record` freezes each turn and the battle room replays it
+  beside its card — see the suite's README. This also subsumes the
+  prompt-diff idea in §5, less precisely but more usefully: bakes
+  accumulate, so the same board can be opened before and after a change
+  and compared by eye.
+ - **Headless seasons are built** (2026-09-01). `soc season` puts any
+   agent in any seat — forks, stock V12, the heuristics — plays the
+   season to the end, and writes it through the same store the live
+   server reads, so it opens in the normal replay UI. A Markdown card
+   per turn lands under `reports/seasons/`, orbit and night separately,
+   and the AGENT tab grew a `[ .MD ]` button that pulls the same thing
+   for any season including ones played by hand. Two things fell out of
+   building it: agent dispatch is now one function
+   (`evals/dispatch.py`) instead of a copy per runner, and the AGENT
+   panel's grid had three rows for four children so the seat tabs were
+   eating the feed's height.
+ - **Boards no longer carry undeclared pures** (2026-09-01). Found within
+  minutes of the room existing, which is the argument for it: staging
+  painted declared terrain over the noise generator without clearing it,
+  so a "one pure" board shipped four and an agent could be marked down
+  for taking a real one. `stage.py` now blanks RED first, and
+  `test_every_board_stages_at_every_rung` asserts a board contains
+  exactly the pures it declares.
 
 ---
 

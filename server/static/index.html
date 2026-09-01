@@ -617,9 +617,7 @@
                         <span class="cc-orbit-why" data-orbit-why="build_emp" hidden></span>
                       </div>
                       <!-- v1.31 — the MINE row stood here. The weapon is
-                           retired and its slot is vacant; see
-                           docs/ADDING_A_WEAPON.md for the markup a
-                           replacement needs. -->
+                           retired and its slot is vacant. -->
                       <div class="cc-orbit-act">
                         <span class="cc-orbit-act-line">
                           <button
@@ -1302,6 +1300,28 @@
               <span class="dim cc-panel-sub">
                 per-turn reasoning, timing &amp; submitted moves
               </span>
+              <!-- v1.40 — reading a whole season's thinking in this panel
+                   is miserable and copying it out is worse, so hand the
+                   same rows over as a file. Enabled by app.js only when
+                   a session is loaded.
+                   v1.41 — two formats off the same cards, because the
+                   readers differ: HTML opens in a tab with a day rail
+                   and section tabs, Markdown is what you paste into a
+                   coding agent when you want help fixing your fork. -->
+              <button
+                type="button"
+                id="agent-cards-read"
+                class="cli-btn cc-agent-dl"
+                title="Open every recorded turn in this season, in a new tab"
+                disabled
+              >[ READ ]</button>
+              <button
+                type="button"
+                id="agent-cards-download"
+                class="cli-btn cc-agent-dl"
+                title="Download every recorded turn in this season as Markdown"
+                disabled
+              >[ .MD ]</button>
             </header>
             <!-- v1.1 — the live-play controls (autoplay / versus) that used
                  to live here were removed; games are driven via the CLI /

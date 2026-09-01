@@ -7715,8 +7715,7 @@ class GameSession:
     # was unreachable.
     #
     # ``self.mines`` itself is KEPT (always empty) so the persisted
-    # shape and the replay/FX path survive for archived seasons. See
-    # docs/ADDING_A_WEAPON.md before putting a weapon back in this slot.
+    # shape and the replay/FX path survive for archived seasons.
 
     # ── Chaff ───────────────────────────────────────────────────────
 

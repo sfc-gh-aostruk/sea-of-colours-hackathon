@@ -37,7 +37,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
@@ -331,6 +331,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _MANUAL_DIR = _REPO_ROOT / "manual"
 _GUIDE_DIR = _REPO_ROOT / "guide"
 _DOCS_DIR = _REPO_ROOT / "docs"
+_BATTLES_DIR = _REPO_ROOT / "reports" / "battles"
 _INDEX_HTML = _STATIC_DIR / "index.html"
 _EVALS_HTML = _STATIC_DIR / "evals.html"
 _LANDING_HTML = _STATIC_DIR / "landing.html"
@@ -452,6 +453,19 @@ if _GUIDE_DIR.is_dir():
     )
 if _DOCS_DIR.is_dir():
     app.mount("/docs", _DocsStatic(directory=_DOCS_DIR), name="docs")
+
+# The battle room, if a recorded suite has produced one. Written by
+# `soc suite --record` and designed to work by double-clicking, so this
+# mount is a convenience rather than the way in — but a host running the
+# server for a room of attendees can point them at a URL, and an agent
+# reviewing its own bake does not have to know where the repo lives.
+# Absent until someone records, hence the existence check.
+if _BATTLES_DIR.is_dir():
+    app.mount(
+        "/battles",
+        _NoCacheStatic(directory=_BATTLES_DIR, html=True),
+        name="battles",
+    )
 
 
 # Markdown reachable over HTTP, by exact path. An allowlist rather than
@@ -1008,6 +1022,17 @@ def api_game_new(
                     "tag": str(prof.get("tag", ""))[:3].upper(),
                     "color": str(prof.get("color", "")).upper(),
                 }
+
+    # v1.40 — a seat holding a *named* agent carries that name. The
+    # engine mints Latin house names for bot seats, which is the right
+    # flavour for the built-in houses and actively unhelpful for a fork
+    # somebody named: picking DRYRUN_PILOT and then watching "Aureus
+    # Mustela" play makes it impossible to tell whose agent is whose.
+    # Only forks are renamed, and only where the player did not type
+    # their own name in — the modal still wins.
+    named = _named_agent_profiles(agents, player_profiles)
+    if named:
+        player_profiles = {**named, **(player_profiles or {})}
 
     if seed is None:
         seed = random.randrange(2**31)
@@ -1893,6 +1918,44 @@ def api_game_advisor(
     }
 
 
+def _named_agent_profiles(
+    agents: Mapping[str, str] | None,
+    supplied: Mapping[str, Mapping[str, str]] | None,
+) -> dict[str, dict[str, str]]:
+    """Profiles for seats holding an attendee's named fork.
+
+    Deliberately narrow. Built-in seats (``human``, the heuristics, stock
+    V12) keep the engine's Latin naming, because those house names are a
+    feature of the game and several tests pin them. A discovered fork is
+    the case the flavour fails: somebody chose that name and needs to
+    see it on the board.
+    """
+    if not agents:
+        return {}
+    try:
+        from sea_of_colours.evals import dispatch
+        from sea_of_colours.orchestrator_2 import agent_manifest
+        from sea_of_colours.orchestrator_2 import binding_registry as br
+    except Exception:
+        return {}
+
+    found, _problems = agent_manifest.discover()
+    forks = {man.label for man in found}
+    if not forks:
+        return {}
+
+    seats = {
+        seat: label
+        for seat, label in agents.items()
+        if str(label or "").strip().lower() in forks
+        and not (supplied or {}).get(seat, {}).get("display_name")
+    }
+    if not seats:
+        return {}
+    _ = br  # imported to force discovery to have run at least once
+    return dispatch.seat_profiles(seats)
+
+
 @app.get("/api/game/{game_id}/observer")
 def api_game_observer(game_id: str) -> dict[str, Any]:
     """Omniscient observer mosaic — for the GRAPHICS drawer only."""
@@ -1974,6 +2037,93 @@ def api_game_agent_log(
         "player": player,
         "invocations": out,
     }
+
+
+# NOT named `cards.md`: the root Markdown route is `/{name:path}.md`, and
+# `:path` matches slashes, so it claims every URL ending in .md anywhere
+# in the tree and answers 404 for anything off its allowlist. The
+# downloaded filename comes from Content-Disposition regardless.
+@app.get("/api/game/{game_id}/agent-cards")
+def api_game_cards_markdown(
+    game_id: str,
+    day: int | None = Query(None, description="One day, or omit for all."),
+    player: str | None = Query(None, description="One seat, or omit for all."),
+    fmt: str = Query("md", description="'md' to feed a model, 'html' to read."),
+) -> Response:
+    """The agent's turn(s) as a downloadable card.
+
+    The AGENT tab can already show a rationale, but reading a whole
+    season's thinking in a side panel is miserable and copying it out is
+    worse. This hands over the same rows as a file: prompt, reasoning,
+    orders and timing per turn, in play order.
+
+    Works for any persisted season, whoever played it — a headless
+    `soc season` run and a game played in the browser leave the same
+    rows. The in-memory backend keeps no invocations, so a memory game
+    downloads an honest note saying so rather than an empty file.
+    """
+    if player is not None and not _is_valid_seat_slug(player):
+        raise HTTPException(status_code=400, detail="unknown player slug")
+
+    from sea_of_colours.evals import cards as soc_cards
+
+    store = _store_for(game_id)
+    try:
+        status = soc_engine.get_session_status(store, game_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    season = str(status.get("season_name") or game_id)
+
+    rows: list[dict[str, Any]] = []
+    if hasattr(store, "list_agent_invocations"):
+        rows = list(store.list_agent_invocations(game_id, day=day) or [])
+    if player is not None:
+        rows = [r for r in rows if str(r.get("player") or "").lower() == player]
+    rows.sort(key=lambda r: (int(r.get("day") or 0), int(r.get("seq") or 0)))
+
+    normalised = [
+        soc_cards.normalise(r, season=season, session_id=game_id) for r in rows
+    ]
+    want_html = str(fmt).lower() == "html"
+    empty_note = (
+        "No agent turns were recorded for this session. A game played "
+        "entirely by humans has no cards, and the in-memory backend "
+        "keeps none — run on `file` or `snowflake` to retain them."
+    )
+
+    if want_html:
+        # Rendered even when empty: the page explains itself, where a
+        # zero-byte download just looks broken.
+        body = soc_cards.render_html(
+            normalised, title=f"{season} — agent cards",
+        )
+        media, ext = "text/html; charset=utf-8", "html"
+    else:
+        body = (
+            soc_cards.render_many(normalised, title=f"{season} — agent cards")
+            if normalised
+            else f"# {season} — agent cards\n\n{empty_note}\n"
+        )
+        media, ext = "text/markdown; charset=utf-8", "md"
+
+    stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in season)
+    if day is not None:
+        stem += f"_d{day:02d}"
+    if player:
+        stem += f"_{player}"
+    # HTML opens in a tab (inline); Markdown is only useful as a file.
+    disposition = (
+        f'inline; filename="{stem}_cards.html"' if want_html
+        else f'attachment; filename="{stem}_cards.md"'
+    )
+    return Response(
+        content=body,
+        media_type=media,
+        headers={
+            "Content-Disposition": disposition,
+            **_NO_CACHE_HEADERS,
+        },
+    )
 
 
 def _infer_runtime(agent_id: str | None) -> str:

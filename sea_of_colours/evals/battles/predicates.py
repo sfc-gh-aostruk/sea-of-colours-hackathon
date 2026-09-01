@@ -408,6 +408,31 @@ def comb_gradient(play: Play, board, want) -> Check:
     )
 
 
+def min_red_cells(play: Play, board, want) -> Check:
+    """Did the night actually collect RED, on a board with no jackpot?
+
+    Every other predicate here anchors on a pure or a beacon, because
+    every other board has one. A plain working night has neither, and
+    without this it would score full marks for landing two harvesters on
+    empty ground and lifting them again. What "good" means on such a
+    board is unglamorous and countable: put the units where the ore is
+    and walk enough cells to pay for the outing.
+    """
+    need = int(want)
+    cells = {c for path in play.paths().values() for c in path}
+    red = {c for c in cells
+           if play.tile(c)[0] == int(Tile.RED) and not play.is_green(c)}
+    if len(red) >= need:
+        return Check("min_red_cells", True,
+                     f"walked {len(red)} RED cell(s), wanted {need}")
+    return Check(
+        "min_red_cells", False,
+        f"only {len(red)} RED cell(s) walked, wanted {need}. There is no "
+        f"pure on this board and nothing to contest — the whole night is "
+        f"the seam, so a short outing is not caution, it is just less ore",
+    )
+
+
 def seam_commitment(play: Play, board, want) -> Check:
     """How many units actually went to the seam?
 
@@ -496,6 +521,7 @@ CHECKS: Mapping[str, Callable[..., Check]] = {
     "max_probes": max_probes,
     "denial_probe": denial_probe,
     "comb_gradient": comb_gradient,
+    "min_red_cells": min_red_cells,
     "seam_commitment": seam_commitment,
     "probes_after_harvesters": probes_after_harvesters,
     "compiler_clean": compiler_clean,

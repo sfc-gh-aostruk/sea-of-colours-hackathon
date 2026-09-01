@@ -1246,7 +1246,6 @@ refunded. A `[mineRetired]` log line reports both counts.
 `test_retired_mine_lay_says_why_rather_than_shrugging`,
 `test_retired_build_mine_says_why_rather_than_shrugging`, and
 `test_stale_mine_stock_refunds_as_blue_on_load`.
-`docs/ADDING_A_WEAPON.md` maps every hole the vacated slot leaves.
 
 ---
 

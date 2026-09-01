@@ -106,6 +106,17 @@ CANONICAL: dict[str, list] = {
         _drop(H1, 31, 18), _lift(H1),
         _drop(H2, 31, 17), _step(H2, 32, 17), _lift(H2),
     ],
+    # No pure, no sign — just work the seam properly with both units.
+    # Deliberately fires nothing: on this board holding the charge is a
+    # legitimate doctrine, so the canonical must pass without a salvo or
+    # the suite would be scoring an opinion.
+    "plain_night_armed": [
+        _drop(H1, 16, 10), _step(H1, 17, 10), _step(H1, 17, 11),
+        _step(H1, 17, 12), _step(H1, 16, 12), _lift(H1),
+        _drop(H2, 18, 11), _step(H2, 18, 12), _step(H2, 18, 13),
+        _step(H2, 19, 13), _step(H2, 19, 12), _lift(H2),
+        _probe(24, 7),
+    ],
 }
 
 
@@ -243,6 +254,21 @@ def test_every_board_stages_at_every_rung(board, rung_id):
             f"{board.id}@{rung_id}: the pure at ({x},{y}) did not survive "
             f"staging"
         )
+
+    # And nothing else is a pure. Staging used to paint the declared
+    # terrain over the noise generator's output without clearing it, so
+    # a "one pure, and it is watched" board could ship four of them —
+    # and an agent taking a real, visible pure was scored as ducking the
+    # question. A board has to be only the position it claims to be.
+    found = {
+        (x, y)
+        for y in range(sess.height) for x in range(sess.width)
+        if sess.grid[y][x].tile == Tile.RED and sess.grid[y][x].purity >= 255
+    }
+    assert found == set(board.pures), (
+        f"{board.id}@{rung_id}: undeclared pure(s) at "
+        f"{sorted(found - set(board.pures))}"
+    )
     mine = [
         e for e in sess.entities.values()
         if e.entity_type == "harvester" and e.owner == "p1"

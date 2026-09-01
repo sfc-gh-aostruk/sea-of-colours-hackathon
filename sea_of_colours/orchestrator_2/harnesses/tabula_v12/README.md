@@ -27,18 +27,48 @@ something to play against.
 V12 builds EMPs and chaff in orbit, then plays the whole night as if it
 were unarmed. The stockpile just grows.
 
-The buying is not even V12's doing. Orbit delegates to the shared
-heuristic:
+The buying half **is** yours to change (v1.40). It used to delegate to the
+shared heuristic, which meant no fork could edit its own economy; the
+policy now lives in the fork, with the thresholds hoisted into one
+dataclass at the top of the file:
 
-```136:138:sea_of_colours/orchestrator_2/harnesses/tabula_v12/orbit.py
-        from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
-        agent_view = view.get("agent_view") or view
-        actions, rationale = plan_orbit_actions(agent_view)
+```44:75:sea_of_colours/orchestrator_2/harnesses/tabula_v12/orbit_policy.py
+@dataclass(frozen=True)
+class OrbitDials:
+    probe_target_stock: int = 4
+    blue_always_build: int = 300
+    blue_emp_roll: int = 250
+    emp_stockpile_cap: int = 2
+    # ... prices below are fallbacks; the engine's win
 ```
 
-The not-firing is structural, and it is worth understanding *why* before
-you start, because there are four independent places that all have to
-agree before a weapon can be launched:
+Retuning those is the cheapest experiment in the kit — `blue_always_build`
+alone decides whether the seat is ever armed before night three. But note
+the trap: **buying more weapons without closing the firing half makes the
+agent worse**, because BLUE spent on an unused rack is BLUE not spent on
+harvesters. The two halves of gap 1 have to move together.
+
+The not-firing is structural. Check where you stand at any point with:
+
+```bash
+python scripts/soc.py weapons --agent <yours>
+```
+
+It walks four rungs and names the next action. They are ordered because
+each is invisible until the one before it works — building doctrine
+first changes nothing you can observe.
+
+**Rung 1 — the agent does not know it owns a rack.** The only module in
+the whole harness that reads `weapon_stock` is `orbit_policy.py`, the
+buying code. `world_view.py` does not carry it and `prompt.py` never
+says it. What the prompt *does* render is the opponents' estimated
+arsenal, and only when a rival is thought to be armed. So the agent is
+told what might be shot at it, and never what is in its own rack. Start
+here: it is about twenty lines, and the change is immediately visible on
+the card.
+
+**Rungs 2–4** are the four places below that must all agree before a
+salvo launches:
 
 1. **The move schema doesn't allow it.** The LLM is physically unable to
    emit a weapon move, because the JSON schema constrains the verb to

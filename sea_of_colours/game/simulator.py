@@ -1486,7 +1486,7 @@ class NightSimulator:
         # went with it. A stale ``mine_lay`` no longer reaches here at
         # all: `parse_moves` turns it into a WasteMove carrying the
         # retirement reason (`_RETIRED_MOVE_TAGS`), which the branch
-        # below reports. See docs/ADDING_A_WEAPON.md before reinstating.
+        # below reports.
 
         if isinstance(move, EmpLaunchMove):
             # Reached here only if pre-empt was skipped (insufficient

@@ -10,8 +10,7 @@ chaff" — bumping ``EMP_MISSILES_PER_LAUNCH`` or ``CHAFF_DURATION_HOURS``
 should never require an engine change.
 
 v1.31 — the caltrop mine's dials were the third block here and are
-gone; ``docs/ADDING_A_WEAPON.md`` uses them as the worked example of
-what a replacement weapon has to define.
+gone. The slot is vacant; EMP and chaff are the shipped weapons.
 
 See RULEBOOK §5 (v0.9) for the canonical prose; the values below
 are the SHIPPED defaults at v0.9.0.
@@ -50,8 +49,6 @@ in v0.9.0; the field is here so a future stealth EMP is a flip."""
 # path) was left standing on purpose — archived seasons still play
 # back, and a new weapon plugs into the same holes.
 #
-# Everything a third weapon has to touch is mapped in
-# docs/ADDING_A_WEAPON.md, with the caltrop as the worked example.
 # Its dials lived here: cost in blue purity and credits, how many
 # tiles one order armed, the batch shape, and visibility.
 

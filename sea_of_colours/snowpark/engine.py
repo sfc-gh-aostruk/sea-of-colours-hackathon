@@ -263,10 +263,6 @@ def save_session_full(store: SocStore, sess: GameSession) -> None:
     # parallel path independent of whatever the engine's other
     # phases are doing.
     session_row = _save_session_row(sess)
-    sq_id_rows = _square_identity_rows(sess)
-    asset_rows = _asset_record_rows(sess)
-    entity_rows = _entity_state_rows(sess)
-    grid_rows = _grid_cell_rows(sess)
     hoard_by_owner = {
         owner: _parcel_rows(sess, owner, "hoard") for owner in sess.players
     }
@@ -299,23 +295,26 @@ def save_session_full(store: SocStore, sess: GameSession) -> None:
     # simulated 2-3x and its replay frames + log lines are appended repeatedly
     # (the "day 3 repeats three times" replay bug). Keeping this write off the
     # shared-session pool guarantees read-your-writes for the runner's decisions.
+    #
+    # v1.41 — FOUR PHASES DELETED: square identity, asset records, entity
+    # state and grid cells. Each was a WRITE-ONLY PROJECTION — nothing in
+    # the app ever read them back (the store protocol has no reader for
+    # any of the four, and the one SQL view over SOC_ASSET_RECORD now
+    # derives itself from ``json_state`` instead). They existed so a human
+    # could query a game in SQL, and they were charging ~2.7s of every
+    # turn on Snowflake for the privilege, plus the in-process cost of
+    # building 1120 grid-cell dicts per save.
+    #
+    # They are DERIVABLE, not lost: ``json_state`` already carries grid,
+    # entities and the asset ledger, so a view or Dynamic Table can
+    # reconstitute any of them at zero write cost. The store methods stay
+    # implemented for backfills and for anyone who wants the tables back.
+    # See docs/SNOWFLAKE_LATENCY_BRIEF.md.
+    #
+    # Hoard and shipped survive because they are genuinely READ — by
+    # ``list_hoard`` / ``list_shipped`` and by ``bulk_session_scores``,
+    # which is what the season picker scores off.
     phases = [
-        (
-            "ssf.upsert_square_identity",
-            lambda: store.upsert_square_identity(sess.session_id, sq_id_rows),
-        ),
-        (
-            "ssf.upsert_asset_records",
-            lambda: store.upsert_asset_records(sess.session_id, asset_rows),
-        ),
-        (
-            "ssf.replace_entity_state",
-            lambda: store.replace_entity_state(sess.session_id, entity_rows),
-        ),
-        (
-            "ssf.upsert_grid_cells",
-            lambda: store.upsert_grid_cells(sess.session_id, grid_rows),
-        ),
         (
             "ssf.replace_hoard_bundle",
             lambda: store.replace_hoard_bundle(
@@ -355,6 +354,17 @@ def save_session_full(store: SocStore, sess: GameSession) -> None:
     # the post-resolution state.
     with _time_block("ssf.save_session", sub_timings):
         store.save_session(session_row)
+
+    # v1.43 — if the store buffers writes, this is the turn boundary: land
+    # game state (authoritative row, policy queue, parcels) now, and leave the
+    # append-only tables (log, replay frames, agent invocations) to the
+    # per-day flush. Stores that do not buffer have no ``flush_turn`` and this
+    # is a no-op, so the engine still never asks "am I on Snowflake?" — it
+    # asks the store (enforced by tests/test_per_game_backend.py).
+    _flush_turn = getattr(store, "flush_turn", None)
+    if callable(_flush_turn):
+        with _time_block("ssf.flush_turn", sub_timings):
+            _flush_turn()
 
     if _PERF_LOG:
         total = sum(sub_timings.values())
@@ -2575,7 +2585,23 @@ def save_agent_rationale(
     try:
         sess = _hydrate_session(store, session_id)
         sess.log_info(log_text)
-        save_session_full(store, sess)
+        # v1.42 — authoritative row ONLY, not ``save_session_full``.
+        #
+        # The single mutation above is one appended ``log`` entry, which lives
+        # inside ``json_state``; no parcel, grid or asset state changes here.
+        # Going through ``save_session_full`` therefore re-wrote the hoard and
+        # shipped parcel tables with byte-identical data — a DELETE + INSERT
+        # pair each — on every agent turn. Measured on a 6-turn season that was
+        # 6 of the 13 total ``save_session_full`` calls and 4 redundant
+        # statements apiece, at ~300ms of unavoidable per-statement client
+        # latency (see docs/SNOWFLAKE_LATENCY_BRIEF.md §T1.1).
+        #
+        # Writing only the authoritative row keeps ``sess.log`` in the blob, so
+        # ``get_session_status``'s ``log_tail`` and the per-day log partitioning
+        # in ``get_view`` are unchanged. It also STRICTLY REDUCES the §7 hazard:
+        # fewer concurrent writes around the authoritative MERGE, and this one
+        # is synchronous on the calling thread with no pool involved.
+        store.save_session(_save_session_row(sess))
         # Also persist the entry into SOC_GAME_LOG so it survives a
         # full proc round-trip on the Snowflake backend.
         store.append_log(

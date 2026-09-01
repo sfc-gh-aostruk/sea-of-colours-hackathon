@@ -1,19 +1,24 @@
-"""v10 R4 — harvester economy gate (orbit phase, hermetic wrapper).
+"""Orbit submission — the fleet-recovery gate over the seat's buying policy.
 
-v9's audit found v10-lineage seats ran on 1–2 harvesters across a whole 7-night
-season (the mirror ran on ONE). The shared orbit planner only builds a harvester
-once credits clear the full 1500c target — so after a harvester dies, or early
-when the seat is still on one unit, credits get nibbled by speculative probe
-builds and the fleet never recovers. A single harvester caps banked RED hard.
+The buying policy itself lives in :mod:`.orbit_policy` and is **fork-local**
+(v1.40): each agent owns what it spends credits and BLUE on. This module is
+the submission path plus one gate that sits on top of it.
 
-This wraps the shared ``plan_orbit_actions`` and, ONLY in the fleet-short window
-(day ≤4 on a single harvester, or a harvester died last night), trims probe
-builds back to a hot-drop floor and either injects the recovery harvester when it
-is affordable this turn or conserves the freed credits toward it next turn. It
-NEVER fabricates an unaffordable build (the engine charges the real cost at
-resolution) and NEVER drops below the probe floor the multiprobe doctrine needs.
+The gate (R4): v9's audit found v10-lineage seats ran a whole 7-night season
+on 1–2 harvesters (the mirror ran on ONE). The buying policy only builds a
+harvester once credits clear the full 1500c target — so after a harvester
+dies, or early when the seat is still on one unit, credits get nibbled by
+speculative probe builds and the fleet never recovers. A single harvester
+caps banked RED hard.
 
-Hermetic: only the v10 orbit path calls this; v6/v7/v8/v9 are untouched.
+So ONLY in the fleet-short window (day ≤4 on a single harvester, or a
+harvester died last night) this trims probe builds back to a hot-drop floor
+and either injects the recovery harvester when it is affordable this turn or
+conserves the freed credits toward it next turn. It NEVER fabricates an
+unaffordable build (the engine charges the real cost at resolution) and NEVER
+drops below the probe floor the multiprobe doctrine needs.
+
+Hermetic: only this fork's orbit path calls it; v6/v7/v8/v9 are untouched.
 """
 
 from __future__ import annotations
@@ -133,7 +138,9 @@ def submit_orbit(
         return env
     started = time.time()
     try:
-        from sea_of_colours.agent.heuristic_agent import plan_orbit_actions
+        from sea_of_colours.orchestrator_2.harnesses.tabula_v12.orbit_policy import (
+            plan_orbit_actions,
+        )
         agent_view = view.get("agent_view") or view
         actions, rationale = plan_orbit_actions(agent_view)
         hud = agent_view.get("hud") or {}

@@ -128,14 +128,38 @@ def _weapons_section(suite: SuiteResult) -> str:
     """Did an armed agent fight differently from an unarmed one?"""
     armed = [b for b in suite.battles if b.loadout.id != "empty"]
     if not armed:
-        return ""
+        # Silence here used to be indistinguishable from "fired nothing",
+        # and the default loadout is `empty` — so the commonest run in the
+        # kit was quietly saying nothing about the kit's biggest gap.
+        return "\n".join([
+            _rule(), "  ORDNANCE", _rule(), "",
+            "  This run never armed your agent, so it says",
+            "  nothing about whether it can fight. Weapons are",
+            "  the largest scoring gap in the kit and the default",
+            "  loadout does not test them:",
+            "",
+            "      soc suite --agent <you> --loadout empty,both",
+            "",
+            "  runs each board twice, once with a full rack, and",
+            "  the two scores together are the answer.",
+            "",
+        ])
     fired = suite.weapons_fired()
     total = sum(fired.values())
     lines = [_rule(), "  ORDNANCE", _rule(), ""]
     if total == 0:
         lines.append(f"  Nothing fired across {len(armed)} armed battles.")
-        lines.append("  The rack was full and the plan never changed — that is")
-        lines.append("  the single biggest scoring opportunity left on the table.")
+        lines.append("  The rack was full and the plan never changed.")
+        lines.append("")
+        # Deliberately NOT called a failure. When to spend a charge is
+        # doctrine, and doctrine is the attendee's to write — plenty of
+        # good agents are told to hold everything for a redsign night.
+        # What the suite can honestly say is that the chance existed.
+        lines.append("  Whether that is wrong is your call, not the suite's:")
+        lines.append("  a charge held for a jackpot night is a real doctrine.")
+        lines.append("  But if you did NOT choose silence, the rack is")
+        lines.append("  decoration — run `soc weapons --agent <you>` to see")
+        lines.append("  which rung it is stuck on.")
     else:
         bits = ", ".join(f"{v}x {k.replace('_', ' ')}" for k, v in
                          sorted(fired.items()) if v)
@@ -151,6 +175,18 @@ def _weapons_section(suite: SuiteResult) -> str:
                    if delta > 0.02 else
                    "no measurable gain from being armed yet.")
             )
+
+    # Per-battle, because an aggregate hides the useful question. "Two
+    # salvos across nine battles" reads like weapon use; seeing WHICH
+    # seven were silent is what tells you the doctrine has a hole in a
+    # particular shape of night.
+    rows = [(b, sum((b.weapons_fired or {}).values())) for b in armed]
+    if any(n for _b, n in rows):
+        lines.append("")
+        lines.append("  per battle:")
+        for b, n in rows:
+            mark = f"{n} fired" if n else "silent"
+            lines.append(f"    {mark:<9} {b.battle_id}")
     lines.append("")
     return "\n".join(lines)
 
