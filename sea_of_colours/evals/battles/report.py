@@ -18,7 +18,7 @@ Three things it tries to surface that a pass/fail table cannot:
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from sea_of_colours.evals.battles.ladder import BY_ID as RUNG_BY_ID
 from sea_of_colours.evals.battles.runner import BattleResult, SuiteResult
@@ -233,8 +233,17 @@ def render_compact(suite: SuiteResult) -> str:
     return "\n".join(rows)
 
 
-def league_table(results: Sequence[SuiteResult]) -> str:
-    """Rank agents. Same suite, same rungs, one row each."""
+def league_table(
+    results: Sequence[SuiteResult],
+    rosters: Mapping[str, Sequence[str]] | None = None,
+) -> str:
+    """Rank agents. Same suite, same rungs, one row each.
+
+    ``rosters`` maps an agent label to the people who built it. Printed
+    under the table rather than in it: the ranking is about agents, but
+    the day is about the people, and a table nobody can be credited from
+    is no use when it is read out at the end.
+    """
     ranked = sorted(results, key=lambda r: (-r.score, r.agent))
     lines = [_rule("═"), "  LEAGUE", _rule("═"), ""]
     lines.append(f"  {'#':<3} {'agent':<24} {'score':>6}  {'clean':>7}  ladder")
@@ -264,5 +273,12 @@ def league_table(results: Sequence[SuiteResult]) -> str:
         for name, rate in suspect:
             lines.append(f"      {name}: {rate:.0%} of turns never reached "
                          f"a model")
+        lines.append("")
+    if rosters:
+        lines.append("  WHO BUILT THEM")
+        for res in ranked:
+            people = rosters.get(res.agent)
+            if people:
+                lines.append(f"      {res.agent:<24} {', '.join(people)}")
         lines.append("")
     return "\n".join(lines)

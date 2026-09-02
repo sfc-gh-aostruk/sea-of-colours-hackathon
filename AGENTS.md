@@ -151,7 +151,10 @@ sea_of_colours/
                  it in a real browser — run that after touching room.html,
                  because a static page cannot report its own breakage.
   orchestrator_2/  Agent orchestration + the plug-in contract — see its README.md
-    agent_manifest.py  A fork is any harnesses/ dir holding an agent.json,
+    agent_manifest.py  A fork is any harnesses/ dir holding an agent.json
+                    declaring team, name and participants (v1.41 — the league
+                    is the day's public record, so an entrant that names
+                    nobody cannot be credited or chased),
                  discovered at import (v1.39). Registering one edits nothing
                  shared — that's what lets a room of teams share one repo,
                  and makes the league a directory scan. Don't add a fork to

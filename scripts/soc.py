@@ -79,7 +79,8 @@ def cmd_new(args) -> int:
     """Mint your agent. Step one, and it touches nothing but your folder."""
     from scripts import new_agent
 
-    argv = ["--team", args.team, "--name", args.name]
+    argv = ["--team", args.team, "--name", args.name,
+            "--participants", args.participants]
     if args.menu_label:
         argv += ["--menu-label", args.menu_label]
     return new_agent.main(argv)
@@ -590,7 +591,7 @@ def cmd_push(args) -> int:
         for p in problems:
             print(f"  warning: {p}", file=sys.stderr)
 
-    mine = _resolve_agent(found, args.agent)
+    mine = _resolve_agent(found, args.agent, problems)
     rel = mine.directory.relative_to(_REPO).as_posix()
 
     changed = _changed_paths()
@@ -676,11 +677,23 @@ def _branch() -> str:
     return _git("rev-parse", "--abbrev-ref", "HEAD") or "main"
 
 
-def _resolve_agent(found, requested: str | None):
+def _resolve_agent(found, requested: str | None, problems=None):
     if requested:
         for man in found:
             if man.label == requested:
                 return man
+        # A directory can exist and still not be discovered, because a
+        # manifest that will not load is skipped. Saying "no such agent,
+        # go mint one" to someone whose agent is right there — and whose
+        # real problem is one bad line of JSON — sends them to delete and
+        # start over. If we have a problem naming their folder, that is
+        # the error worth printing.
+        for problem in problems or ():
+            if f"/{requested}/" in str(problem):
+                _die(
+                    f"{requested!r} exists but its manifest cannot be used",
+                    fix=str(problem),
+                )
         _die(
             f"no agent named {requested!r}",
             fix="run `python scripts/soc.py list` to see what exists, or "
@@ -769,7 +782,9 @@ def cmd_league(args) -> int:
             )
         )
     print()
-    print(report.league_table(results))
+    print(report.league_table(
+        results, rosters={m.label: m.participants for m in found},
+    ))
     if args.json:
         Path(args.json).write_text(
             json.dumps([_as_json(r) for r in results], indent=2),
@@ -793,6 +808,8 @@ def build_parser() -> argparse.ArgumentParser:
     n = sub.add_parser("new", help="mint your agent (start here)")
     n.add_argument("--team", required=True)
     n.add_argument("--name", required=True)
+    n.add_argument("--participants", required=True,
+                   help="everyone at the table, comma-separated")
     n.add_argument("--menu-label", default=None)
     n.set_defaults(fn=cmd_new)
 

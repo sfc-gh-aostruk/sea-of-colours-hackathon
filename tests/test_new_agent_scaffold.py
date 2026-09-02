@@ -35,10 +35,31 @@ client = TestClient(app)
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
+    """Mint, supplying a roster unless the test is about the roster.
+
+    ``--participants`` became required in v1.41. Defaulting it here
+    keeps every test below about the thing it was written for; the
+    requirement itself is pinned in test_agent_participants.py and in
+    the one test that overrides this.
+    """
+    argv = list(args)
+    if "--participants" not in argv:
+        argv += ["--participants", "Ada Lovelace"]
     return subprocess.run(
-        [sys.executable, str(_SCRIPT), *args],
+        [sys.executable, str(_SCRIPT), *argv],
         capture_output=True, text=True, cwd=_REPO,
     )
+
+
+def test_minting_without_a_roster_is_refused() -> None:
+    """You cannot create an agent nobody is credited for."""
+    r = subprocess.run(
+        [sys.executable, str(_SCRIPT),
+         "--team", "unittest", "--name", "probe", "--dry-run"],
+        capture_output=True, text=True, cwd=_REPO,
+    )
+    assert r.returncode != 0
+    assert "participants" in (r.stderr + r.stdout)
 
 
 def test_dry_run_reports_without_writing() -> None:

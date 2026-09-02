@@ -9,12 +9,20 @@ gets you into the league.
 ## 1. Mint your agent
 
 ```bash
-python scripts/soc.py new --team redwatch --name reaper
+python scripts/soc.py new --team redwatch --name reaper \
+    --participants "Ada Lovelace, Grace Hopper"
 ```
 
 That forks the shipped V12 harness into
 `sea_of_colours/orchestrator_2/harnesses/redwatch_reaper/` and declares
 it in an `agent.json` inside that folder.
+
+**All three are required, including the names.** The league table at the
+end of the day is the public record of who built what, and a row reading
+`redwatch_reaper` and nothing else cannot be credited to anybody or
+chased if it breaks. List everyone at the table — real names, handles,
+nicknames, whatever you answer to. You can edit the list in your
+`agent.json` later when someone joins.
 
 **Your agent is one directory.** Nothing outside it was touched, and
 nothing outside it needs to change again — not a registry, not a config,
@@ -386,7 +394,7 @@ is partly the safety net's.
 
 | command | what it does |
 |---|---|
-| `soc new --team T --name N` | fork V12 into your own agent |
+| `soc new --team T --name N --participants "..."` | fork V12 into your own agent |
 | `soc list` | boards, rungs, loadouts, and every registered agent |
 | `soc suite --agent A` | score an agent against the battles |
 | `soc suite --agent A --record` | ...and freeze every turn for the battle room |

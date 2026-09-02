@@ -38,6 +38,10 @@ def _ok(team="redwatch", name="reaper", **over):
     payload = {
         "team": team,
         "name": name,
+        # Required since v1.41 — see test_agent_participants.py for the
+        # rules. Present in every fixture here so these tests keep
+        # testing what they are about rather than the roster.
+        "participants": ["Ada Lovelace"],
         "menu_label": "REDWATCH_REAPER — redwatch's agent",
         "entry": "harness:run",
         "needs_llm": True,
@@ -63,8 +67,10 @@ def test_a_manifest_names_the_agent_and_its_import_path(tmp_path):
     )
 
 
-def test_entry_defaults_so_the_common_manifest_is_three_fields(tmp_path):
-    _write(tmp_path, "a_b", {"team": "a", "name": "b"})
+def test_entry_defaults_so_the_common_manifest_is_who_you_are(tmp_path):
+    """The only fields anyone must write are identity: team, name, people."""
+    _write(tmp_path, "a_b",
+           {"team": "a", "name": "b", "participants": ["Ada"]})
     found, problems = agent_manifest.discover(tmp_path)
     assert problems == []
     assert found[0].locator.endswith(".a_b.harness:run")
@@ -166,7 +172,8 @@ def test_a_fork_cannot_shadow_the_baseline(tmp_path, monkeypatch):
     """
     from sea_of_colours.orchestrator_2 import binding_registry as br
 
-    _write(tmp_path, "tabula_v12", {"team": "tabula", "name": "v12"})
+    _write(tmp_path, "tabula_v12",
+           {"team": "tabula", "name": "v12", "participants": ["Ada"]})
     monkeypatch.setattr(agent_manifest, "harness_root", lambda: tmp_path)
 
     before = br.AGENT_LABEL_BINDINGS["tabula_v12"]

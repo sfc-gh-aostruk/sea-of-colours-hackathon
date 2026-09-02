@@ -57,6 +57,7 @@ TEMPLATE = """\
 {
   "team": "%(team)s",
   "name": "%(name)s",
+  "participants": %(participants)s,
   "menu_label": "%(menu_label)s",
   "entry": "harness:run",
   "needs_llm": true
@@ -83,6 +84,13 @@ class AgentManifest:
     entry: str
     needs_llm: bool
     directory: Path
+    # Who actually built it. Required (v1.41) because the league table is
+    # the day's public record and a row reading `redwatch_reaper` names
+    # nobody — there is no way to hand out a prize, chase a broken
+    # entrant, or tell two forks of the same idea apart. Free text on
+    # purpose: real names, handles and nicknames are all fine, this is a
+    # roster and not an identity system.
+    participants: tuple[str, ...] = ()
 
     @property
     def label(self) -> str:
@@ -131,6 +139,50 @@ def _require_part(value: str, key: str, path: Path) -> str:
             f"which is why it is restricted."
         )
     return part
+
+
+def _require_participants(data: dict, path: Path) -> tuple[str, ...]:
+    """Who built this. A list of at least one non-empty name.
+
+    Enforced here so it cannot be skipped by hand-writing a manifest,
+    but the gate people actually meet is ``soc new`` (which will not
+    mint without it) and ``soc push`` (which will not publish without
+    it). By the time discovery runs, a fork that used the tools has it.
+    """
+    raw = data.get("participants")
+    if raw is None:
+        raise ManifestError(
+            f"{path}: missing required field 'participants'. Add everyone "
+            f"who worked on this agent, e.g. "
+            f"\"participants\": [\"Ada Lovelace\", \"grace\"]. "
+            f"The league table is the day's public record and a row that "
+            f"names nobody cannot be credited or chased."
+        )
+    if isinstance(raw, str):
+        raise ManifestError(
+            f"{path}: 'participants' must be a LIST of names, not a single "
+            f"string (got {raw!r}). Use [\"{raw}\"] even for one person — "
+            f"a list stays right when the second person joins."
+        )
+    if not isinstance(raw, list):
+        raise ManifestError(
+            f"{path}: 'participants' must be a list of names, got "
+            f"{type(raw).__name__}."
+        )
+    people = tuple(
+        p.strip() for p in raw if isinstance(p, str) and p.strip()
+    )
+    if not people:
+        raise ManifestError(
+            f"{path}: 'participants' is empty. Name at least one person — "
+            f"this is how the league credits the work."
+        )
+    if len(people) != len(raw):
+        raise ManifestError(
+            f"{path}: every entry in 'participants' must be a non-empty "
+            f"string (got {raw!r})."
+        )
+    return people
 
 
 def load(path: Path) -> AgentManifest:
@@ -191,6 +243,7 @@ def load(path: Path) -> AgentManifest:
         entry=entry.strip(),
         needs_llm=bool(data.get("needs_llm", True)),
         directory=path.parent,
+        participants=_require_participants(data, path),
     )
 
 

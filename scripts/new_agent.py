@@ -116,8 +116,29 @@ def _check_registrable(label: str) -> None:
         )
 
 
+def _people(raw: str | None) -> list[str]:
+    """Parse ``--participants`` into a roster, or explain what is missing.
+
+    Comma-separated because that is what someone types without thinking,
+    and because a shell makes repeated flags tedious for a table of four
+    people who want to get on with it.
+    """
+    people = [p.strip() for p in (raw or "").replace(";", ",").split(",")]
+    people = [p for p in people if p]
+    if not people:
+        _die(
+            "--participants is required: name everyone at the table, e.g.\n"
+            "    --participants 'Ada Lovelace, Grace Hopper'\n\n"
+            "  The league table at the end of the day is the public record "
+            "of who\n  built what. A row that names only an agent cannot be "
+            "credited to\n  anybody, and a broken entrant cannot be chased "
+            "to its authors."
+        )
+    return people
+
+
 def _write_manifest(dest: Path, team: str, name: str, menu_label: str,
-                    *, dry_run: bool) -> None:
+                    participants: list[str], *, dry_run: bool) -> None:
     """Declare the fork inside its own directory.
 
     This is the whole of registration (v1.39). Nothing shared is edited,
@@ -131,6 +152,7 @@ def _write_manifest(dest: Path, team: str, name: str, menu_label: str,
     payload = {
         "team": team,
         "name": name,
+        "participants": participants,
         "menu_label": menu_label,
         "entry": "harness:run",
         "needs_llm": True,
@@ -148,6 +170,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--team", required=True, help="Your team name, e.g. redwatch")
     ap.add_argument("--name", required=True, help="Your agent name, e.g. reaper")
     ap.add_argument(
+        "--participants", required=True,
+        help="Everyone at the table, comma-separated, e.g. 'Ada, Grace'",
+    )
+    ap.add_argument(
         "--menu-label", default=None,
         help="Text shown in the New Game dropdown (default: auto).",
     )
@@ -159,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
 
     team = _validate(args.team, "team")
     name = _validate(args.name, "name")
+    participants = _people(args.participants)
     label = f"{team}_{name}"
     const = f"SOC_{label.upper()}"
     dest = _HARNESSES / label
@@ -176,7 +203,8 @@ def main(argv: list[str] | None = None) -> int:
 
     n = _copy_harness(dest, label, dry_run=args.dry_run)
     try:
-        _write_manifest(dest, team, name, menu_label, dry_run=args.dry_run)
+        _write_manifest(dest, team, name, menu_label, participants,
+                        dry_run=args.dry_run)
     except BaseException:
         if not args.dry_run and dest.exists():
             shutil.rmtree(dest)
