@@ -2081,8 +2081,14 @@ def api_game_cards_markdown(
         rows = [r for r in rows if str(r.get("player") or "").lower() == player]
     rows.sort(key=lambda r: (int(r.get("day") or 0), int(r.get("seq") or 0)))
 
+    # One card per TURN, not per row. A V12-family harness writes one
+    # invocation row per pass — reasoning, decision, packager — so a
+    # row-per-card view listed every turn three times, identically
+    # labelled, with the thinking on one card and the option ids it
+    # chose on the next (v1.41).
     normalised = [
-        soc_cards.normalise(r, season=season, session_id=game_id) for r in rows
+        soc_cards.normalise_group(g, season=season, session_id=game_id)
+        for g in soc_cards.group_rows(rows)
     ]
     want_html = str(fmt).lower() == "html"
     empty_note = (

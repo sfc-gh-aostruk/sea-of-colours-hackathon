@@ -70,3 +70,9 @@ secrets.toml
 /reports/seasons/
 /.soc_sessions/
 /.soc_probe*/
+
+# Cached single-turn runs from the fast diff loop. Keyed on a hash of
+# the agent's own source, so they are worthless to anyone else and
+# regenerate in one model call.
+/.soc_livecache/
+/reports/cards-probe/
