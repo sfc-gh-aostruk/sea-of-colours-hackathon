@@ -10,11 +10,15 @@ It is a companion to
 not a replacement: the guide says what the four rungs *are*, this says
 what each one cost to build.
 
-Every snippet below is quoted from a real fork that was built, run over
-the suite and played through three headless seasons. **That fork is not
-in the repo, on purpose** — shipping a finished weapons agent would hand
-you the answer to the exercise the whole day is built around. You get
-the map, not the treasure.
+The fork is `emp_harvest_test`, and it is **in the repo** — a real
+minted agent with its own `agent.json`, registered the same way yours
+will be, and every snippet below is quoted from it. Read it alongside
+this.
+
+That it exists as a fork rather than as edits to V12 is the whole shape
+of the day: V12 is the control group, you mint your own directory beside
+it, and the league at the end is a scan for `agent.json`. Nothing in
+this document changes a shared file.
 
 > **The headline finding, up front.** Building all four rungs took about
 > a dozen files and a day's work, and at the end of it the agent still
@@ -29,7 +33,7 @@ the map, not the treasure.
 ## 0. Start with the diagnostic, not the code
 
 ```bash
-python scripts/soc.py weapons --agent <your_fork>
+python scripts/soc.py weapons --agent emp_harvest_test   # or your own fork
 ```
 
 It reads your fork's source — no model, no credentials, instant — and

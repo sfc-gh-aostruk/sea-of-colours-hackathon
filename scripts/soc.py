@@ -623,9 +623,53 @@ def cmd_push(args) -> int:
 
     subprocess.run(["git", "add", "--", rel], cwd=_REPO, check=True)
     subprocess.run(["git", "commit", "-m", message], cwd=_REPO, check=True)
-    subprocess.run(["git", "push", args.remote, _branch()], cwd=_REPO, check=True)
-    print(f"\n  pushed {mine.label}. It is now in the league.")
-    return 0
+    return _push_with_rebase(args.remote, _branch(), mine.label, rel)
+
+
+def _push_with_rebase(remote: str, branch: str, label: str, rel: str) -> int:
+    """Push, and if the room got there first, rebase and try again.
+
+    Forty teams pushing to one branch means most pushes are racing
+    somebody. Git rejects the loser as non-fast-forward, which is correct
+    and — without this — surfaced as a CalledProcessError traceback at
+    the exact moment an attendee least wants to read one.
+
+    Rebasing is safe *because* of the one-directory rule: two teams never
+    write the same file, so their histories interleave with nothing to
+    resolve. That is the rule paying for itself, and it is why this
+    retries rather than asking. If a rebase does conflict, something
+    outside your folder changed and the answer is a human, not a flag.
+    """
+    for attempt in (1, 2, 3):
+        done = subprocess.run(["git", "push", remote, branch], cwd=_REPO)
+        if done.returncode == 0:
+            print(f"\n  pushed {label}. It is now in the league.")
+            return 0
+        if attempt == 3:
+            break
+        print(f"\n  someone else pushed first — rebasing onto {remote}/"
+              f"{branch} and retrying ({attempt}/2)")
+        pulled = subprocess.run(
+            ["git", "pull", "--rebase", remote, branch], cwd=_REPO,
+        )
+        if pulled.returncode != 0:
+            subprocess.run(["git", "rebase", "--abort"], cwd=_REPO)
+            print(
+                f"\nerror: could not rebase onto {remote}/{branch}.\n"
+                f"\n  Your commit is safe — it is still here, just not "
+                f"pushed yet.\n  A conflict means something outside {rel}/ "
+                f"moved, which is not\n  supposed to happen. Show this to an "
+                f"organiser rather than\n  forcing it.",
+                file=sys.stderr,
+            )
+            return 3
+    print(
+        f"\nerror: still could not push after rebasing twice.\n"
+        f"\n  Your commit is safe locally. The room may just be busy — "
+        f"wait a\n  moment and run `soc push` again.",
+        file=sys.stderr,
+    )
+    return 3
 
 
 def _branch() -> str:

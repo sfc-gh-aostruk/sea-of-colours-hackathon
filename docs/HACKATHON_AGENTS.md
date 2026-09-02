@@ -319,6 +319,14 @@ Run it as many times as you like — every improvement, every hour, it
 does not matter. There is no submission deadline ritual and no form to
 fill in; the last thing you pushed is what plays.
 
+**Racing another team is normal and handled.** Forty people push to one
+branch, so most pushes lose a race with somebody. When that happens
+`soc push` rebases onto whatever landed first and pushes again, and says
+so while it does it. You do not need to `git pull` yourself, and you
+must never `--force`: your commit is never at risk, because the rebase
+cannot conflict — two teams never write the same file. That is the
+one-directory rule paying for itself rather than just being a rule.
+
 ### Why it refuses sometimes
 
 If you have changed files outside your own folder, `push` stops and
@@ -360,6 +368,12 @@ python scripts/soc.py league --runs 3 --up-to siege --cards reports/league
 The entrant list is simply every directory with an `agent.json`, which
 is exactly why registration stopped being a shared file: nobody can be
 left out because a merge went wrong.
+
+A broken entrant cannot take the league down with it. A manifest that
+will not parse is skipped with a warning naming the file and the error;
+an agent whose code will not import runs, fails and scores 0% rather
+than aborting the run. Check you are not that entrant with `soc doctor`,
+which lists the same problems before the day ends rather than after.
 
 Agents whose harness never reached a model are marked with `*` and their
 fallback rate is printed. They still appear — a silently missing entrant
