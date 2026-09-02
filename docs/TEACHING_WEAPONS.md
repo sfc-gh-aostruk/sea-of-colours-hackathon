@@ -218,8 +218,14 @@ hour — you lose the hour *and* the cell.
 
 ## 5. Do not forget the orbit phase
 
-You cannot fire what you never bought. Two bugs here, and the second is
-the kind that hides for a long time:
+You cannot fire what you never bought. The file is `orbit_policy.py`
+**inside your own fork** — before v1.40 the buying policy was shared
+code outside every harness, so this whole section would have been a
+change to the kit that `soc push` refused. Your copy starts
+behaviour-identical to V12's, so anything your agent buys differently is
+something you decided.
+
+Two bugs here, and the second is the kind that hides for a long time:
 
 **Buy it early.** V12 gates an EMP behind 300 BLUE, or 250 and a coin
 flip, with chaff ahead of it — so the first EMP lands around day four if

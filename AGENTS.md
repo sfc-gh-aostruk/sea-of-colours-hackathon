@@ -156,7 +156,17 @@ sea_of_colours/
                  shared — that's what lets a room of teams share one repo,
                  and makes the league a directory scan. Don't add a fork to
                  binding_registry.py.
-    harnesses/tabula_v12/  V12 — the shipped LLM agent, and the one attendees
+    orbit_policy.py   A harness owns its own buying policy (v1.40). It used to
+                    live in agent/heuristic_agent.py, shared — which meant a
+                    fork could not change what it spends credits on without
+                    editing kit that `soc push` forbids it to touch, and
+                    "buy an EMP on day one" is the exercise. The copy is
+                    behaviour-identical at the shipped dials and
+                    tests/test_orbit_policy.py pins that differentially
+                    (same actions AND same rationale). Retuning the dials is
+                    expected to break that pin — that is a fork diverging
+                    from the baseline, which is the point.
+  harnesses/tabula_v12/  V12 — the shipped LLM agent, and the one attendees
                            fork. Its README.md is the fork guide (pipeline, the
                            two deliberate gaps, where to change what);
                            ENGINE_INTERFACE.md is the engine boundary a harness

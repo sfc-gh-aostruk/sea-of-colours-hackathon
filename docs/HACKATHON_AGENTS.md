@@ -37,6 +37,15 @@ Your fork is a complete copy of V12, so everything is yours to change.
 Its own `README.md` is the tour: the pipeline, the two gaps it ships
 with on purpose, and where to change what.
 
+**That includes what it buys.** The orbit-phase buying policy is
+`orbit_policy.py` *inside your fork* — credits, BLUE, when a weapon is
+worth a harvester. It used to be shared code outside every harness,
+which meant changing it was a change to the kit and `soc push` would
+refuse it. Since v1.40 each agent owns its own, so "buy an EMP the first
+day I can afford one" is a change to one file in your own directory.
+Every fork starts with a copy that behaves exactly like V12's, so any
+difference in what your agent buys is a difference you chose.
+
 Most people will do this through a coding assistant rather than by hand.
 That works well, and the kit is built for it — but point the assistant
 at the fork's README first, and give it something concrete to aim at:
