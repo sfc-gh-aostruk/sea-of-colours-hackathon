@@ -1016,9 +1016,15 @@ def build_agent_view(
         "blue_sign": [dict(r) for r in (sess.blue_sign or [])],
         # v1.x — REDSIGN: discovery-triggered public beacons over pure-RED
         # seams (RULEBOOK §4.11). Minted the first time ANY house sees a
-        # pure-RED cell, then visible to EVERY house regardless of fog and
-        # persistent for the rest of the season. Anonymous, fuzzy smear —
-        # agents read it to race toward a jackpot seam someone else found.
+        # pure-RED cell, then visible to EVERY house regardless of fog
+        # until the seam is spent. Anonymous, fuzzy smear — agents read it
+        # to race toward a jackpot seam someone else found.
+        #
+        # The ``live`` filter is the retirement (§4.11, prose corrected in
+        # v1.33): a spent beacon leaves every seat view rather than going
+        # grey in it, so an agent cannot chase a jackpot that is gone. It
+        # also means ``spent_by`` — engine ground truth for who banked it —
+        # never reaches a seat, which is what keeps retirement anonymous.
         "redsign": [
             _redsign_for_seat(r, pid)
             for r in (sess.redsign or [])

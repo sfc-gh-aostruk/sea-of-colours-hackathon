@@ -1140,8 +1140,12 @@ class GameSession:
     #: (purity 255) seams (RULEBOOK §4.11). UNLIKE blue-sign, redsign is
     #: NOT computed at birth — a region is minted the first time ANY seat's
     #: probe/harvester sees a pure-RED cell, and from then on is visible to
-    #: EVERY house regardless of fog and PERSISTS for the rest of the
-    #: season (it does not clear when the seam is harvested). Each entry is
+    #: EVERY house regardless of fog until the seam is spent — the beacon
+    #: RETIRES when its last pure cell is harvested (``live`` flips False;
+    #: see :meth:`_retire_redsign_if_spent`), because an announcement about
+    #: a jackpot has nothing to say once the jackpot is banked. RULEBOOK
+    #: §4.11 claimed the opposite until v1.33; this comment claimed it too,
+    #: directly above the code that does the retiring. Each entry is
     #: a fuzzy, off-centre smear ``{"id", "center": [x, y],
     #: "cells": [[x, y, intensity], ...], "day": <discovered>}`` — the
     #: same shape as ``blue_sign`` plus the discovery ``day`` so replay can

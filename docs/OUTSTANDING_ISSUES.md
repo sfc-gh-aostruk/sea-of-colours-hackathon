@@ -1504,7 +1504,40 @@ missing, not the placement.
 
 ---
 
-## 36. 🔴 (OPEN) RULEBOOK §4.11 says a redsign never clears; the engine retires it
+## 36. ✅ (DONE, v1.33) RULEBOOK §4.11 says a redsign never clears; the engine retires it
+
+**Status (v1.33):** Resolved in the engine's favour — the beacon retires when
+its seam is spent, and the prose now says so. No behaviour changed.
+
+**Root cause:** documentation drift, not a code defect. The engine has retired
+spent beacons since v9 (I12) and `tests/test_redsign.py` has pinned it the
+whole time — retirement on harvest, exit from every seat view, staying live
+until the last pure cell goes. The tests were testing the engine, so nothing
+ever went red while the prose said the opposite.
+
+**Which way it was settled:** a blue-sign is radiative physics and shines
+whether the seam is worth anything or not; a redsign is an *announcement about
+a jackpot*, and once the jackpot is banked there is nothing to announce. A
+beacon that outlives its seam broadcasts "pure in FOG" forever and lures every
+seat into chasing nothing.
+
+**Fix (documentation fan-out):**
+- `RULEBOOK.md` §4.11 — the persistence bullet rewritten as a retirement
+  bullet, the map-smear line corrected, `### v1.33` changelog entry added,
+  header bumped to 1.33.
+- `sea_of_colours/game/session.py` — the `redsign` field docstring repeated the
+  stale claim *directly above* `_retire_redsign_if_spent`. Corrected.
+- `sea_of_colours/snowpark/view.py` — same again on the view builder's
+  `redsign` block, above the `live` filter that implements the retirement.
+  Now also records why that filter is what keeps retirement anonymous:
+  `spent_by` is engine ground truth and never reaches a seat.
+- The other two surfaces named below needed nothing. The V12 prompt already
+  branches on `_has_live_redsign` and the view hands it only live regions;
+  the Advanced tutorial's night-two card was already silent on the question.
+
+**Why it was worth doing before the day:** the fork guide sends people to the
+RULEBOOK to learn the mechanic, and a room of them was hours from writing
+agents against a rule that does not exist.
 
 **Found:** while checking the redsign mechanic against the tutorial copy, not
 from a play report — so nobody has been bitten by it yet that we know of.

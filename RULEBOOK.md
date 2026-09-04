@@ -1,7 +1,7 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.32
-Last updated: 2026-08-28
+Version: 1.33
+Last updated: 2026-09-04
 
 This is the single source of truth for the world, the fiction, and how
 play resolves. Every change is recorded in the [Changelog](#changelog) at
@@ -2446,10 +2446,17 @@ The trigger is discovery, not birth:
   discovery frame, not at the top of the night.
 - It is **anonymous**: the sign never names the house that spotted it.
   Rivals learn *a* pure seam exists and roughly where — not who found it.
-- It is **persistent**: once minted it stays for the rest of the season
-  and does **not** clear when the seam is harvested out (mirroring
-  blue-sign's persistence). Depletion must be inferred from observed
-  rival activity, not from the sign.
+- It **retires when the seam is spent** (v1.33). The beacon burns while
+  any of its pure cells are still pure, and goes out the moment the last
+  one is harvested to synthetic green — logged, anonymously, as `RED SIGN
+  spent — the pure seam near (~x, ~y) is exhausted`. A dead beacon leaves
+  every seat's view entirely, so nobody keeps racing toward a jackpot
+  that is gone. This is the one place redsign does **not** mirror
+  blue-sign: blue-sign is radiative physics and shines whether the seam
+  is worth anything or not, while redsign is an announcement *about a
+  jackpot*, and there is nothing to announce once the jackpot is banked.
+  Retirement stays anonymous — the log line names no house, and the
+  engine's ground-truth `spent_by` never reaches a seat view.
 - Only **pure** RED (255) triggers it. Rich-but-impure RED does not.
 
 Like blue-sign the beacon is deliberately **rough**: the smear is
@@ -2470,9 +2477,8 @@ Surfacing:
   It is deliberately **fog-only**: it paints only on `UNKNOWN` cells and
   recedes as you explore toward the seam — on live or echo tiles the
   player can already see the terrain (including the pure seam itself), so
-  the hint would be redundant and is suppressed there. It persists once
-  discovered (like blue-sign, it does **not** clear when the seam is
-  harvested).
+  the hint would be redundant and is suppressed there. It lasts as long
+  as the beacon does, and goes with it when the seam is spent (v1.33).
 - **Map (discovery burst)** — a one-shot filled **red rhombus** pulse
   (a diamond echo of the player-coloured probe-landing explosion) blooms
   over the seam the instant it is discovered on forward replay / the live
@@ -2813,6 +2819,43 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.33 — 2026-09-04
+
+**§4.11 now says what the engine has always done: a redsign retires when
+its seam is spent.** No behaviour changed. The prose was wrong, and had
+been for months.
+
+- **What the prose claimed.** That the beacon "does **not** clear when the
+  seam is harvested out (mirroring blue-sign's persistence)", and made a
+  strategic virtue of it: "Depletion must be inferred from observed rival
+  activity, not from the sign."
+- **What the engine does.** `_retire_redsign_if_spent` flips `live` to
+  false the moment the last pure cell of a seam is harvested to synthetic
+  green, stamps `spent_day` / `spent_by`, logs an anonymous `RED SIGN
+  spent` line, and `_sweep_redsign_liveness` backstops any path that
+  edits purity directly. The view layer drops dead regions before a seat
+  ever sees them.
+- **Which one is right.** The engine. A blue-sign is radiative physics and
+  shines whether the seam is worth anything or not; a redsign is an
+  *announcement about a jackpot*, and once the jackpot is banked there is
+  nothing left to announce. A beacon that outlives its seam broadcasts
+  "pure in FOG" forever and lures every seat into chasing nothing, which
+  is a worse game than the one the prose was defending.
+- **Why it mattered now rather than whenever it drifted.** Nobody had been
+  bitten, because the engine was correct and the agents read the engine.
+  But the fork guide sends people to the RULEBOOK to learn the mechanic,
+  and a room of them was hours from writing agents against a rule that
+  does not exist — the kind of bug that surfaces as "my agent hoards
+  probes for a seam that is gone" long after anyone would think to check
+  the prose.
+- **Fanned out.** The stale claim was repeated in two engine comments that
+  sat directly above the code contradicting them —
+  `GameSession.redsign`'s field docstring and the view builder's
+  `redsign` block. Both corrected. Behaviour was already pinned by
+  `tests/test_redsign.py` (retirement on harvest, exit from every seat
+  view, staying live until the last pure cell goes), which is why the
+  drift was invisible: the tests were testing the engine, not the prose.
 
 ### v1.32 — 2026-08-28
 
