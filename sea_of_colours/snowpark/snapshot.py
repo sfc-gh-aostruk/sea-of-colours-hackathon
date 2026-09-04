@@ -122,11 +122,39 @@ def _copy_history(store: Any, src: str, dst: str, day: int) -> None:
     every replay clone for frames no prompt ever reads. ``build`` only ever
     asks for ``day_ended``, so that is what travels. The log is text and
     copies whole.
+
+    v1.42 — the SQL path below is a no-op on a store with no ``_exec``,
+    which is every file store. Nothing said so, and the failure was
+    invisible in exactly the wrong way: the snapshot came out complete
+    in every respect a person would check, and only the replay was
+    missing. An agent planning on one was told "YOU ORDERED: (no orders
+    on record)" and "EXECUTION LOG (unavailable)" about a night it had
+    demonstrably played, and read that as having done nothing. So a file
+    store now copies through the ordinary store API instead of silently
+    copying nothing.
     """
-    _copy_child_rows(
-        store, "SOC_REPLAY_FRAME", src, dst, where=f"day = {int(day) - 1}",
-    )
-    _copy_child_rows(store, "SOC_GAME_LOG", src, dst)
+    if callable(getattr(store, "_exec", None)):
+        _copy_child_rows(
+            store, "SOC_REPLAY_FRAME", src, dst, where=f"day = {int(day) - 1}",
+        )
+        _copy_child_rows(store, "SOC_GAME_LOG", src, dst)
+        return
+
+    night = int(day) - 1
+    if night < 1:
+        return  # day 1 has no last night, and that is not a gap.
+    try:
+        frames = list(store.list_replay_frames(src, night, night) or [])
+    except Exception:
+        return
+    if not frames:
+        return
+    try:
+        # Idempotent per (session, day) in the file store, so re-taking a
+        # deterministic snapshot cannot leave the night duplicated.
+        store.append_replay_frames(dst, night, frames)
+    except Exception:
+        pass
 
 
 def take(
