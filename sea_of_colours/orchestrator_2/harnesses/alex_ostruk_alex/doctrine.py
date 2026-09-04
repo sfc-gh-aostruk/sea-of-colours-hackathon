@@ -764,9 +764,126 @@ WEAPONS => MORE UNITS ON THE SEAM, NOT ONE SHORTER CHAIN (offensive read):
 """
 
 
+DOCTRINE_SCORCH = """\
+FIRE AN EMP — you are holding a charge, and a charge in the rack scores 0:
+  Every rule above this one is about SURVIVING someone else's weapon. This one
+  is about spending yours. You own EMP stock (see YOUR RACK) and the menu is
+  offering EMP_SCORCH / SCORCH_REDSIGN because a target exists tonight.
+
+  WHAT IT COSTS. One charge, and — the part that decides most calls — ONE of
+  your 21 hour-slots. A launch pre-empts the seat for that hour (§3.10): you
+  fire OR you move, never both. So the honest comparison is never "EMP vs
+  nothing", it is "EMP vs the chain I drop instead". Price it that way.
+
+  WHEN TO SPEND IT:
+    * KILL THE FRESHEST EYE. Launch an EMP onto the newest rival probe on the
+      board and it dies at hour 1. Probes die the hour the cloud forms, and again on
+      every later tick. A probe launched LAST NIGHT is vision the rival has not
+      converted into a landing yet — kill that one. A probe from three days ago
+      has already told them what is there; scorching it burns an hour to destroy
+      information they already have.
+    * DENY A SIGN YOU CANNOT REACH. If a redsign is THEIRS and you cannot get
+      to the pure first, SCORCH_REDSIGN makes the smear worthless to them for 8
+      hours. This banks nothing. It is worth an hour only when you actually
+      believe they are coming — if the board says they are working the other
+      side, you just spent an hour bombing empty ground.
+    * BETTER: SHAPE THE SALVO AND STAND IN IT (BLIND_SCORCH). A cell is only
+      darkened when a missile lands within the blast radius of it, and YOU
+      choose where the three missiles land. Place them all one cell further out
+      than the blast reaches and the middle stays clear. Now the cloud is not a
+      wall between you and the seam — it is a wall around a cell only you can
+      use. Probe the hole, drop into it, and you are the only house on that
+      ground for eight hours. When the cloud lifts you comb outward from the
+      middle of the seam while the rival is still in orbit. Prefer this to a
+      blanket SCORCH_REDSIGN whenever the menu offers it: same denial, and you
+      end the night holding the ground instead of looking at it.
+    * FIRE IT FIRST OR DO NOT FIRE IT. A salvo is worth its slot at hour 1 or
+      hour 2, and close to nothing after that. Three reasons, and they stack:
+      probes die on CONTACT, so an early kill costs them a night of vision
+      while a late one destroys a picture they have already used; landings
+      happen early, so darkened ground only denies anything while they still
+      have hours to land in; and a cloud lit at hour 15 of a 21-hour Nox loses
+      most of its eight hours to Aurora — full charge, full hour-slot, a
+      fraction of the cloud. If the only slot you can spare for a salvo is late
+      in the night, the honest read is that you do not have room for one
+      tonight: keep the charge and spend the hour on a chain. The compiler
+      enforces this — a salvo queued later is hoisted to the front and you are
+      told — but plan it at the front yourself, because everything you queued
+      before it moves back an hour when it is.
+
+  WHEN NOT TO — the two ways this play loses you the game:
+    * NEVER SCORCH YOUR OWN REDSIGN WHEN YOU CAN GRAB IT. If the sign is yours
+      (`mine: true`) and the menu is offering a CERTAIN take — a GRAB* on pure
+      or mass you can SEE, or a SMASH_GRAB on your own seam — take the RED. You
+      would be spending an hour to lock your OWN harvesters out of your OWN pure
+      for 8 hours, to deny a rival who may not be coming, while the certain
+      points sat there. Certain RED outranks speculative denial every time.
+      SCORCH_REDSIGN is a play for a sign you do NOT own.
+    * NEVER FIRE INTO YOUR OWN NIGHT. Friendly fire is on. Your harvesters go
+      'empd' in your own cloud — hour spent, nothing banked — and your own
+      probes are DESTROYED by it. Aim where your fleet is not going, or plan the
+      walk-in for after the cloud clears. The compiler moves your unaffected
+      plays ahead of the affected ones and warns you when a play still lands
+      inside the diamond; that warning is not decoration, it means that unit is
+      about to do nothing.
+
+  THE CLOUD'S EIGHT HOURS ARE NOT YOUR EIGHT HOURS — the mistake that makes
+  this play look bad:
+    You get ONE action per hour across the WHOLE FLEET (§3.10), and the queue
+    is a single interleaved timeline. A harvester holding a hole is not
+    "your turn"; it is one unit standing still while every other unit works.
+    So a night built around a scorch should ALSO pick a full slate of chains
+    and probes somewhere else on the map. The compiler splices the held walk
+    in at the exact hour the cloud lifts and pushes your other moves out
+    behind it, so a long chain elsewhere runs its first steps DURING the
+    cloud, the held unit combs the seam the moment it clears, and the chain
+    then finishes. You do not have to sequence any of that by hand — you only
+    have to GIVE IT ENOUGH TO DO. If the log says it inserted WAITs, that is
+    the night telling you the plan was too thin, not that the scorch was wrong.
+    And do NOT try to save time by walking in early: a step into a standing
+    cloud lands but harvests NOTHING, and the unit is disabled from the next
+    hour — you lose the hour and the cell.
+"""
+
+
+DOCTRINE_CHAFF = """\
+FIRE A CHAFF FLARE — but only to jam a rival mid-lift, never as a stall:
+  You own chaff stock (see YOUR RACK) and the menu is offering CHAFF_JAM. A
+  flare is NOTHING like an EMP. It hits no ground and kills no probe: it
+  freezes TIME. From the slot it fires, EVERY seat's action is cancelled for
+  the whole chaff window (see WEAPON GEOMETRY for the exact hours) — and that
+  includes YOURS. You are immune only on the launch hour itself; the
+  carry-over hours self-jam you like everyone else. A flare cannot be chained
+  either: a second one inside your own window is wasted.
+
+  So the flare has exactly ONE winning shape, and it is a DENIAL, not a grab:
+    * JAM THE EGRESS. A rival is committed RIGHT NOW to a landing or a lift of
+      a loaded harvester on contested ground — a redsign race, a pure they can
+      reach. Fire the flare on that hour and their action is voided, the
+      carry-over hours void the retry, and the cargo they were about to bank
+      never comes home. That is the whole play: you spend tempo to destroy
+      more of theirs.
+    * ONLY WHEN YOUR OWN FLEET IS DONE. Because the window jams you too, a
+      flare is free only if your harvesters have ALREADY lifted or are idle
+      for those hours. Queue it AFTER your night's work — the compiler places
+      it at the tail for exactly this reason. A flare fired while your own
+      units still need to move is you paying a charge to stall yourself.
+
+  WHEN NOT TO:
+    * NOT ON AN EMPTY OR UNCONTESTED BOARD. If no rival is mid-commit, a flare
+      jams nobody who matters and burns your own hours. The charge scores 0 in
+      the rack, but a flare into dead air scores less than 0. Hold it.
+    * IT IS SYMMETRIC, SO MUTUAL CHAFF IS A LOSS. If you and a rival both flare
+      the same hour, the second buys nothing and both pay. Never fire it as a
+      "safe stall" — the weapon is built so that stalling loses.
+"""
+
+
 __all__ = [
     "STRATEGIES_CORE",
     "DOCTRINE_BLUE",
+    "DOCTRINE_SCORCH",
+    "DOCTRINE_CHAFF",
     "DOCTRINE_REDSIGN",
     "DOCTRINE_LASTDAY_SUPERSEDE",
     "DOCTRINE_BEWARE_EMP",

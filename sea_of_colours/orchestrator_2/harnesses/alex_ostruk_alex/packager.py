@@ -22,8 +22,6 @@ steps); the sanitizer owns final legality.
 
 from __future__ import annotations
 
-import dataclasses
-
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex._v7.probe_hints import (
@@ -32,6 +30,10 @@ from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex._v7.probe_hints im
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import (
     option_economics as econ,
 )
+from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import scorch
+# The night's length in hours IS the queue cap (§3.10), and the splice in
+# ``flush_deferred`` has to respect it or a pickup falls off the end.
+from sea_of_colours.game.policy import MAX_MOVES
 
 # Kinds that each COMMIT ONE HARVESTER for a single outing (RULEBOOK §3.9.2 —
 # one outing per harvester per night). ``seam`` is handled separately because a
@@ -551,6 +553,198 @@ class _Packer:
         # (fix 2.10): it shortens nothing, and simply records that the agent
         # said it expected a jam so the night can be read back honestly.
         self.chaff_short: bool = bool(chaff_short)
+        # ── this fork: the seat's own ordnance ─────────────────────────
+        # ``emp_budget`` is the rack; ``scorched`` maps every cell under
+        # one of OUR OWN clouds to the hour it clears. The hour matters:
+        # a cloud is not a permanent hazard like stripped green, it is a
+        # timer, and the difference between "never go here" and "not for
+        # eight hours" is a whole harvester outing.
+        self.emp_budget: int = scorch.stock(agent_view)["emp"]
+        self.emp_radius, self.emp_missiles, self.emp_cloud_hours = (
+            scorch.specs(agent_view)
+        )
+        #: Chaff rack + jam duration. A flare has no target and no cloud —
+        #: it freezes every seat's action (ours included) for the window,
+        #: so unlike ``scorched`` there is no per-cell hazard to track.
+        self.chaff_budget: int = scorch.stock(agent_view)["chaff"]
+        self.chaff_hours: int = scorch.chaff_specs(agent_view)
+        self.scorched: Dict[Tuple[int, int], int] = {}
+        self._friendly_fire_warned = False
+        #: Walks held back until a cloud lifts. Flushed LAST, after the
+        #: completion pass, so the hours a held harvester spends standing
+        #: still are filled with the seat's other work rather than waits.
+        self.deferred: List[Dict[str, Any]] = []
+
+    # ── own ordnance ───────────────────────────────────────────────
+    def clear_hour(self, cell: Any) -> int:
+        """The first hour ``cell`` is safe again, or 0 if it never wasn't.
+
+        ``len(self.moves)`` IS the hour counter — the seat applies one
+        move per hour in queue order (§3.10) — so the compiler can answer
+        "is this step inside my own cloud?" simply by comparing the slot
+        it is about to occupy against this.
+        """
+        c = _cell(cell)
+        return self.scorched.get(c, 0) if c is not None else 0
+
+    def note_friendly_fire(self, cell: Any, hour: int) -> None:
+        """Price a move that lands under our own cloud. Never cut it.
+
+        Same rule as every other guard in this compiler: the engine allows
+        it, so it is the agent's call (OBS-27). What we owe the agent is
+        that it finds out, once, in terms it can act on.
+        """
+        clear = self.clear_hour(cell)
+        if clear <= hour or self._friendly_fire_warned:
+            return
+        self._friendly_fire_warned = True
+        self.log.append(
+            f"FRIENDLY FIRE: {list(_cell(cell) or [])} is under YOUR OWN EMP "
+            f"until hour {clear}, and this move lands at hour {hour}. The unit "
+            f"will sit 'empd' — the hour is spent and nothing is banked. KEPT "
+            "(your call), but either order this play AFTER the cloud lifts or "
+            "aim the salvo somewhere your own night does not go."
+        )
+
+    def give_back_harvester(self) -> None:
+        """Return the unit drawn by :meth:`next_harvester` to the pool.
+
+        A play that draws a harvester and then cannot use it must put it
+        back, or the completion pass believes the fleet is committed and
+        leaves the unit in orbit banking nothing.
+        """
+        self._h_idx = max(0, self._h_idx - 1)
+
+    def clear_hour_max(self) -> int:
+        """The first hour EVERY one of our own clouds has lifted."""
+        return max(self.scorched.values(), default=0)
+
+    def defer(
+        self, *, unit: str, start: Tuple[int, int],
+        comb: Sequence[Tuple[int, int]], not_before: int,
+    ) -> None:
+        self.deferred.append(
+            {"unit": unit, "start": start, "comb": list(comb),
+             "not_before": int(not_before)},
+        )
+
+    def flush_deferred(self, *, max_moves: int) -> None:
+        """Place each held walk at the hour its cloud lifts — by SPLICING.
+
+        This is the part that makes the shaped scorch a real play rather
+        than an expensive way to stand still. The seat gets one action per
+        hour across the WHOLE fleet (§3.10), so the queue is already an
+        interleaved timeline; nothing says a unit's moves have to be
+        contiguous in it. So the held walk is INSERTED at the hour the
+        cloud clears and whatever was queued for those hours is pushed out
+        behind it — the other harvester runs its first few steps while the
+        cloud stands, the held unit combs the seam the hour it lifts, and
+        the other harvester then finishes.
+
+        Padding with ``wait`` is the fallback, not the plan, and it fires
+        only when the agent gave the night nothing else to do. Walking in
+        early is NOT an alternative: a step into a standing cloud lands
+        but banks nothing (§4.9.3) and the unit is disabled from the next
+        hour, so it costs the same hour AND the cell.
+        """
+        for job in self.deferred:
+            tail: List[Dict[str, Any]] = []
+            cur = job["start"]
+            for nxt in job["comb"]:
+                for sx, sy in _steps_between(cur, nxt):
+                    tail.append({"a": "step", "unit": job["unit"],
+                                 "to": [sx, sy]})
+                    cur = (sx, sy)
+            tail.append({"a": "pickup", "unit": job["unit"]})
+
+            start_hour = max(1, int(job["not_before"]))
+            insert_at = start_hour - 1          # 0-based slot index
+            if insert_at >= len(self.moves):
+                pad = insert_at - len(self.moves)
+                if pad:
+                    self.moves.extend({"a": "wait"} for _ in range(pad))
+                    self.log.append(
+                        f"{pad} hour(s) of WAIT before {job['unit']} walks: "
+                        "the cloud stands until hour "
+                        f"{start_hour} and you gave the night nothing else to "
+                        "do with those hours. Pick another chain or a probe "
+                        "and they fill themselves — the walk is unaffected."
+                    )
+                insert_at = len(self.moves)
+            else:
+                pushed = len(self.moves) - insert_at
+                self.log.append(
+                    f"{pushed} of your other move(s) were moved to AFTER "
+                    f"{job['unit']}'s walk: they run during the cloud, the "
+                    f"walk goes in at hour {start_hour} the moment it lifts, "
+                    "and they finish behind it. Every unit's own order is "
+                    "unchanged."
+                )
+
+            # A pickup pushed past the queue cap is a harvester lost at
+            # Aurora — the one outcome nobody intends. Shorten the WALK to
+            # fit rather than let the lift fall off the end, and say so.
+            overflow = len(self.moves) + len(tail) - int(max_moves)
+            if overflow > 0:
+                keep = max(0, len(tail) - 1 - overflow)
+                self.log.append(
+                    f"{job['unit']}'s walk was cut from {len(tail) - 1} steps "
+                    f"to {keep}: the night is {max_moves} hours long and the "
+                    "PICKUP has to fit inside it. A harvester that is not "
+                    "lifted is destroyed at Aurora — the walk is worth less "
+                    "than the unit."
+                )
+                tail = tail[:keep] + [tail[-1]]
+            self.moves[insert_at:insert_at] = tail
+        self.deferred.clear()
+
+    def spend_emp(self, targets: Sequence[Tuple[int, int]]) -> bool:
+        """Fire one charge at up to ``emp_missiles`` cells. One slot."""
+        if self.emp_budget <= 0:
+            return False
+        aim = list(targets)[: self.emp_missiles]
+        if not aim:
+            return False
+        launch_hour = len(self.moves) + 1
+        self.moves.append(
+            {"a": "emp_launch", "at": [[c[0], c[1]] for c in aim]},
+        )
+        self.emp_budget -= 1
+        clears_at = launch_hour + self.emp_cloud_hours
+        for cell in scorch.blast(aim, self.emp_radius):
+            self.scorched[cell] = max(self.scorched.get(cell, 0), clears_at)
+        self.log.append(
+            f"EMP salvo away at hour {launch_hour}: "
+            f"{[list(c) for c in aim]} -> {len(self.scorched)} cells dark "
+            f"until hour {clears_at}. That hour is spent; the seat does "
+            "nothing else in it."
+        )
+        return True
+
+    def spend_chaff(self) -> bool:
+        """Fire one flare (RULEBOOK §4.9.5). One slot, no target cell.
+
+        Appends the flare at the current queue tail on purpose: a flare
+        jams every seat for ``chaff_hours`` from its slot, the launcher
+        included (immune only on the launch hour). Placed after the
+        seat's committed work, the self-jammed carry-over hours fall on
+        hours the fleet was done with, while a rival mid-lift loses the
+        cargo. The engine does not re-attempt a chaffed launch, so we do
+        not track a cloud — only the spent charge.
+        """
+        if self.chaff_budget <= 0:
+            return False
+        launch_hour = len(self.moves) + 1
+        self.moves.append({"a": "chaff_flare"})
+        self.chaff_budget -= 1
+        jam_until = launch_hour + max(0, self.chaff_hours - 1)
+        self.log.append(
+            f"chaff flare away at hour {launch_hour}: every seat's action is "
+            f"cancelled through hour {jam_until} (yours too — you are immune "
+            f"only at hour {launch_hour}). Worth it only if a rival is mid-lift "
+            "now and your own units are already clear of these hours."
+        )
+        return True
 
     # ── resource draws ─────────────────────────────────────────────
     def next_harvester(self) -> Optional[str]:
@@ -569,6 +763,11 @@ class _Packer:
             return False
         if cell in self._probed_cells:
             return False  # never launch two probes onto the same cell
+        # A probe is DESTROYED by a cloud, not merely disabled, and the
+        # sweep runs every hour the cloud stands — so this one is not a
+        # priced risk, it is a probe thrown away. Still not cut: the
+        # agent may be superseding a rival probe it knows dies with it.
+        self.note_friendly_fire(cell, len(self.moves) + 1)
         self.moves.append({"a": "probe", "at": [cell[0], cell[1]]})
         self._probed_cells.add(cell)
         self.probe_budget -= 1
@@ -675,6 +874,7 @@ class _Packer:
         # call — the OPTION MENU flags each chain's exposure, so the thinker
         # sheds a bad tail by PICKING differently. Since fix 2.10 that includes
         # the chaff cap, the last cut the compiler made.
+        self.note_friendly_fire(drop, len(self.moves) + 1)
         self.moves.append({"a": "drop", "unit": unit, "at": [drop[0], drop[1]]})
         self._drop_cells.add(drop)
         cur = drop
@@ -716,6 +916,7 @@ class _Packer:
                 # deliberately steps onto fog — the pure is jittered, so the sweep
                 # has to range over unseen cells. Nothing below refuses a step;
                 # every route the agent ordered is emitted as ordered.
+                self.note_friendly_fire((sx, sy), len(self.moves) + 1)
                 self.moves.append({"a": "step", "unit": unit, "to": [sx, sy]})
                 cur = (sx, sy)
                 steps_emitted += 1
@@ -850,9 +1051,98 @@ def _is_probe_only(opt: Any) -> bool:
     return False
 
 
+def _pack_emp(pk: _Packer, payload: Mapping[str, Any]) -> None:
+    """One charge, up to three cells, one hour-slot (RULEBOOK §4.9.3).
+
+    The whole salvo is a SINGLE wire move — ``at`` is a list of cells, not
+    a cell — so a three-missile strike costs one of the seat's 21 slots,
+    not three. Getting that wrong is the difference between a scorch that
+    costs an hour and one that costs a harvester's whole outing.
+
+    ``shape="occupy"`` is the fork's headline play and compiles to four
+    beats rather than one: salvo, enabling probe into the cell the salvo
+    deliberately missed, harvester onto it, and then a comb DEFERRED
+    until the cloud lifts. Only the first three are emitted here; the
+    walk is registered with :meth:`_Packer.defer` so the hours in between
+    can be filled with the seat's other work instead of with waiting.
+    """
+    targets = [
+        c for c in (_cell(t) for t in (payload.get("targets") or [])) if c
+    ]
+    if not targets:
+        pk.log.append("cut EMP salvo: no valid target cells")
+        return
+    if not pk.spend_emp(targets):
+        pk.log.append(
+            "cut EMP salvo: the rack is empty — a charge is bought in ORBIT, "
+            "and you cannot fire one you did not buy"
+        )
+        return
+    if str(payload.get("shape") or "") != "occupy":
+        return
+
+    hole = _cell(payload.get("hole"))
+    probe_at = _cell(payload.get("probe_at")) or hole
+    if hole is None:
+        pk.log.append("scorch shape had no hole cell — salvo only")
+        return
+    unit = pk.next_harvester()
+    if unit is None:
+        pk.log.append(
+            f"salvo away, but no harvester was left to hold {list(hole)} — "
+            "the cloud denies them the smear and buys you nothing. Free the "
+            "unit by dropping another outing, or take the plain salvo."
+        )
+        return
+    if not pk.spend_probe(probe_at):
+        # Without live vision at hour start the drop is illegal (§3.9.7),
+        # so the hole cannot be taken and holding a harvester back for it
+        # would waste the unit as well as the charge.
+        pk.log.append(
+            f"salvo away, but no probe was left to light {list(probe_at)}, so "
+            "the drop into the hole would be illegal at hour start (§3.9.7). "
+            "The scorch stands; the occupation does not."
+        )
+        pk.give_back_harvester()
+        return
+
+    pk.note_friendly_fire(hole, len(pk.moves) + 1)
+    pk.moves.append({"a": "drop", "unit": unit, "at": [hole[0], hole[1]]})
+    pk._drop_cells.add(hole)
+
+    comb = [c for c in (_cell(c) for c in (payload.get("comb") or [])) if c]
+    clear_at = pk.clear_hour_max()
+    pk.defer(unit=unit, start=hole, comb=comb, not_before=clear_at)
+    pk.log.append(
+        f"{unit} holds the hole at {list(hole)} — clear of your own cloud, "
+        f"and no rival can reach it while the cloud stands. Its walk is held "
+        f"until hour {clear_at}; the hours until then are free for your other "
+        "plays."
+    )
+
+
+def _pack_chaff(pk: _Packer, payload: Mapping[str, Any]) -> None:
+    """One flare, one slot, no target (RULEBOOK §4.9.5).
+
+    There is nothing to aim and no cloud to track — the flare freezes
+    every seat for the window. The only judgement the compiler owns is
+    the same one every weapon share: fire what the rack holds, and say
+    so plainly when it is empty. Timing (fire it AFTER the fleet banks)
+    is doctrine's job and the option text's; ``spend_chaff`` appends at
+    the queue tail, which is where a flare belongs.
+    """
+    if not pk.spend_chaff():
+        pk.log.append(
+            "cut chaff flare: the rack is empty — a flare is bought in ORBIT, "
+            "and you cannot fire one you did not buy"
+        )
+
+
 _DISPATCH = {
     "seam": _pack_seam,
     "hotdrop": _pack_hotdrop,
+    "emp": _pack_emp,
+    "chaff": _pack_chaff,
     # v11 Phase-1 force-surfaced VALUE-PYRAMID grab — drop + contiguous walk,
     # identical wire shape to a juice chain, so it compiles through _pack_chain.
     "grab": _pack_chain,
@@ -862,6 +1152,105 @@ _DISPATCH = {
     "supersede": _pack_supersede,
     "frontier": _pack_frontier,
 }
+
+
+def _emp_footprint(
+    opts: Sequence[Any], agent_view: Mapping[str, Any],
+) -> set:
+    """Every cell the salvos in ``opts`` would darken."""
+    radius, missiles, _hours = scorch.specs(agent_view)
+    cells: set = set()
+    for o in opts:
+        if str(getattr(o, "kind", "")) != "emp":
+            continue
+        targets = [
+            c for c in
+            (_cell(t) for t in ((getattr(o, "payload", None) or {})
+                                .get("targets") or []))
+            if c
+        ][:missiles]
+        cells |= scorch.blast(targets, radius)
+    return cells
+
+
+def _order_for_emp_cloud(
+    opts: Sequence[Any], agent_view: Mapping[str, Any],
+) -> Tuple[List[Any], List[str]]:
+    """Sequence a night that contains one of our own salvos.
+
+    Like ``_order_for_probe_support`` above, this is PHYSICS rather than
+    preference, which is the only justification this compiler accepts for
+    touching the agent's stated order. Two facts drive it:
+
+    * A cloud is worth what it denies over the following eight hours, and
+      the night is 21 hours long. Fired late it denies almost nothing —
+      so the salvo goes to hour one.
+    * Friendly fire is on, and the seat's slot index IS the hour. So of
+      the remaining plays, the ones that never enter the diamond are
+      sequenced first: that is free, it costs the agent nothing it asked
+      for, and it buys the plays that DO enter the diamond eight hours of
+      clock they would not otherwise have had.
+
+    What this deliberately does NOT do is drop a play for entering the
+    cloud. The reordering is the help; the warning in
+    :meth:`_Packer.note_friendly_fire` is the honesty; the choice stays
+    the agent's.
+    """
+    opts = list(opts or [])
+    salvos = [o for o in opts if str(getattr(o, "kind", "")) == "emp"]
+    if not salvos:
+        return opts, []
+
+    log: List[str] = []
+    rest = [o for o in opts if str(getattr(o, "kind", "")) != "emp"]
+    blast_cells = _emp_footprint(salvos, agent_view)
+
+    def _touches(o: Any) -> bool:
+        pay = getattr(o, "payload", None) or {}
+        cells = set()
+        for key in ("drop_at", "at", "probe_at"):
+            c = _cell(pay.get(key))
+            if c:
+                cells.add(c)
+        for key in ("cells", "comb_path"):
+            for c in (pay.get(key) or []):
+                cc = _cell(c)
+                if cc:
+                    cells.add(cc)
+        for w in (pay.get("waves") or []):
+            if isinstance(w, Mapping):
+                c = _cell(w.get("drop_at"))
+                if c:
+                    cells.add(c)
+                for cc in (w.get("cells") or []):
+                    c2 = _cell(cc)
+                    if c2:
+                        cells.add(c2)
+        return bool(cells & blast_cells)
+
+    # Stable within each bucket, so the agent's relative order survives
+    # everywhere it does not conflict with the cloud.
+    clear = [o for o in rest if not _touches(o)]
+    under = [o for o in rest if _touches(o)]
+
+    if len(salvos) > 1:
+        log.append(
+            f"you picked {len(salvos)} salvos; they fire in the order given, "
+            "each spending its own hour and its own charge"
+        )
+    log.append(
+        "EMP resequenced to hour 1 — a cloud is worth what it denies over "
+        "the next 8 hours, and one fired late denies nothing. Your relative "
+        "order for everything else is unchanged."
+    )
+    if under:
+        log.append(
+            f"{len(under)} of your plays enter your own blast diamond, so "
+            f"they were moved behind the {len(clear)} that do not. This buys "
+            "them clock; it does not make them safe — check the hour each "
+            "one now lands on against the cloud's clear time."
+        )
+    return salvos + clear + under, log
 
 
 def _complete_utilization(
@@ -924,121 +1313,6 @@ def _complete_utilization(
                 )
 
 
-def _route_around_claimed(
-    ordered: Sequence[Any],
-) -> Tuple[List[Any], List[str]]:
-    """Route later deploy options off ground earlier options already claim.
-
-    Runs are sequenced, so a later unit that walks an earlier unit's cell lands
-    on stripped "synthetic green" (-100) and fails ``no_wake_reentry``. We trim-
-    and-relocate on each option's OWN frozen geometry (never inventing cells
-    outside its footprint, per :meth:`_Packer._relocate_drop` / OBS-27): a drop
-    that lands on claimed ground is relocated within the option's own comb, and
-    a walk is cut at the first step that re-enters claimed ground. Probe/
-    supersede options and ``deny_only`` seam waves bank no ground and pass
-    through untouched.
-
-    This is the CROSS-OPTION analogue of the intra-pattern ``exclude`` set in
-    ``seam_control`` (which only sees one SeamPattern's own waves). It runs at
-    composition time — after selection and probe-support ordering, before per-
-    unit compilation — so ``emit_chain`` never has to reshape a route (it is
-    deliberately price-and-keep, OBS-27); the geometry it receives is already
-    wake-free.
-    """
-    claimed: set = set()
-    out: List[Any] = []
-    log: List[str] = []
-
-    def _interp(drop, comb):
-        cells = [drop]
-        cur = drop
-        for raw in comb or []:
-            nxt = _cell(raw)
-            if nxt is None or nxt == cur:
-                continue
-            for step in _steps_between(cur, nxt):
-                cells.append(step)
-                cur = step
-        return cells
-
-    def _rewrite(frame):
-        drop = _cell(frame.get("drop_at") or frame.get("at"))
-        if drop is None:
-            return frame
-        walk_key = next(
-            (k for k in ("comb_path", "cells", "walk") if frame.get(k)), None
-        )
-        comb = list(frame.get(walk_key) or []) if walk_key else []
-        fr = dict(frame)
-        # 1. relocate the drop off claimed ground, within the option's own comb
-        if drop in claimed:
-            cand = [
-                c for c in (_cell(x) for x in comb)
-                if c is not None and c not in claimed
-            ]
-            if cand:
-                moved = min(
-                    cand, key=lambda c: abs(c[0] - drop[0]) + abs(c[1] - drop[1])
-                )
-                log.append(
-                    f"routed drop {list(drop)} -> {list(moved)} off an earlier "
-                    "wave's ground (would land on synthetic green, -100)"
-                )
-                comb = [x for x in comb if _cell(x) != moved]
-                drop = moved
-                if "drop_at" in fr:
-                    fr["drop_at"] = [drop[0], drop[1]]
-                else:
-                    fr["at"] = [drop[0], drop[1]]
-            else:
-                log.append(
-                    f"drop {list(drop)} is on ground an earlier wave takes and no "
-                    "clean cell exists in its own footprint - KEPT (prices -100)"
-                )
-        # 2. trim the walk at the first step that re-enters claimed ground
-        if walk_key:
-            kept: List[Any] = []
-            cur = drop
-            for raw in comb:
-                nxt = _cell(raw)
-                if nxt is None or nxt == cur:
-                    kept.append(raw)
-                    continue
-                if any(s in claimed for s in _steps_between(cur, nxt)):
-                    log.append(
-                        "trimmed walk where it re-entered an earlier wave's "
-                        "stripped ground"
-                    )
-                    break
-                kept.append(raw)
-                cur = nxt
-            fr[walk_key] = kept
-        # 3. reserve this frame's resulting cells for later options to avoid
-        for c in _interp(drop, fr.get(walk_key) or []):
-            claimed.add(c)
-        return fr
-
-    for opt in ordered:
-        kind = str(getattr(opt, "kind", ""))
-        if kind not in _DEPLOY_KINDS:
-            out.append(opt)  # probe / supersede / weapons: bank no ground
-            continue
-        payload = dict(getattr(opt, "payload", None) or {})
-        if kind == "seam":
-            waves: List[Any] = []
-            for w in (payload.get("waves") or []):
-                if not isinstance(w, Mapping) or w.get("deny_only"):
-                    waves.append(w)  # denies via probe; banks no ground
-                    continue
-                waves.append(_rewrite(dict(w)))
-            payload["waves"] = waves
-        else:
-            payload = _rewrite(payload)
-        # Copy onto a fresh Option — never mutate the shared registry payload.
-        out.append(dataclasses.replace(opt, payload=payload))
-    return out, log
-
-
 def pack_recipe(
     selected_options: Sequence[Any],
     agent_view: Mapping[str, Any],
@@ -1051,6 +1325,7 @@ def pack_recipe(
     live_red_cells: Optional[set] = None,
     chaff_short: bool = False,
     complete: bool = True,
+    max_moves: int = MAX_MOVES,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Compile the thinker's resolved recipe into wire moves (deterministic).
 
@@ -1090,12 +1365,8 @@ def pack_recipe(
         selected_options or [], agent_view,
     )
     pk.log.extend(order_log)
-    # Cross-option wake exclusion (OBS-42, generalised): route later deploy
-    # options off ground earlier ones already take, so no unit walks another's
-    # stripped cells. Runs after ordering, before per-unit compilation, so the
-    # dispatch loop below compiles wake-free geometry.
-    ordered, claim_log = _route_around_claimed(ordered)
-    pk.log.extend(claim_log)
+    ordered, emp_log = _order_for_emp_cloud(ordered, agent_view)
+    pk.log.extend(emp_log)
     # Fix 2.4, CORRECTED. This block used to hoist every harvester outing ahead
     # of every standalone probe, on the argument that a probe buys tomorrow
     # while an outing banks tonight. True as ADVICE, and not ours to impose:
@@ -1129,4 +1400,11 @@ def pack_recipe(
             probe_hints=probe_hints,
             supersede_hints=supersede_hints,
         )
+    # LAST, and after the completion pass on purpose. A walk held for a
+    # cloud is spliced in at the hour that cloud lifts, and everything
+    # queued for those hours is pushed out behind it — so the more real
+    # work the night already has, the fewer WAITs it needs. Flushing
+    # before completion would pad with waits and then append the very
+    # work that should have filled them.
+    pk.flush_deferred(max_moves=max_moves)
     return pk.moves, pk.log

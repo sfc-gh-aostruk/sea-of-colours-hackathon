@@ -74,6 +74,7 @@ from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import (
     chat_schema as v10_chat_schema,
     frontier as frontier_mod,
     hazard_memory as hazard_memory_mod,
+    scorch,
     hint_dispersion as hint_dispersion_mod,
     journal as journal_mod,
     last_night as last_night_mod,
@@ -523,6 +524,11 @@ def run(
         if want_blue else []
     )
     harvesters_alive = len(probe_hints_mod._orbit_harvester_ids(agent_view))
+    # This fork's EMP salvos aim at rival probes, so they need the same
+    # stitched sighting list the supersede hints use. A probe launch is
+    # PUBLIC (§3.15), so this is legitimate intelligence and not a fog
+    # leak — it is the one thing you always know about a rival's night.
+    enemy_probes = probe_hints_mod._enemy_probe_cells(agent_view)
     option_registry = agency_mod.build_registry(
         agent_view=agent_view,
         seam_patterns=seam_patterns,
@@ -533,6 +539,7 @@ def run(
         blue_requested=want_blue,
         harvesters_alive=harvesters_alive,
         hazard_cells=hazard_cells,
+        enemy_probes=enemy_probes,
     )
     option_menu_block = agency_mod.format_menu_block(
         option_registry,
@@ -901,6 +908,13 @@ def run(
                 )
 
     # 8. Cap + submit.
+    #
+    # The salvo guard runs on the way out, after BOTH move sources have
+    # met: the packager sequences its own salvos to hour 1, the LLM mover
+    # does not sequence at all, and this is the only point that sees
+    # whatever actually got produced.
+    proposed, salvo_notes = scorch.enforce_early_salvo(proposed)
+    sanitizer_log.extend(salvo_notes)
     final_moves = proposed[:_MAX_MOVES]
     if submit:
         v7h._record_moves(session_id, player, day, final_moves)

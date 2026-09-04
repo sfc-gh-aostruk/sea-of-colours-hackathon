@@ -37,10 +37,12 @@ from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import chain_filte
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import comb_shapes
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import option_economics
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import packager
+from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import scorch
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import value_pyramid
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex.seam_control import (
     SeamPattern,
 )
+from sea_of_colours.game.tuning import probe_vision_radius
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex._v7.probe_hints import (
     _grid_dims,
     _vision_disk,
@@ -328,6 +330,425 @@ def _probe_option(idx: int, h: Mapping[str, Any]) -> Option:
         execute_lines=[f"PR{idx}: launch a probe at {at}"],
         payload=dict(h),
     )
+
+
+# ── EMP salvos (this fork's addition) ───────────────────────────────────
+#
+# Two plays, and they exist separately because they buy different things.
+# EMP_SCORCH kills eyes: rival probes die the hour the cloud forms, so it
+# is a strike with a body count. SCORCH_REDSIGN kills nothing — it makes
+# ground unusable for eight hours, which is only worth an hour of your
+# night when someone else is racing you for that ground.
+#
+# Both carry ``detail`` AND ``rationale`` (rung 3). Bare geometry is not a
+# decision: "emp (12,7)" tells the thinker nothing it can weigh against a
+# grab worth 400 RED, and an option that cannot be weighed does not get
+# picked. Same lesson as OBS-34 on the seam patterns.
+
+
+def _emp_scorch_option(
+    targets: Sequence[Tuple[int, int]],
+    *,
+    kills: int,
+    notes: Sequence[str],
+    cloud_hours: int,
+    covered: int,
+) -> Option:
+    aim = " ".join(_fmt_cell(c) for c in targets)
+    return Option(
+        option_id="EMP_SCORCH",
+        kind="emp",
+        title=f"EMP salvo -> {aim}",
+        detail=(
+            f"kills {kills} rival probe(s) on impact; {covered} cells go dark "
+            f"for {cloud_hours}h. Costs ONE hour-slot and one charge."
+        ),
+        # The recipe names the WIRE VERB, not prose. On a fallback night
+        # the LLM mover transcribes these lines straight into moves, and
+        # "launch an EMP" is not something it can transcribe — the whole
+        # salvo is one move whose ``at`` is a LIST of cells.
+        execute_lines=[
+            f"EMP_SCORCH: emp_launch at {[list(c) for c in targets]} "
+            "(ONE move, all cells in one `at` list, ONE charge)"
+        ],
+        payload={"targets": [list(c) for c in targets], "kind_note": "probes"},
+        rationale=(
+            "Blinding the finder is worth more than the cells. A probe you "
+            "kill tonight is vision the rival never converts into a landing "
+            "tomorrow, and probes die the hour the cloud forms — this is the "
+            "one weapon play with a body count rather than an area denial. "
+            "Freshest probe first: an old probe has already told them what is "
+            "there. " + " ".join(notes) + " "
+            "PRICE: the launch spends one of your 21 hours and the seat does "
+            "nothing else that hour, so weigh it against the RED the chain "
+            "you drop instead would have banked. Your own units are NOT "
+            "immune — the compiler will keep your plans out of the diamond "
+            "and tell you when it had to."
+        ),
+    )
+
+
+def _scorch_redsign_option(
+    targets: Sequence[Tuple[int, int]],
+    *,
+    notes: Sequence[str],
+    cloud_hours: int,
+    covered: int,
+) -> Option:
+    aim = " ".join(_fmt_cell(c) for c in targets)
+    return Option(
+        option_id="SCORCH_REDSIGN",
+        kind="emp",
+        title=f"EMP salvo over the RIVAL redsign -> {aim}",
+        detail=(
+            f"{covered} cells of THEIR smear unusable for {cloud_hours}h; "
+            "you walk in after the cloud lifts. Costs ONE hour-slot."
+        ),
+        execute_lines=[
+            f"SCORCH_REDSIGN: emp_launch at {[list(c) for c in targets]} "
+            "(ONE move, all cells in one `at` list, ONE charge)"
+        ],
+        payload={"targets": [list(c) for c in targets], "kind_note": "redsign"},
+        rationale=(
+            "A rival found a pure and you did not. You cannot out-search them "
+            "to it tonight, but you can make the ground cost them the night: "
+            "anything they land in the smear is disabled from the following "
+            "hour and banks nothing. " + " ".join(notes) + " "
+            "This kills NOTHING — it buys tempo, so it is only worth an hour "
+            "when you believe they are actually coming. "
+            "TWO WAYS THIS IS WRONG: if the sign is YOURS, scorching it locks "
+            "your own harvesters out of your own pure for 8 hours to deny a "
+            "rival who may not even be en route — take the grab instead. And "
+            "the cloud does not care whose it is, so plan your own walk-in "
+            f"for after hour {cloud_hours + 1}, not before."
+        ),
+    )
+
+
+def _blind_scorch_option(
+    shape: Mapping[str, Any],
+    *,
+    probe_at: Tuple[int, int],
+    comb: Sequence[Tuple[int, int]],
+    cloud_hours: int,
+    variant: str,
+) -> Option:
+    """The full shape: scorch around a hole, occupy it, walk out at dawn-ish.
+
+    The play SCORCH_REDSIGN cannot express. A blanket salvo denies the
+    smear to them and to you; this one denies it only to them, because
+    the three missiles are placed to leave one cell open and that cell is
+    where your probe and your harvester go.
+    """
+    hole = tuple(shape["hole"])
+    targets = [tuple(t) for t in shape["targets"]]
+    aim = " ".join(_fmt_cell(c) for c in targets)
+    open_extra = [c for c in shape.get("open_cells") or [] if tuple(c) != hole]
+    # The rim variant is the headline id because it is the better play;
+    # the tight one carries the suffix.
+    oid = "BLIND_SCORCH_T" if variant == "hole" else "BLIND_SCORCH"
+    # The difference between the two variants is not cosmetic, and the
+    # engine is blunt about it: landing a harvester on your own probe
+    # CRUSHES the probe ("1 probe crushed" in the drop frame). Putting
+    # both on the hole is one cell doing two jobs and costs you the eye
+    # the moment the harvester arrives; the rim keeps it lit all night.
+    where = (
+        "probe INTO the hole — simplest, but the landing CRUSHES that probe, "
+        "so you comb blind from hour 4 on"
+        if variant == "hole" else
+        "probe on the clear rim so the landing does NOT crush it — the disk "
+        "stays lit over the whole walk"
+    )
+    return Option(
+        option_id=oid,
+        kind="emp",
+        title=f"scorch {aim} leaving {_fmt_cell(hole)} open, then take it",
+        detail=(
+            f"{len(shape['covered'])} cells of THEIR smear dark for "
+            f"{cloud_hours}h; you hold {_fmt_cell(hole)} inside it — "
+            f"{where}, comb {len(comb)} cells out when the cloud lifts. "
+            "Salvo + probe + drop = 3 hour-slots up front."
+        ),
+        execute_lines=[
+            f"{oid}: emp_launch at {[list(c) for c in targets]} "
+            "(ONE move, all cells in one `at` list, ONE charge)",
+            f"{oid}: probe at {list(probe_at)}",
+            f"{oid}: drop a harvester at {list(hole)}",
+            f"{oid}: after the cloud clears, walk "
+            f"{[list(c) for c in comb]} and pick up",
+        ],
+        payload={
+            "shape": "occupy",
+            "targets": [list(c) for c in targets],
+            "hole": list(hole),
+            "probe_at": list(probe_at),
+            "comb": [list(c) for c in comb],
+            "open_cells": [list(c) for c in open_extra],
+        },
+        rationale=(
+            "AREA DENIAL YOU CAN STAND IN. A cell is only darkened when a "
+            "missile lands within its radius, and you choose where the "
+            "missiles land — so aim all three at least one cell further out "
+            "than the blast reaches and the middle stays clear. For the whole "
+            "cloud's life that hole is a place only you can use: your probe "
+            "there is not swept, your harvester there is not disabled, and no "
+            "rival can walk in to contest it. When the cloud lifts you are "
+            "already standing on the seam with a full comb ahead of you and "
+            "they are still in orbit. "
+            "THE HOURS IN BETWEEN ARE NOT DEAD TIME — the salvo, the probe "
+            "and the drop cost three slots, and the rest of the night is "
+            "yours: run your other harvesters somewhere else entirely while "
+            "the cloud does the holding. The compiler sequences it that way "
+            "and only inserts a wait if you genuinely gave it nothing to do. "
+            + (
+                f"Leakage: {len(open_extra)} other cell(s) of the smear are "
+                "also uncovered, and a rival can use those too. "
+                if open_extra else "The salvo covers the rest of the smear. "
+            ) +
+            "The comb is BLIND — the smear is an approximation, so it walks "
+            "toward the middle where a pure is likeliest, not at a cell you "
+            "have seen."
+        ),
+    )
+
+
+def _blind_scorch_options(agent_view: Mapping[str, Any]) -> List[Option]:
+    """Shaped salvos over a rival's redsign, best variant first."""
+    radius, missiles, cloud_hours = scorch.specs(agent_view)
+    region_cells, region, _notes = _rival_redsign_cells(agent_view)
+    if not region_cells or region is None:
+        return []
+    shape = scorch.shaped_salvo(
+        region_cells, radius=radius, missiles=missiles,
+    )
+    if shape is None:
+        return []
+
+    hole = tuple(shape["hole"])
+    width, height = _grid_dims(agent_view)
+    # Blind comb: the smear only approximates where the pure is, so walk
+    # toward its middle, which is where the jitter is likeliest to have
+    # put one. Ordered nearest-the-middle first because ``comb_path``
+    # reads the order as a value ranking.
+    cx = sum(c[0] for c in region_cells) / len(region_cells)
+    cy = sum(c[1] for c in region_cells) / len(region_cells)
+    value_cells = sorted(
+        set(tuple(c) for c in shape["covered"]) | {hole},
+        key=lambda c: (abs(c[0] - cx) + abs(c[1] - cy), c),
+    )
+
+    out: List[Option] = []
+    # Rim first: it keeps its probe alive through the walk, which on a
+    # blind comb over a jittered smear is the whole difference between
+    # walking toward value and walking toward the middle and hoping.
+    for variant, probe_at in _blind_scorch_probe_sites(
+        shape, agent_view, radius,
+    ):
+        comb = [
+            tuple(c) for c in comb_shapes.comb_path(
+                probe_at[0], probe_at[1], hole, width, height,
+                set(), value_cells, max_steps=6,
+            )
+        ]
+        if not comb:
+            continue
+        out.append(_blind_scorch_option(
+            shape, probe_at=probe_at, comb=comb,
+            cloud_hours=cloud_hours, variant=variant,
+        ))
+    return out
+
+
+def _blind_scorch_probe_sites(
+    shape: Mapping[str, Any], agent_view: Mapping[str, Any], radius: int,
+) -> List[Tuple[str, Tuple[int, int]]]:
+    """Where the enabling probe goes — two real choices, both offered.
+
+    Into the hole is the tidy answer: one cell does both jobs, and the
+    disk is centred on the walk. On the rim is the better answer when the
+    hole sits at the edge of the smear, because the probe's disk then
+    reaches further across the ground the harvester will actually walk —
+    and a rim cell outside the blast is just as safe as the hole is.
+    """
+    hole = tuple(shape["hole"])
+    covered = {tuple(c) for c in shape["covered"]}
+    if not covered:
+        return [("hole", hole)]
+    # Rim = clear of every diamond, but within probe vision of the hole so
+    # the drop is actually legal at hour start (§3.9.7).
+    reach = probe_vision_radius()
+    blast_cells = scorch.blast(
+        [tuple(t) for t in shape["targets"]], radius,
+    )
+    rim = sorted(
+        c for c in scorch.diamond(hole, reach, _grid_dims(agent_view))
+        if c not in blast_cells and c != hole
+        and abs(c[0] - hole[0]) + abs(c[1] - hole[1]) >= 2
+    )
+    if not rim:
+        return [("hole", hole)]
+    # Furthest clear cell still covering the hole: maximum extra disk.
+    return [("rim", rim[-1]), ("hole", hole)]
+
+
+def _rival_redsign_cells(
+    agent_view: Mapping[str, Any],
+) -> Tuple[List[Tuple[int, int]], Optional[Mapping[str, Any]], List[str]]:
+    for region in (agent_view.get("redsign") or []):
+        if not isinstance(region, Mapping) or region.get("mine"):
+            continue
+        cells = [
+            c for c in (scorch._cell(c) for c in (region.get("cells") or []))
+            if c
+        ]
+        if cells:
+            return cells, region, []
+    return [], None, []
+
+
+def _emp_options(
+    agent_view: Mapping[str, Any],
+    enemy_probes: Sequence[Mapping[str, Any]],
+) -> List[Option]:
+    """Every salvo worth offering tonight, best first.
+
+    Offered whenever the rack is non-empty and a target exists. NOT
+    filtered by whether the play looks wise — that judgement is the
+    thinker's, informed by doctrine and by the prices on the lines above.
+    Withholding the option would make the seat look like it declined a
+    play it was never shown, which is the exact failure this fork exists
+    to fix.
+    """
+    rack = scorch.stock(agent_view)
+    if rack["emp"] <= 0:
+        return []
+    radius, missiles, cloud_hours = scorch.specs(agent_view)
+    out: List[Option] = []
+
+    hits, notes = scorch.probe_targets(
+        agent_view, enemy_probes, missiles=missiles,
+    )
+    if hits:
+        live = {c for c in hits}
+        kills = sum(
+            1 for r in (enemy_probes or [])
+            if _cell_of(r.get("at")) in live
+        )
+        out.append(_emp_scorch_option(
+            hits, kills=kills, notes=notes, cloud_hours=cloud_hours,
+            covered=len(scorch.blast(hits, radius)),
+        ))
+
+    # The shaped play goes ABOVE the blanket one. Both deny the rival the
+    # same ground; only one of them also puts you on it, so a thinker
+    # reading top-down should meet that first.
+    out.extend(_blind_scorch_options(agent_view))
+
+    sign_hits, region, sign_notes = scorch.redsign_targets(
+        agent_view, radius=radius, missiles=missiles,
+    )
+    if sign_hits and region is not None:
+        out.append(_scorch_redsign_option(
+            sign_hits, notes=sign_notes, cloud_hours=cloud_hours,
+            covered=len(scorch.blast(sign_hits, radius)),
+        ))
+    return out
+
+
+def _cell_of(at: Any) -> Optional[Tuple[int, int]]:
+    return scorch._cell(at)
+
+
+# ── chaff flare ─────────────────────────────────────────────────────────
+#
+# EMP darkens ground; chaff freezes TIME. A flare (RULEBOOK §4.9.5) cancels
+# EVERY seat's action for CHAFF_DURATION_HOURS from the slot it occupies —
+# the launcher included, immune only on the launch hour itself. So it is
+# never an area play and never free: it costs the launcher a full
+# duration-hour window. The one shape where that trade wins is a JAM ON
+# EGRESS — a rival is committed to a multi-hour landing/lift on contested
+# ground, and OUR fleet has already banked, so the self-jam falls on hours
+# we did not need and theirs falls on the lift that would have scored.
+#
+# We cannot SEE a rival harvester (only probes persist between nights,
+# world_view §), so the trigger is the CONTEST signal we do have: rival
+# probes on a live seam mean rivals will commit units there. Offer it, do
+# not filter it — doctrine decides whether tonight is the night.
+def _chaff_option(duration: int) -> Option:
+    return Option(
+        option_id="CHAFF_JAM",
+        kind="chaff",
+        title=f"chaff flare — global {duration}h egress jam",
+        detail=(
+            f"freezes EVERY seat (you too) for {duration}h from the slot it "
+            "fires. Costs ONE charge and your own next "
+            f"{max(0, duration - 1)} hour(s). Fire it AFTER your fleet banks."
+        ),
+        execute_lines=[
+            "CHAFF_JAM: chaff_flare (ONE move, no target cell, ONE charge; "
+            "queue it AFTER your harvesters' work so the self-jam is free)"
+        ],
+        payload={"duration": int(duration)},
+        rationale=(
+            "A flare denies TEMPO, not ground. Its only winning shape is a jam "
+            "on a rival's EGRESS: they are committed to landing or lifting a "
+            "loaded harvester on contested ground this hour, and a flare voids "
+            f"that action — and the {duration - 1} carry-over hours — so the "
+            "cargo never banks. It is symmetric, so it is self-harm unless TWO "
+            "things hold: a rival is mid-commit, AND your own units are already "
+            "lifted or idle for the window (you are immune only on the launch "
+            "hour). PRICE: the launch slot plus "
+            f"{max(0, duration - 1)} self-jammed hours of your own — fire it "
+            "on an empty board and you have paid a charge to stall yourself. "
+            "It cannot be chained (a second flare inside the window is wasted)."
+        ),
+    )
+
+
+def _board_is_contested(
+    agent_view: Mapping[str, Any],
+    enemy_probes: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Is a rival watching a live seam — i.e. likely to commit a unit?
+
+    The chaff-worth signal we can actually read: an enemy probe near a
+    live redsign/pure means a rival is racing for ground they will land
+    or lift on, which is the only thing a flare profitably jams.
+    """
+    if not enemy_probes:
+        return False
+    signs: List[Tuple[int, int]] = []
+    for region in (agent_view.get("redsign") or []):
+        if not isinstance(region, Mapping):
+            continue
+        signs.extend(
+            c for c in (scorch._cell(c) for c in (region.get("cells") or []))
+            if c
+        )
+    if not signs:
+        # No public jackpot in play, but a standing enemy eye still marks a
+        # contested seam; let doctrine judge. Keep the bar low — offering is
+        # cheap, and withholding hides a play the seat was never shown.
+        return True
+    for r in enemy_probes:
+        c = _cell_of(r.get("at"))
+        if c is None:
+            continue
+        if any(max(abs(c[0] - sx), abs(c[1] - sy)) <= 4 for sx, sy in signs):
+            return True
+    return False
+
+
+def _chaff_options(
+    agent_view: Mapping[str, Any],
+    enemy_probes: Sequence[Mapping[str, Any]],
+) -> List[Option]:
+    """The chaff flare, when the rack holds one and the board is contested."""
+    if scorch.stock(agent_view).get("chaff", 0) <= 0:
+        return []
+    if not _board_is_contested(agent_view, enemy_probes):
+        return []
+    return [_chaff_option(scorch.chaff_specs(agent_view))]
 
 
 def _chain_option(idx: int, h: Mapping[str, Any], *, id_suffix: str = "") -> Option:
@@ -657,6 +1078,7 @@ def build_registry(
     blue_requested: bool = False,
     harvesters_alive: Optional[int] = None,
     hazard_cells: Collection[Any] = (),
+    enemy_probes: Sequence[Mapping[str, Any]] = (),
 ) -> "OrderedDict[str, Option]":
     """Assemble the ordered ID -> Option registry for this night.
 
@@ -667,8 +1089,23 @@ def build_registry(
     applied HERE rather than in the compiler (OBS-22): the same fact means
     "don't offer this" at menu-build time and "delete the play the agent already
     committed to" at compile time, and only the first is useful to the agent.
+
+    ``enemy_probes`` feeds the fork's EMP salvos. Salvos are registered
+    FIRST — ahead even of the grabs — for the same reason the compiler
+    fires them at hour one: a cloud's worth is what it denies over the
+    following eight hours, so a salvo the thinker reads last is a salvo
+    it plans around instead of planning with.
     """
     reg: "OrderedDict[str, Option]" = OrderedDict()
+
+    for opt in _emp_options(agent_view, enemy_probes):
+        reg[opt.option_id] = opt
+
+    # Chaff sits beside the salvos: also ordnance, also registered ahead of
+    # the grabs so the thinker plans WITH it rather than around it. Unlike a
+    # salvo it is a tempo denial, not an area one — see ``_chaff_options``.
+    for opt in _chaff_options(agent_view, enemy_probes):
+        reg[opt.option_id] = opt
 
     for p in seam_patterns or []:
         if isinstance(p, SeamPattern):
@@ -835,6 +1272,7 @@ def _apply_hazard(reg: "OrderedDict[str, Option]", hazard_cells: Collection[Any]
 
 # ── menu render (for the thinker prompt) ────────────────────────────────
 _KIND_HEADERS = [
+    ("emp", "EMP SALVOS — ids BLIND_SCORCH* / EMP_SCORCH / SCORCH_REDSIGN (you own a charge; ONE hour-slot, fires at hour 1, 8h cloud, kills probes, friendly fire ON. BLIND_SCORCH* shapes the salvo to leave a hole you then OCCUPY — prefer it: same denial, and you end the night on the ground)"),
     ("grab", "PRIORITY RED GRABS — ids GRAB* (mass/pure RED you can SEE or reach — the highest-value take, no probe; grab it FIRST)"),
     ("seam", "REDSIGN PATTERNS (multi-wave campaigns — pick & order by case)"),
     ("hotdrop", "HOT DROPS (probe+drop into fresh fog this night)"),
@@ -848,6 +1286,7 @@ _KIND_HEADERS = [
 # One-line "what this kind of play brings to the table" — rendered under each
 # group header so the thinker weighs the KIND before the individual options.
 _KIND_BLURB = {
+    "emp": "spend a charge you already own to blind or lock out a rival. Buys TEMPO, banks nothing tonight, and the hour it costs is an hour a harvester did not walk — so take it when denial is worth more than the chain you drop for it, and never over a CERTAIN pure/mass grab.",
     "grab": "mass/pure RED you can SEE — the highest-value bank, no probe, lowest risk; take it FIRST.",
     "seam": "redsign campaigns — SMASH your own pure; ATTACK a rival's (blind the finder + blind-walk the fresh, mass-rich seam). CONTEST_DENY is the demoted ahead/certainty play (confirm now, smash tomorrow).",
     "hotdrop": "spend a probe to open fresh fog and harvest BLIND this night.",

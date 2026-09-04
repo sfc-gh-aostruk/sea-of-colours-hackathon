@@ -16,9 +16,48 @@ The decision (thinker) schema is re-exported unchanged.
 from __future__ import annotations
 
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex._v7.chat_schema import (  # noqa: F401
-    _MOVE_ITEM,
+    _MOVE_ITEM as _V7_MOVE_ITEM,
     _DECISION_SCHEMA as _V7_DECISION_SCHEMA,
 )
+
+# ── the weapon verb ────────────────────────────────────────────────────
+#
+# The v7 move item allows drop / step / pickup / probe and nothing else,
+# and an ``enum`` in a strict structured-output schema is a hard wall:
+# the model cannot emit ``emp_launch`` even when the prompt asks for it,
+# so every earlier attempt at an EMP agent looked like the model refusing
+# and was actually the schema refusing. Widen it here rather than in
+# ``_v7/``, which is the frozen regression baseline.
+#
+# Note this only governs the LLM MOVER, which runs on fallback nights.
+# The normal path is the packager compiling ``EMP_SCORCH`` off the option
+# menu, and that never passes through this schema at all. Both have to
+# know the verb or the fallback silently disarms the seat.
+_MOVE_ITEM = {
+    **_V7_MOVE_ITEM,
+    "properties": {
+        **_V7_MOVE_ITEM["properties"],
+        "a": {
+            "type": "string",
+            "enum": [
+                "drop", "step", "pickup", "probe",
+                # {"a": "emp_launch", "at": [[x,y], ...]} — up to 3 cells
+                # for one charge (RULEBOOK §4.9.3).
+                "emp_launch",
+                # {"a": "chaff_flare"} — no target cell. A global egress
+                # jam for CHAFF_DURATION_HOURS from the slot it occupies
+                # (RULEBOOK §4.9.5). Only ``a`` is required, so the absent
+                # ``at``/``unit`` are valid.
+                "chaff_flare",
+            ],
+        },
+        # A salvo's ``at`` is a LIST of cells, where every other verb's is
+        # a single cell. ``_CELL`` is `array of integer`, which rejects
+        # the nested form, so the field is widened to accept either and
+        # the packager/sanitiser normalise it.
+        "at": {"type": "array"},
+    },
+}
 
 # v11 STRATEGY JOURNAL: two extra agent-authored strings on the plan pass.
 #   * ``intent``     — 1-2 sentences: what the agent is trying to do tonight +

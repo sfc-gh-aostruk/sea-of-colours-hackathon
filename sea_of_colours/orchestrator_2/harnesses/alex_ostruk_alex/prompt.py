@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import Any, List, Mapping, Sequence
 
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex import (
-    digest, doctrine, option_economics, out_of_grid, rules, world_view,
+    digest, doctrine, option_economics, out_of_grid, rules, scorch, world_view,
 )
 from sea_of_colours.orchestrator_2.harnesses.alex_ostruk_alex._v7.orbit_wishlist import (
     Wishlist,
@@ -156,6 +156,49 @@ _V10_THINKER_ADDENDUM = """\
   Leave "plan" empty (and omit "situational") only when NOTHING on the menu
   fits (rare); the mover then works from posture/targets as before.
 """
+
+
+def format_rack_block(agent_view: Mapping[str, Any]) -> str:
+    """What ordnance this seat owns tonight, and what one charge does.
+
+    Rung 1 of the weapons ladder. V12 carries the same numbers on the
+    view — ``orbit.weapon_stock`` has always been there — and prints them
+    nowhere, so its night phase plans as though the rack were empty. The
+    fix is this small: say it out loud.
+
+    Silent on an empty rack. A block reading "EMP 0, chaff 0" is noise on
+    most nights and, worse, it invites the model to reason about a
+    weapon it cannot fire.
+    """
+    rack = scorch.stock(agent_view)
+    if rack["emp"] <= 0 and rack["chaff"] <= 0:
+        return ""
+    radius, missiles, hours = scorch.specs(agent_view)
+    lines = ["YOUR RACK (bought in orbit — spending it is a NIGHT move):"]
+    if rack["emp"] > 0:
+        lines.append(
+            f"  EMP x{rack['emp']} — one charge fires {missiles} missiles at "
+            f"once; each darkens a radius-{radius} diamond "
+            f"({2 * radius * (radius + 1) + 1} cells) for {hours}h. Probes in "
+            "it are DESTROYED; harvesters in it are disabled hour by hour. "
+            "FRIENDLY FIRE IS ON."
+        )
+    if rack["chaff"] > 0:
+        chaff_hours = scorch.chaff_specs(agent_view)
+        lines.append(
+            f"  chaff x{rack['chaff']} — one flare freezes EVERY seat's action "
+            f"for {chaff_hours}h from the slot it fires (YOU included; immune "
+            "only on the launch hour). No target, no cloud — it jams TEMPO. "
+            "Pick CHAFF_JAM to spend one, and only to void a rival's landing/"
+            "lift while your own units are already clear."
+        )
+    if rack["emp"] > 0:
+        lines.append(
+            "  -> The salvo costs ONE of your 21 hour-slots: you fire OR you "
+            "move that hour, never both. Pick EMP_SCORCH / SCORCH_REDSIGN off "
+            "the menu to spend one; a charge left in the rack scores nothing."
+        )
+    return "\n".join(lines) + "\n"
 
 
 # ── Board blocks carried from v8 ───────────────────────────────────────
@@ -971,6 +1014,15 @@ def _assemble_doctrine(
     if opp_has_chaff or was_chaffed:
         text += "\n\n" + doctrine.DOCTRINE_BEWARE_CHAFF
 
+    # This fork's reason to exist. Gated on OWNING a charge, not on the
+    # rivals owning one: every block above is about surviving someone
+    # else's weapon, and none of them fire when the threat board is quiet
+    # — which is precisely the night a scorch is cheapest.
+    if scorch.stock(agent_view)["emp"] > 0:
+        text += "\n\n" + doctrine.DOCTRINE_SCORCH
+    if scorch.stock(agent_view)["chaff"] > 0:
+        text += "\n\n" + doctrine.DOCTRINE_CHAFF
+
     # FINAL NIGHT — supersede enemy probes. Gated to the ACTUAL final night
     # (A6): earlier nights must not see this or the agent starts declaring
     # "final night" and burning probes on denial while scouting still pays.
@@ -1078,6 +1130,16 @@ def build_prompt(
         format_state_block(
             agent_view, day=day, day_cap=day_cap, vault_score=vault_score,
         ), "\n",
+    ]
+    # YOUR RACK rides immediately under the fleet readout, because it is
+    # the same kind of fact: a thing the seat owns and can spend tonight.
+    # V12 never printed it anywhere, which is the whole reason its EMPs
+    # went home unfired — an agent cannot choose a weapon it was never
+    # told it has.
+    rack_block = format_rack_block(agent_view)
+    if rack_block:
+        parts += [rack_block, "\n"]
+    parts += [
         world_view.format_world_view_block(agent_view), "\n",
     ]
     # OUT-OF-GRID rides directly under WORLD VIEW: together they are the whole
