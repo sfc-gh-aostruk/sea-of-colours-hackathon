@@ -180,6 +180,20 @@ one baseline per board is the honest number. That gap is the exercise: a
 fork that learns to use the rack has something to show, and this is what
 it gets shown against.
 
+### What a rack does not test
+
+**Use, not procurement.** A rack is stamped straight onto the clone's
+`weapon_stock`, and `settle` submits empty orbit actions afterwards, so
+the lab asks "given an EMP, does this agent fire it?" and never "would
+it have bought one?". Deciding to spend blue on ordnance at dawn is a
+different question and this is not the instrument for it.
+
+That is also why a rack grants **no build fuel** (v1.43). It used to
+hand over 200–455 blue purity to make more weapons with, which a night
+can never spend — so it only sat in the hoard taking vault slots and
+moving the score, and armed-versus-unarmed was quietly also
+richer-versus-poorer. Arming now changes exactly one thing.
+
 ## Checking it still works
 
 ```bash

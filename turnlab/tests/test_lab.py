@@ -337,31 +337,51 @@ def test_a_missing_baseline_is_none_rather_than_a_crash():
     assert baseline.have("LAB_does_not_exist", "p1") is False
 
 
-def test_a_rack_stamps_stock_and_the_blue_to_build_more():
+def test_a_rack_stamps_stock_and_nothing_else():
     from turnlab import arms
 
     blob = {"weapon_stock": {"p1": {"emp": 0, "chaff": 0}}, "hoard_squares": {}}
     rack = arms.arm(blob, "p1", "both")
     assert rack.emp == 1 and rack.chaff == 1
     assert blob["weapon_stock"]["p1"] == {"emp": 1, "chaff": 1}
+    assert not blob["hoard_squares"].get("p1")
 
-    # BLUE arrives as hoard parcels, and has to carry the *_at_harvest
-    # keys or it reads as colourless downstream and goes uncounted —
-    # which looks exactly like arming silently not working.
-    parcels = blob["hoard_squares"]["p1"]
-    assert parcels, "no BLUE parcels were added"
-    assert sum(p["purity_at_harvest"] for p in parcels) == 455
-    assert all(p["tile_at_harvest"] == p["origin_tile"] for p in parcels)
+
+def test_arming_a_seat_does_not_also_make_it_richer():
+    """Armed vs unarmed has to differ by the weapon and by nothing else.
+
+    Racks used to arrive with build fuel, which a frozen night can never
+    spend — weapons are bought in orbit — so it only sat in the hoard
+    moving the score. A fork that shipped more then looked like a fork
+    that used its EMP well.
+    """
+    from turnlab import arms
+
+    def opened(rack_id):
+        blob = {"weapon_stock": {}, "hoard_squares": {"p1": [{"site_id": "kept"}]}}
+        arms.arm(blob, "p1", rack_id)
+        return blob["hoard_squares"]["p1"]
+
+    for rack in arms.RACKS:
+        assert rack.blue == 0, f"{rack.id} hands out build fuel it cannot spend"
+        assert opened(rack.id) == opened("empty"), (
+            f"opening with {rack.id} changes the hoard as well as the rack"
+        )
 
 
 def test_a_rack_cannot_overfill_a_hoard():
-    """An overfull hoard is not a state the engine can reach on its own."""
+    """An overfull hoard is not a state the engine can reach on its own.
+
+    No shipped rack grants BLUE any more, so this exercises ``_give_blue``
+    directly — it stays because closing the procurement gap would bring
+    the grant back, and the cap is the part that would be forgotten.
+    """
     from sea_of_colours.game.session import HOARD_CAPACITY
     from turnlab import arms
 
     blob = {"weapon_stock": {}, "hoard_squares": {"p1": []}}
     for _ in range(20):
-        arms.arm(blob, "p1", "both")
+        arms._give_blue(blob, "p1", 455)
     assert len(blob["hoard_squares"]["p1"]) <= HOARD_CAPACITY
 
 

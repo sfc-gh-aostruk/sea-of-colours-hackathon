@@ -29,8 +29,9 @@ class Rack:
     id: str
     emp: int = 0
     chaff: int = 0
-    #: Weapon-build fuel, as hoard purity. Stock alone lets a seat fire
-    #: what it was given; BLUE is what lets it decide to make more.
+    #: Weapon-build fuel, as hoard purity. Zero on every shipped rack —
+    #: see :data:`RACKS`. Kept because closing the procurement gap would
+    #: want it back, and ``_give_blue`` is not code worth rediscovering.
     blue: int = 0
     note: str = ""
 
@@ -39,13 +40,27 @@ class Rack:
 #: run into a question about salvo economics when the question worth
 #: asking is simpler: given a weapon, does this agent fire it at all? A
 #: second round only lets a fork look decisive by spending twice.
+#:
+#: And no BLUE, since v1.43. A rack used to arrive with 200–455 purity of
+#: build fuel, on the reasoning that stock lets a seat fire what it was
+#: given while BLUE lets it make more. In this lab it cannot: weapons are
+#: built by orbit actions (``BuildEmpAction`` / ``BuildChaffAction``) and
+#: a frozen turn is a night, with ``turn.settle`` submitting empty orbit
+#: actions afterwards. So the fuel was never spendable — it just sat in
+#: the hoard as two fat parcels, taking vault slots, showing up in the
+#: percept and moving the score.
+#:
+#: That made the one comparison the racks exist for dishonest: armed
+#: versus unarmed was also richer versus poorer, and a fork that shipped
+#: more looked like a fork that used its EMP well. Arming now changes
+#: exactly one thing.
 RACKS: tuple[Rack, ...] = (
     Rack("empty", note="no ordnance — the board exactly as it was frozen"),
-    Rack("chaff", chaff=1, blue=255,
+    Rack("chaff", chaff=1,
          note="one chaff: can cancel a lift, or strand a committed rival"),
-    Rack("emp", emp=1, blue=200,
+    Rack("emp", emp=1,
          note="one EMP: can deny ground for eight hours and time a walk-in"),
-    Rack("both", emp=1, chaff=1, blue=455,
+    Rack("both", emp=1, chaff=1,
          note="one of each — if the play does not change, nothing was learned"),
 )
 
