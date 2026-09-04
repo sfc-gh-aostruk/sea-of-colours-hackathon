@@ -40,6 +40,15 @@ Which module does what is in the fork guide
 This is the other view of the same thing: the files one *shipped* fork
 touched, so you can size the job before starting it.
 
+**Your tests live in there too** — `harnesses/<your_fork>/tests/`, not in
+the repo's `tests/`. They are outside `pytest.ini`'s `testpaths`, so run
+them with `python -m pytest sea_of_colours/orchestrator_2/harnesses/<your_fork>`.
+This is not tidiness (v1.43). `emp_harvest_test` put one file in the
+shared suite, and the next time its author edited that fork's doctrine
+the repo's only red belonged to one team's half-finished idea. With
+forty forks in a room that is everybody's suite, all day.
+`test_a_forks_tests_stay_inside_the_fork` fails if one drifts back.
+
 ### Gap 1 — firing the weapons V12 already buys
 
 `harnesses/emp_harvest_test/` is a real minted fork in this repo, and

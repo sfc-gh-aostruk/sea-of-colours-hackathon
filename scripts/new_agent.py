@@ -236,6 +236,12 @@ def main(argv: list[str] | None = None) -> int:
     print("  or list the turns and forks without a server:")
     print("    python scripts/soc.py lab")
     print()
+    # The rule exists because the shared suite is shared. One fork's
+    # work-in-progress red becomes forty people's red, all day (v1.43).
+    print("  your own tests go inside your folder, not in tests/:")
+    print(f"    {rel}/tests/test_*.py")
+    print(f"    python -m pytest {rel}")
+    print()
     print("  publish it (your folder only):")
     print(f"    python scripts/soc.py push")
     return 0
