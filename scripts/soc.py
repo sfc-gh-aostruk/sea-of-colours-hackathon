@@ -46,6 +46,46 @@ def _die(msg: str, *, fix: str = "") -> None:
     raise SystemExit(2)
 
 
+#: Commands built on the battles suite. They still work — nothing is
+#: removed — but the turn lab does the same job on real frozen turns
+#: rather than hand-built ones, so a new fork should start there.
+_SUPERSEDED = {
+    "suite": "open a frozen turn in the lab and invoke your fork on it",
+    "why": "the lab's divergence view diffs your take against V12's",
+    "diff": "the lab's divergence view, which diffs prompts too",
+    "list": "the lab's launcher lists every frozen turn and every fork",
+    # v1.42 — `weapons` and `league` are deliberately NOT here. They are
+    # the two reasons battles/ still exists, and the lab does not replace
+    # either. `weapons` is a static scan of a fork's source: it answers
+    # "could this agent ever fire?", which watching one turn cannot —
+    # a fork that never puts the option on its menu looks identical to
+    # one that considered the shot and declined. `league` ranks a field,
+    # and the lab scores nothing on purpose.
+}
+
+
+def _superseded(cmd: str) -> None:
+    """Say once, on stderr, that this command is on its way out.
+
+    v1.42 — deliberately a notice and not a removal. The battles suite
+    scores agents on ten constructed boards; the lab does it on turns
+    that were actually played, which is both more honest and less to
+    maintain. But `soc suite` is quoted in the attendee docs and in
+    every fork's minting output, so breaking it mid-hackathon would
+    strand people. It goes to stderr so `--json` output stays clean
+    for anything parsing it.
+    """
+    if os.environ.get("SOC_QUIET_DEPRECATED"):
+        return
+    instead = _SUPERSEDED.get(cmd)
+    print(f"note: `soc {cmd}` is superseded by the turn lab "
+          f"(python run_web.py, then /lab).", file=sys.stderr)
+    if instead:
+        print(f"      instead: {instead}", file=sys.stderr)
+    print("      it still works and nothing has been removed.",
+          file=sys.stderr)
+
+
 def _git(*args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=_REPO, capture_output=True, text=True, check=False
@@ -249,6 +289,96 @@ def cmd_why(args) -> int:
 
     _print_baseline_moves(res.battle_id)
     return 0
+
+
+def cmd_diff(args) -> int:
+    """One turn, one agent, against the frozen V12 turn for the same board.
+
+    The fast loop. ``soc suite`` answers "is my agent good" and costs
+    twenty minutes against a model; this answers "did the change I just
+    made do anything", which is the question you actually have every ten
+    minutes, and costs one model call.
+
+    The output leads with what a single run can prove — an option is in
+    the menu or it is not, a verb reached the engine or it could not —
+    and puts the score last with its caveat attached, because one sample
+    of a non-deterministic model is a direction and not a number.
+    """
+    import textwrap
+
+    from sea_of_colours.evals.battles import live
+
+    battle_id = args.board if "@" in args.board else (
+        f"{args.board}@{args.rung}+{args.loadout}"
+    )
+    try:
+        live.parse_battle_id(battle_id)
+    except ValueError as exc:
+        print(f"\n  {exc}\n")
+        return 2
+
+    print(f"\n  running {args.agent} on {battle_id} …", flush=True)
+    out = live.run(
+        battle_id, args.agent, runs=args.runs, use_cache=not args.fresh,
+    )
+    d = out["diff"]
+
+    print()
+    print("═" * 74)
+    print(f"  {battle_id}   ·   {args.agent}")
+    print("═" * 74)
+    took = "cached" if out["cached"] else f"{out['seconds']}s"
+    print(f"\n  {took}   ·   {out['runs']} run(s)   ·   "
+          f"source {out['fingerprint']}\n")
+
+    if not d.get("available"):
+        print(_para("NO COMPARISON", d.get("why", "")))
+        print(f"  Your score: {out['score']:.0%} of checks.\n")
+        return 0
+
+    print(_para("VERDICT", d["headline"]))
+
+    cat = d["categorical"]
+    print("  WHAT CHANGED STRUCTURALLY   (one run is enough to trust these)")
+    print("  " + "─" * 70)
+    _line("chose", cat["options_chosen"]["mine"])
+    _line("V12 chose", cat["options_chosen"]["theirs"])
+    _line("options gained", cat["options_gained"])
+    _line("options lost", cat["options_lost"])
+    if not cat["menus_comparable"]:
+        print(f"    {'menus':<18} not compared — the frozen turn records "
+              f"what V12 picked,\n{'':<23}not what it was offered")
+    _line("verbs gained", cat["verbs_gained"])
+    _line("verbs lost", cat["verbs_lost"])
+    fired = cat["weapons_fired"]
+    print(f"    {'ordnance':<18} you {fired['mine']}  ·  V12 {fired['theirs']}")
+    corr = cat["corrections"]
+    print(f"    {'corrections':<18} you {corr['mine']}  ·  V12 {corr['theirs']}")
+
+    ind = d["indicative"]
+    print()
+    print("  SAMPLED   (a direction, not a score)")
+    print("  " + "─" * 70)
+    s = ind["score"]
+    print(f"    {'checks':<18} you {s['mine']:.0%}  ·  V12 {s['theirs']:.0%}"
+          f"  ·  {s['delta']:+.0%}")
+    _line("only you failed", ind["checks_only_you_failed"])
+    _line("only V12 failed", ind["checks_only_v12_failed"])
+    _line("both failed", ind["checks_both_failed"])
+    print()
+    print(textwrap.fill(" ".join(ind["caveat"].split()), width=70,
+                        initial_indent="    ", subsequent_indent="    "))
+    print()
+
+    if args.moves:
+        _print_baseline_moves(battle_id)
+    return 0
+
+
+def _line(label: str, values) -> None:
+    """One row of the diff, or nothing when there is nothing to say."""
+    if values:
+        print(f"    {label:<18} {', '.join(str(v) for v in values)}")
 
 
 def _print_baseline_moves(battle_id: str) -> None:
@@ -521,6 +651,47 @@ def cmd_list(args) -> int:
     for a in br.selectable_agents():
         print(f"    {a['value']:<24} {a['label']}")
     print()
+    return 0
+
+
+# ── lab ─────────────────────────────────────────────────────────────
+
+
+def cmd_lab(args) -> int:
+    """The frozen turns your fork can be tested on, and how to open them.
+
+    The lab itself is a page, not a CLI — you pick a turn, cast the
+    seats and watch the night resolve in the real UI. This subcommand
+    exists so that someone who found `soc` first is told the lab is
+    there, and can see what is in it without starting a server.
+    """
+    from turnlab import boards as lab_boards
+    from turnlab import cast as lab_cast
+    from turnlab import store as lab_store
+
+    found = lab_boards.discover(lab_store.store())
+    if not found:
+        print("\n  no frozen turns yet.")
+        print("  grab one:  python -m turnlab grab <season> <day>\n")
+        return 0
+
+    print("\n  FROZEN TURNS")
+    for b in found:
+        d = b.as_dict()
+        seed = d.get("seed")
+        print(f"    {d.get('name') or d['id']}")
+        print(f"      {d['id']}   day {d['day']}   "
+              f"{d.get('seats_n') or '?'} players"
+              + (f"   seed {seed}" if seed is not None else ""))
+        if d.get("tests"):
+            print(f"      tests: {d['tests']}")
+
+    print("\n  FORKS THAT CAN PLAY THEM")
+    castable, _ = lab_cast.roster()
+    for a in castable:
+        print(f"    {a.label:<24} {a.display}")
+
+    print("\n  open one:  python run_web.py   then visit /lab\n")
     return 0
 
 
@@ -842,6 +1013,20 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--runs", type=int, default=1)
     w.set_defaults(fn=cmd_why)
 
+    df = sub.add_parser(
+        "diff", help="run ONE turn and diff it against stock V12 (~20s)")
+    df.add_argument("board", help="board id, or board@rung+loadout")
+    df.add_argument("agent")
+    df.add_argument("--rung", default="armed")
+    df.add_argument("--loadout", default="emp")
+    df.add_argument("--runs", type=int, default=1,
+                    help="3 narrows the noise; it still is not a score")
+    df.add_argument("--fresh", action="store_true",
+                    help="ignore the cache and re-run")
+    df.add_argument("--moves", action="store_true",
+                    help="print both move lists in full")
+    df.set_defaults(fn=cmd_diff)
+
     se = sub.add_parser(
         "season", help="play a full season headlessly and keep every card")
     se.add_argument("--p1", default=None, help="agent for seat p1")
@@ -870,6 +1055,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="boards, rungs, loadouts, agents").set_defaults(
         fn=cmd_list
     )
+    sub.add_parser("lab", help="frozen turns to test your fork on (start here)"
+                   ).set_defaults(fn=cmd_lab)
     sub.add_parser("doctor", help="check the kit before blaming your agent"
                    ).set_defaults(fn=cmd_doctor)
 
@@ -906,6 +1093,10 @@ def main(argv=None) -> int:
     if not getattr(args, "fn", None):
         parser.print_help()
         return 0
+    # One place, so a superseded command cannot quietly lose its notice
+    # by someone adding an early return to its body.
+    if getattr(args, "cmd", None) in _SUPERSEDED:
+        _superseded(args.cmd)
     return args.fn(args)
 
 

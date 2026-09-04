@@ -1,5 +1,21 @@
 # The redsign battles
 
+> **DEPRECATED (v1.42) — superseded by the turn lab (`turnlab/`).**
+> Nothing here has been removed and every command below still runs.
+> But the boards on this page are *constructed*: a `WorldBuilder`
+> arranges a seam, a rival and a rack into the situation we wanted to
+> ask about. The lab freezes turns that were actually played, so the
+> position an agent is handed is one a season really produced, with
+> the memories, the journal and last night's replay that came with it.
+> That is a better question to ask a fork, and it is a great deal less
+> to keep true as the rules move.
+>
+> Start at `python run_web.py` → `/lab`, or `python scripts/soc.py lab`
+> to see what is in it. Two things here have no lab equivalent yet —
+> `soc weapons` (the static "is your fork wired to fire" scan) and
+> `soc league` (ranking every submitted fork) — so this suite stays
+> until they do. See `turnlab/README.md`.
+
 Nine nights where a PURE was on the table and the decision was hard,
 plus one ordinary working night with no jackpot at all, each run
 against five rungs of escalating trouble.

@@ -1561,6 +1561,62 @@ could — both strings were individually correct-looking and the bug only exists
 when they are read together. It surfaced because a film pointed a camera at the
 card and held it there for four seconds.
 
+## 38. ✅ (DONE, v1.42) V12 read its opponent's journal as its own, on Snowflake only
+
+**Status (v1.42):** Fixed in `_v7/memory.py` (both the V12 copy and the
+`emp_harvest_test` fork's copy), and pinned by a repo-wide test.
+
+**Symptom:** none, which is the point. The agent's STRATEGY JOURNAL simply
+contained nights it had not played, phrased in the first person, and it
+reflected on them as its own. On a file store nothing was wrong; only
+Snowflake seasons were affected.
+
+**Root cause:** `SOC_AGENT_MEMORY` is a **hybrid (Unistore) table** with
+primary key `(SESSION_ID, PLAYER, KIND)`. `_hydrate_from_snowflake` loaded
+a seat's journal with
+
+```sql
+WHERE session_id = ? AND player = ? AND kind LIKE 'arena:day%'
+```
+
+and a **range predicate on a primary-key column makes the scan stop
+honouring the equality on the preceding key column**. Proven against the
+standard-table backup of the same rows that already exists in the account:
+
+| table | `player='p1' AND kind LIKE 'arena:day%'` |
+|---|---|
+| `SOC_AGENT_MEMORY_FDN_BAK` (standard) | 7 rows, all p1 — correct |
+| `SOC_AGENT_MEMORY` (hybrid) | 14 rows — p1's 7 **and p2's 7** |
+
+Scope is narrow and worth remembering: a range predicate on a **key**
+column breaks, on a **non-key** column it does not. That is why the only
+other `LIKE` in the repo — `season_name LIKE 'eval:%'` against the equally
+hybrid `SOC_GAME_SESSION` — is unaffected, verified by counting.
+
+The damage compounded quietly. Entries are filed into a dict keyed by day,
+so a rival's day-3 row overwrote the agent's own rather than appearing
+beside it. Nothing logged, nothing duplicated, no error — just the wrong
+memories, and prose plausible enough to read as your own.
+
+**Fix:** select on the two equality columns only and filter `kind` in
+Python, re-checking `PLAYER` on every row on the way through, since
+nothing in the result can be trusted to satisfy a predicate the scan
+dropped. At most ~10 rows per (session, seat), so there is no cost to it.
+
+**Tests:** `turnlab/tests/test_lab.py::test_no_query_filters_agent_memory_with_a_range_on_kind`
+parses every file's real SQL string literals (skipping docstrings, which
+discuss the bug at length) and fails on any `kind LIKE` / `STARTSWITH(kind`
+against this table. It is deliberately repo-wide rather than scoped to
+V12: `_v7/memory.py` is copied wholesale into every fork, so the bug
+ships again with each new agent unless the whole tree is held to it.
+
+**Not done:** finished seasons were not re-scored. The contamination is
+in what agents *read*, not in the engine's record of what happened, so
+standings stand; but a pre-v1.42 Snowflake season's agent reasoning
+should be read with this in mind.
+
+---
+
 | # | Area | Severity | Blocking multiplayer? |
 |---|------|----------|-----------------------|
 | 1 | Vision / trails (echo coverage — now fog-frozen) | ✅ done (v1.8) | no |
@@ -1600,3 +1656,4 @@ card and held it there for four seconds.
 | 35 | Fallout from 34: the caption is pinned to the bottom of the page, so a crop that keeps 492×308 of a 1280×800 frame left every close-up unnarrated. Caption now tracks the crop, and `say()` fails the shoot if it lands off the edge | ✅ done (v1.36) | no |
 | 36 | RULEBOOK §4.11 says a redsign persists after its seam is harvested out and depletion must be inferred; the engine retires it as `spent`. Design question, not a typo — flagged, not resolved | 🔴 open | no |
 | 37 | The cell card called a harvested square "banking scores 0" three lines under its own `-100` score block. Stale note from before green was priced in the tooltip; green costs 100/parcel at settlement and entry harvests are compulsory | ✅ done (v1.37) | no |
+| 38 | On Snowflake, V12 loaded its opponent's STRATEGY JOURNAL as its own: `SOC_AGENT_MEMORY` is a hybrid table and a range predicate on the key column `kind` makes the scan drop the equality on `player`. Filter `kind` in Python instead; a non-key column is unaffected | ✅ done (v1.42) | no |

@@ -133,11 +133,15 @@ sea_of_colours/
                Markdown card per turn (orbit and night kept separate).
   cards.py     Renders one turn as Markdown, from a store row or a harness
                envelope. Shared by seasons.py and /api/game/{id}/agent-cards.
-  battles/     The redsign battles — 10 boards x 5 difficulty rungs x 4
-                 weapon loadouts, all offline. The hackathon's scoring suite;
-                 see its README.md. Nine are redsign nights; the tenth,
-                 plain_night_armed, is the no-jackpot control that asks what
-                 an agent does with a rack on an ordinary seam.
+  battles/     DEPRECATED (v1.42) — superseded by turnlab/. Still runs, still
+                 tested, nothing removed; don't build on it and don't spend
+                 effort keeping its constructed boards in step with a rules
+                 change. `soc weapons` and `soc league` have no lab
+                 equivalent yet, which is the only reason it is still here.
+               The redsign battles — 10 boards x 5 difficulty rungs x 4
+                 weapon loadouts, all offline. Nine are redsign nights; the
+                 tenth, plain_night_armed, is the no-jackpot control that
+                 asks what an agent does with a rack on an ordinary seam.
       baseline/  Stock V12's own run over the lot, frozen and checked in, so
                  `soc why` can show a fork what it forked without a PAT or a
                  model call. Re-record it when a board changes —
@@ -176,15 +180,34 @@ sea_of_colours/
                            must obey. Fork it with scripts/new_agent.py; never
                            edit it in place — it is the baseline forks are
                            measured against.
+turnlab/         The turn lab (v1.42) — the way a fork gets tested now, and
+                 the replacement for evals/battles/. A *frozen turn* is a real
+                 turn out of a real season, snapshotted the instant before a
+                 seat planned; you cast any fork into any seat, watch the
+                 night resolve in the ordinary game UI, and diff your take
+                 against V12's. See its README.md.
+                 Three rules it exists to keep. It writes only to
+                 turnlab/data/ — never seasons/, never Snowflake, so a lab
+                 run cannot touch a live game. It reuses the real UI and the
+                 real night simulator rather than drawing its own, so what
+                 you watch is what the engine did. And it adds no scoring:
+                 the question is "how is my fork different", not "what mark
+                 did it get".
+                 Boards are minted (mint.py, a played season frozen per turn)
+                 or grabbed (rewalk.py, a finished season replayed to a day).
+                 Minting is reproducible — same arguments, same boards — and
+                 test_mint_is_reproducible.py keeps it that way.
 server/
   app.py         FastAPI thin proxy (/, /api/game/*); static mounted no-cache
   static/        Web UI — app.js, styles.css, station.js, index.html
 scripts/         deploy_soc_schema.py, run_season*.py, run_evals.py, run_battery.py
-  soc.py         the hackathon front door — new / list / suite / why / weapons
-                 / season / doctor / push / league. One entry point on purpose;
-                 point attendees (and their coding agents) here, not at four
-                 scripts. `season` supersedes run_season.py for anything that
-                 needs a fork or an LLM seat — that script is heuristic-only.
+  soc.py         the hackathon front door — new / lab / season / doctor / push,
+                 plus the deprecated battles commands (suite / why / diff /
+                 weapons / league / list, which print a notice). One entry
+                 point on purpose; point attendees (and their coding agents)
+                 here, not at four scripts. `season` supersedes run_season.py
+                 for anything that needs a fork or an LLM seat — that script
+                 is heuristic-only.
   films/         the tutorial film rig — self-contained, see its README.md
 snowflake/       SOC_* schema, views, procedures, agent SQL
 ```

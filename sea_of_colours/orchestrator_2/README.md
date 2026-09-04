@@ -29,6 +29,57 @@ scoreboard.
 experiment. Change it directly and you can no longer tell whether your
 agent is better than the baseline, because there is no baseline left.
 
+## What a fork actually edits
+
+Everything is inside your own `harnesses/<your_fork>/`. Registering a
+fork edits nothing shared, so that directory is the whole surface — which
+is also why a room full of teams can work in one repo.
+
+Which module does what is in the fork guide
+([Where to make changes](harnesses/tabula_v12/README.md#where-to-make-changes)).
+This is the other view of the same thing: the files one *shipped* fork
+touched, so you can size the job before starting it.
+
+### Gap 1 — firing the weapons V12 already buys
+
+`harnesses/emp_harvest_test/` is a real minted fork in this repo, and
+the table below is its whole diff against V12 — eight files, one of them
+new. Run `python scripts/soc.py weapons --agent <yours>` to see which
+rung you are on; the ladder is ordered because each rung is invisible
+until the one below it works.
+
+The same job written out line by line, with the wrong turns kept in, is
+[`docs/TEACHING_WEAPONS.md`](../../docs/TEACHING_WEAPONS.md).
+
+| File | Change | Why it is on the list |
+| --- | --- | --- |
+| `prompt.py` | A `YOUR RACK` block in the STATE the model reads | Rung 1. `weapon_stock` is on the view and V12 prints it nowhere, so the night phase plans as though the rack were empty |
+| `scorch.py` *(new)* | Blast geometry, target picking, friendly-fire guard | Four other modules need the same footprint maths; one copy of it |
+| `agency.py` | Register `EMP_SCORCH`, `SCORCH_REDSIGN`, `BLIND_SCORCH` | The model picks ids off a menu. A play that is not on the menu cannot be chosen, however good the doctrine |
+| `doctrine.py` | `DOCTRINE_SCORCH` — when to spend a charge, and when not to | Every other doctrine block is about surviving someone else's weapon |
+| `packager.py` | Compile the new ids into `emp_launch` moves | Ids → concrete moves. Also sequences the salvo and keeps your own fleet out of the cloud |
+| `chat_schema.py` | Widen the move enum with `emp_launch`; loosen `at` to take a salvo's list of cells | Only governs the **fallback** LLM mover — but a strict enum is a hard wall, so without this a fallback night silently disarms the seat |
+| `harness.py` | Pass enemy probe sightings into planning; hoist the salvo to hour 1 | Both move sources meet here, and it is the only point that sees what was actually produced |
+| `orbit_policy.py` | Buy the EMP on the first day it can be paid for | You cannot fire what you never bought — and the two halves have to move together, or BLUE goes into a rack instead of harvesters |
+
+**Do not make these edits in `_v7/`.** Two of the rows above have an
+obvious-looking home there — the STATE block is built in `_v7/prompt.py`
+and the move enum is defined in `_v7/chat_schema.py` — and the fork
+changed neither. `_v7/` is the frozen substrate the regression tests
+measure against; the fork imports the piece it needs and overrides it in
+the top-level module of the same name. Edit `_v7/` and you still get an
+agent, but you no longer have a baseline to tell you whether it is
+better.
+
+### Gap 2 — taking BLUE seriously
+
+Smaller, and mostly numbers rather than new code. The five levers that
+hold blue down are tabulated in
+[Gap 2](harnesses/tabula_v12/README.md#gap-2--it-treats-blue-as-an-afterthought);
+two of them are constants at the top of `value_pyramid.py`, and the
+other three gate *when* blue is even offered (`prompt.py`, `harness.py`,
+`doctrine.py`).
+
 ## Registering by hand
 
 The scaffold just automates two edits to `binding_registry.py`. If you

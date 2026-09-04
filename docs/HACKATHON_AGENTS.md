@@ -1,7 +1,7 @@
 # Building and shipping your agent
 
 Everything you need for the day, in the order you need it. If you read
-one section, read [Publishing](#5-publishing-your-agent) — it is what
+one section, read [Publishing](#6-publishing-your-agent) — it is what
 gets you into the league.
 
 ---
@@ -58,23 +58,24 @@ Most people will do this through a coding assistant rather than by hand.
 That works well, and the kit is built for it — but point the assistant
 at the fork's README first, and give it something concrete to aim at:
 
-> "Read `harnesses/redwatch_reaper/README.md`. Then run
-> `python scripts/soc.py suite --agent redwatch_reaper --runs 3` and fix
-> the predicate that fails most often."
+> "Read `harnesses/redwatch_reaper/README.md`. Then open the turn lab,
+> run my fork and stock V12 on **Beaten to the Seam**, and use the
+> divergence view to find the first place they disagree."
 
 ### The two gaps worth knowing about
 
 Stock V12 ships with two deliberate holes. They are the exercise:
 
-1. **It buys weapons and never fires them.** Run
-   `soc suite --loadout empty,both` and compare. If the two scores are
-   identical, your agent has not learned to fight — and that is the
-   largest single scoring opportunity in the kit. See
-   [the four rungs](#the-four-rungs-of-firing-a-weapon) below.
-2. **Its plan menu cannot express some correct plays.** Several boards
-   were captured precisely because the agent's own reasoning found the
-   right answer and the option list had no way to say it. `soc why
-   <board>` quotes what happened.
+1. **It buys weapons and never fires them.** Open any lab turn twice —
+   once with the seat's rack empty, once with an EMP in it — and see
+   whether a single order changes. If nothing does, your agent has not
+   learned to fight, and that is the largest single opportunity in the
+   kit. See [the four rungs](#the-four-rungs-of-firing-a-weapon) below.
+2. **Its plan menu cannot express some correct plays.** Sometimes the
+   agent's own reasoning finds the right answer and the option list has
+   no way to say it. The divergence view compares the two menus option
+   by option, which is where this shows up: your fork was never offered
+   the move it needed.
 
 ### The four rungs of firing a weapon
 
@@ -134,53 +135,55 @@ those three is it actually the model's judgement.
 
 ---
 
-## 3. Score it
+## 3. Test it on a frozen turn
 
 ```bash
-python scripts/soc.py suite --agent redwatch_reaper --runs 3
+python run_web.py            # then open http://127.0.0.1:8000/lab
 ```
 
-Ten boards, escalating rungs, offline. Then, on anything that failed:
+A **frozen turn** is a real turn out of a real season, snapshotted the
+instant before a seat planned: the same board, the same fog, the same
+memories and the same journal that seat actually had. Pick one, choose
+who sits in each seat — stock V12, a heuristic, your fork — optionally
+hand a seat a weapon, and hit go. You watch the night resolve in the
+ordinary game UI, because it *is* the ordinary game UI; the lab does not
+draw its own.
+
+There is no score, and that is deliberate. A mark out of ten tells you
+almost nothing you can act on. The question worth asking is **how is my
+fork different from V12 on this exact position, and why** — so the lab
+answers that one instead, in a divergence view that diffs your agent's
+prompt, reasoning, plan and issued orders against a frozen V12 take of
+the same turn. The baselines are checked in, so that comparison costs no
+credentials and no waiting.
+
+Six nights ship in the library:
+
+| Night | What it is for |
+|---|---|
+| **Vanilla Opener** · day 1 | the cold open — no map, no seam, no history, just an opening move |
+| **Early Redsign Battle** · day 2 | both seats found the same seam on night one — who commits, who blinks |
+| **Beaten to the Seam** · day 3 | you just lost a race 6-to-1, and a second seam is up with you better placed |
+| **Second Wind** · day 4 | the trailing seat just banked the best lift of the game and doubled its fleet |
+| **After the Gold Rush** · day 4 | both seams are spent — what does an agent do with no jackpot |
+| **Vetus Lantern** · day 6 | the leader is discovered and cannot hide — blind attack, EMP denial, chaff |
+
+`python scripts/soc.py lab` lists them, and the forks that can play them,
+without starting a server. To add your own, grab a day out of a season
+you have already played:
 
 ```bash
-python scripts/soc.py why crowded_echo_seam redwatch_reaper
+python -m turnlab grab <season> <day>
 ```
-
-which prints the question, the canonical play, every move your agent
-made against every check — and then **stock V12's own orders on the same
-battle**, so you can read the two side by side and see exactly what it
-did differently. That comparison comes from a frozen run checked into
-[`evals/battles/baseline/`](../sea_of_colours/evals/battles/baseline/README.md),
-so it needs no credentials and no waiting.
-
-### Nine jackpot nights and one ordinary one
-
-Nine of the ten boards are redsign nights — a pure is on the table and
-the decision is hard. The tenth, **`plain_night_armed`**, is the control
-group: no pure, no sign, nothing dramatic, an ordinary working seam with
-ordnance in the rack. It is there because an agent that only performs on
-jackpot nights is not actually good, and because it is the one board
-that asks what your agent does with a weapon when there is no jackpot to
-justify it.
-
-Nothing on that board scores weapon use, deliberately. If you told your
-agent "charges are for redsign nights only", silence there is the
-correct result and you have just proved your doctrine works. If you did
-not tell it anything, silence means the rack is decoration. The ORDNANCE
-section of the report tells you which battles were armed and silent; the
-reading is yours.
-
-See [the suite's README](../sea_of_colours/evals/battles/README.md) for
-the rungs, the loadouts, and how scoring works.
 
 Two things to be careful about:
 
-- **Use `--runs 3` or more.** An LLM is not deterministic, and a board
-  it passes three times in five is a board it does not understand. That
-  distinction is invisible at `--runs 1`.
+- **Run a turn more than once.** An LLM is not deterministic, and a
+  position it plays well once in three is a position it does not
+  understand.
 - **Watch for the fallback warning.** If your harness cannot reach its
-  model it plays a built-in safety net, and that score is not yours. The
-  report says so in a box you cannot miss.
+  model it plays a built-in safety net, and that is not your agent's
+  reasoning. The lab says so rather than quietly showing you orders.
 
 If something looks wrong with the kit rather than your agent:
 
@@ -188,35 +191,36 @@ If something looks wrong with the kit rather than your agent:
 python scripts/soc.py doctor
 ```
 
+### The old scoring suite
+
+`soc suite`, `soc why` and `soc diff` scored a fork against ten
+*constructed* boards — positions assembled to pose a question, rather
+than positions a season actually reached. They still run and still pass
+their tests, but they are **deprecated as of v1.42** and print a notice
+saying so. The lab replaced them because a real frozen turn asks a
+better question and is far less to keep true as the rules move. See
+[the suite's README](../sea_of_colours/evals/battles/README.md) if you
+need the rungs and loadouts.
+
 ---
 
-## 4. Watch the turn back
+## 4. Read the divergence
 
-A score tells you *that* a board went wrong. To see why, record the run
-and open the battle room:
+Watching the night tells you *that* a turn went differently. To see why,
+open the divergence view from the turn you just ran. It puts your fork's
+take beside stock V12's on the same frozen turn and diffs the whole
+thing, in the order you should debug in:
 
-```bash
-python scripts/soc.py suite --agent redwatch_reaper --runs 3 --record
-open reports/battles/index.html      # or http://127.0.0.1:8000/battles/
-```
-
-Every turn in the run is replayable. Pick a board on the left, and you
-get the position your agent was looking at with a transport under it —
-step through hour by hour, or press play and watch the night. `FOG`
-swaps ground truth for what your seat could actually see when it
-planned, which matters more than it sounds: plenty of "bad" plays are an
-agent behaving sensibly on information it did not have.
-
-Down the right is the card, in the order you should debug in:
-
-1. **Situation** and **the canonical play** — what was asked, and what a
-   good house does here.
-2. **Scored *n*%** — every predicate, with the reason it failed.
-3. **Orders issued** — what actually reached the engine. Click a line to
-   jump the board to that hour.
-4. **Corrections** — where the compiler rewrote or dropped an order.
-5. **Options** — the menu it chose from, and what it picked.
-6. **Reasoning**, then **the prompt it was given**, verbatim.
+1. **Orders issued** — what actually reached the engine, colour-coded
+   where the two agents disagree.
+2. **Corrections** — where the compiler rewrote or dropped an order.
+3. **Options** — the menu each agent chose from, compared by option id,
+   so you can see whether yours was even *offered* the play V12 took.
+4. **Reasoning** — the thinker pass, in full.
+5. **The prompt**, verbatim and uncut, broken into the three sections
+   the agent actually receives, with the parts that differ from V12
+   marked. A `[ RAW ]` toggle gives you the whole thing as one
+   continuous diff if you would rather read it straight.
 
 That order is the debugging order, and it is worth following even when
 you are sure you know the answer. A bad play with sound reasoning is a
@@ -224,17 +228,21 @@ you are sure you know the answer. A bad play with sound reasoning is a
 problem. Only when the menu and the prompt are both right is the model
 itself worth blaming. Check the menu before you blame the model.
 
-**Bakes stack up.** The `BAKE` dropdown lists every recorded run, newest
-first, so the real loop is: record, watch, change one thing in your
-fork, record again, then open the same board in both bakes and see
-whether the change did what you meant. That comparison is the whole
-point of the room.
+The board also carries the plan overlay: hover a seat's invocation and
+its proposed orders paint onto the map in the same graphics the game
+uses for a queued policy — numbered path badges, dashed legs, probe and
+EMP markers, blast footprints. Two forks' plans on one position, one at
+a time, is usually faster than reading either of them.
+
+`[ CARD ]` and `[ CARD .MD ]` give you the same turn as the Markdown
+card a full season would have produced, if you want to keep it or paste
+it somewhere.
 
 ---
 
 ## 5. Play a whole season
 
-The suite and the room are for one night at a time. They will not tell
+The lab is for one night at a time. It will not tell
 you whether your agent can hold a **season** together — bank early
 enough, buy the right thing on day two, still be scoring on the last
 night. An agent can play every individual night well and still finish
@@ -279,9 +287,9 @@ prints the exact command to use.
 in play order. Orbit and night are separate files, because buying is
 half the game and a season lost on day two is usually lost in orbit.
 Each card has the rationale, the orders, the option menu, what the model
-said and the prompt it was given — the same things the battle room
-shows, in a form you can read in an editor or paste to a coding agent
-and ask what went wrong.
+said and the prompt it was given — the same things the lab shows, in a
+form you can read in an editor or paste to a coding agent and ask what
+went wrong.
 
 The same cards also come out as **`all-cards.html`**: one page with a
 day rail down the side and a coloured tab per section, so finding "day
@@ -305,8 +313,8 @@ A few flags worth knowing:
 | `--json` | machine-readable result |
 
 **A season with an LLM seat takes real minutes**, since every seat calls
-a model every night. Use the suite for the fast loop and a season to
-confirm the change held up. If the run reports turns that *fell back*,
+a model every night. Use the lab for the fast loop — one turn is about
+twenty seconds — and a season to confirm the change held up. If the run reports turns that *fell back*,
 your agent never reached its model and that part of the season is the
 built-in heuristic, not you — check `soc doctor`.
 
@@ -395,13 +403,20 @@ is partly the safety net's.
 | command | what it does |
 |---|---|
 | `soc new --team T --name N --participants "..."` | fork V12 into your own agent |
-| `soc list` | boards, rungs, loadouts, and every registered agent |
-| `soc suite --agent A` | score an agent against the battles |
-| `soc suite --agent A --record` | ...and freeze every turn for the battle room |
-| `soc why BOARD [AGENT]` | explain a board, and optionally play it |
+| `soc lab` | the frozen turns, and every fork that can play them |
+| `soc season` | play a whole headless season with your fork in a seat |
 | `soc weapons --agent A` | which of the four firing rungs you are stuck on |
 | `soc doctor` | check the kit before blaming your agent |
 | `soc push` | publish your agent (your folder only) |
 | `soc league` | run every submitted agent and rank them |
+
+Testing a fork happens in the lab rather than at the command line —
+`python run_web.py`, then `/lab`, or the **Turn Lab** button on the
+landing page. `python -m turnlab grab <season> <day>` adds a night of
+your own to the library.
+
+Deprecated as of v1.42, still working, and superseded by the lab:
+`soc suite`, `soc why`, `soc diff`, `soc list`. Each prints a notice
+naming what to use instead.
 
 Every command takes `--help`, and `soc` on its own lists them all.
