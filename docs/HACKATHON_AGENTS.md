@@ -143,7 +143,11 @@ python run_web.py            # then open http://127.0.0.1:8000/lab
 
 A **frozen turn** is a real turn out of a real season, snapshotted the
 instant before a seat planned: the same board, the same fog, the same
-memories and the same journal that seat actually had. Pick one, choose
+memories and the same journal that seat actually had — the journal
+travels inside the board, so it costs no account and no credentials.
+Only **Vetus Lantern** carries one, because it is the only night in the
+library an LLM played; the rest were played by RED_HARVEST, which keeps
+no diary, and their agents are told so rather than told nothing. Pick one, choose
 who sits in each seat — stock V12, a heuristic, your fork — optionally
 hand a seat a weapon, and hit go. You watch the night resolve in the
 ordinary game UI, because it *is* the ordinary game UI; the lab does not
@@ -166,7 +170,7 @@ Six nights ship in the library:
 | **Beaten to the Seam** · day 3 | you just lost a race 6-to-1, and a second seam is up with you better placed |
 | **Second Wind** · day 4 | the trailing seat just banked the best lift of the game and doubled its fleet |
 | **After the Gold Rush** · day 4 | both seams are spent — what does an agent do with no jackpot |
-| **Vetus Lantern** · day 6 | the leader is discovered and cannot hide — blind attack, EMP denial, chaff |
+| **Vetus Lantern** · day 6 | the leader is discovered and cannot hide — blind attack, EMP denial, chaff; the one night that carries five nights of real V12 journal |
 
 `python scripts/soc.py lab` lists them, and the forks that can play them,
 without starting a server. To add your own, grab a day out of a season

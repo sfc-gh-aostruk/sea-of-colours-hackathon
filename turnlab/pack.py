@@ -24,6 +24,12 @@ exactly like an unpacked one.
 
     python -m turnlab.pack            # report what it would save
     python -m turnlab.pack --write    # do it
+
+Only frames are touched. The other half of making a board shippable is
+:mod:`turnlab.freeze`, which captures the seat's journal into it — the
+same problem (the board travels, its season does not) solved in the
+opposite direction, by adding a small file rather than shrinking a
+large one.
 """
 from __future__ import annotations
 

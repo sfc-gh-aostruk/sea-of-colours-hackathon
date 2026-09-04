@@ -281,39 +281,121 @@ def _agrees(board_id: str, candidate: str, store: Any) -> bool:
     return False
 
 
-def _played_by(board_id: str, seat: str) -> str:
-    """Which agent held ``seat`` in the season this board was cut from.
+def _board_agents(board_id: str) -> dict:
+    """``{seat: agent}`` for the cast a board was frozen with.
 
-    Read off the board's own state, which carries the cast it was frozen
-    with. Empty when the board cannot be read or the seat is not in it —
-    the caller treats that as "no opinion" and carries on looking.
+    Read off the board's own state rather than inferred. Empty when the
+    board cannot be read — callers treat that as "no opinion" and carry
+    on looking.
     """
     try:
         from . import store as lab_store
 
         blob = (lab_store.store().load_session(board_id) or {}).get("json_state")
     except Exception:
-        return ""
+        return {}
     while isinstance(blob, (str, bytes)):
         try:
             blob = json.loads(blob)
         except Exception:
-            return ""
+            return {}
     agents = (blob or {}).get("agents") or {}
-    return str(agents.get(str(seat)) or "")
+    return {str(k): str(v or "") for k, v in agents.items()} if agents else {}
+
+
+def seats_of(board_id: str) -> list[str]:
+    """Every seat on a board, in seat order."""
+    return sorted(_board_agents(board_id))
+
+
+def _played_by(board_id: str, seat: str) -> str:
+    """Which agent held ``seat`` in the season this board was cut from."""
+    return _board_agents(board_id).get(str(seat), "")
+
+
+def sources_of(board_id: str) -> list[tuple[str, Any]]:
+    """Every ``(full session id, store)`` that could be this board's season.
+
+    Usually one. Two when a season was played locally and also exists in
+    an account — which is not hypothetical: a season played on the file
+    backend keeps its journal in a process-global dict and writes no
+    ``SOC_AGENT_MEMORY`` rows at all, so the copy in ``seasons/``
+    corroborates the board perfectly and has no memory to give. Stopping
+    at the first match therefore finds the season and loses the journal.
+
+    Callers that want a single answer still take the first; the freezer
+    tries them all and keeps whichever actually held the memory.
+    """
+    parts = str(board_id or "").split("_")
+    stub = parts[1] if len(parts) >= 4 else ""
+    if not stub:
+        return []
+    out: list[tuple[str, Any]] = []
+    for _name, store in _candidate_stores():
+        full = _widen(stub, store)
+        if full and _agrees(board_id, full, store):
+            out.append((full, store))
+    return out
 
 
 def source_of(board_id: str) -> tuple[str, Any]:
     """``(full session id, store)`` for the season behind a board."""
-    parts = str(board_id or "").split("_")
-    stub = parts[1] if len(parts) >= 4 else ""
-    if not stub:
-        return "", None
-    for _name, store in _candidate_stores():
-        full = _widen(stub, store)
-        if full and _agrees(board_id, full, store):
-            return full, store
-    return "", None
+    found = sources_of(board_id)
+    return found[0] if found else ("", None)
+
+
+# ── the journal that travels with the board ───────────────────────────
+#: Frozen beside a board by ``python -m turnlab.freeze``.
+JOURNAL_FILE = "journal.json"
+
+#: Parsed ``journal.json`` per board id. ``None`` is a cached miss — a
+#: board with no frozen journal is the common case for the minted half
+#: of the library and should not cost a stat per invoke.
+_FROZEN: dict[str, Optional[dict]] = {}
+
+
+def frozen_journal(board_id: str) -> Optional[dict]:
+    """The journal shipped inside ``board_id``, or ``None`` if it has none.
+
+    v1.43 — boards travel in the repo; their seasons do not. ``seasons/``
+    is ignored, the minted sources are ignored, and a grabbed board's
+    season lives in whichever Snowflake account played it. So every
+    lookup through :func:`source_of` fails on a fresh clone, and the two
+    boards where memory is the entire exercise — a night-six race and a
+    night-four recovery, both played by V12 — planned blind for everyone
+    except the machine that made them.
+
+    Freezing the journal into the board fixes that, and is also the more
+    correct design for a *frozen* turn. Reading a live season means the
+    turn's state of knowledge depends on which account you have; reading
+    a file that shipped with the board means everyone plans the same
+    night. That matters directly for the divergence view, which compares
+    a fork against a baseline recorded here — against a journal an
+    attendee could not otherwise see.
+
+    So this is consulted first and the season is the fallback, not the
+    other way around. Refresh it with ``python -m turnlab.freeze``.
+    """
+    key = str(board_id or "")
+    if key in _FROZEN:
+        return _FROZEN[key]
+
+    from . import store as lab_store
+
+    out: Optional[dict] = None
+    try:
+        blob = json.loads(
+            (lab_store.DATA_DIR / key / JOURNAL_FILE).read_text(encoding="utf-8")
+        )
+        # A file whose shape we do not recognise is treated as absent
+        # rather than as an empty journal: "no memory" is a claim, and
+        # a truncated write should not get to make it.
+        if isinstance(blob, dict) and isinstance(blob.get("seats"), dict):
+            out = blob
+    except (OSError, json.JSONDecodeError, TypeError):
+        out = None
+    _FROZEN[key] = out
+    return out
 
 
 # ── reading the journal ───────────────────────────────────────────────
@@ -433,13 +515,26 @@ def hydrate(
             ),
         )
 
+    # v1.43 — the journal the board shipped with, before going looking
+    # for a season that is probably not on this machine. See
+    # ``frozen_journal`` for why the file wins over the live season.
+    frozen = frozen_journal(board_id)
+    if frozen is not None:
+        entries = (frozen.get("seats") or {}).get(str(seat)) or []
+        return _seed(
+            mem, run_id, seat, [dict(e) for e in entries],
+            day=day, store=store,
+            source=str(frozen.get("source") or board_id),
+        )
+
     source_id, source_store = source_of(board_id)
     if not source_id:
         return Recalled(
             seat=seat,
             error=(
                 f"could not find the season behind {board_id} — its memory "
-                f"cannot be recovered, so this turn plans blind"
+                f"cannot be recovered, so this turn plans blind. If this "
+                f"board should carry one, run python -m turnlab.freeze"
             ),
         )
 
@@ -448,23 +543,45 @@ def hydrate(
     except Exception as exc:  # pragma: no cover - defensive
         return Recalled(seat=seat, source=source_id, error=str(exc))
 
+    return _seed(mem, run_id, seat, entries, day=day, store=store,
+                 source=source_id)
+
+
+def _seed(
+    mem: Any,
+    run_id: str,
+    seat: str,
+    entries: list[dict],
+    *,
+    day: int,
+    store: Any,
+    source: str,
+) -> Recalled:
+    """Write ``entries`` into the clone's journal, cut at ``day``.
+
+    The cut is repeated here even though :mod:`turnlab.freeze` already
+    applies it, because the two callers arrive by different routes and
+    only one of them has been through the freezer. Day N's own entry
+    carries the reflection written the morning after — tomorrow's
+    newspaper, and the one thing this turn must not be able to read.
+    """
     kept = [e for e in entries if 0 < int(e.get("day") or 0) < int(day)]
     for entry in kept:
         try:
             mem.save_entry(run_id, seat, entry, store=store)
         except Exception as exc:  # pragma: no cover - defensive
-            return Recalled(seat=seat, source=source_id, error=str(exc))
+            return Recalled(seat=seat, source=source, error=str(exc))
 
     note = ""
     if not kept:
         note = (
-            f"the season recorded no journal for {seat} before day {day} — "
+            f"no journal was recorded for {seat} before day {day} — "
             f"that seat was played by a human, or by an agent that keeps none"
         )
 
     return Recalled(
         entries=len(kept),
-        source=source_id,
+        source=source,
         seat=seat,
         days=[int(e.get("day") or 0) for e in kept],
         note=note,
@@ -473,5 +590,6 @@ def hydrate(
 
 def forget() -> None:
     """Drop the cached journals. For tests, and for a long-lived server
-    that has had a board re-grabbed underneath it."""
+    that has had a board re-grabbed or re-frozen underneath it."""
     _CACHE.clear()
+    _FROZEN.clear()

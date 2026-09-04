@@ -1192,6 +1192,157 @@ def test_hydration_reports_a_failure_instead_of_planning_blind(monkeypatch):
     )
 
 
+#: The one board in the library whose seats were played by an LLM that
+#: kept a journal, so the only one with memory worth shipping.
+_DIARIST_BOARD = "LAB_cfa9912d_d6_p1"
+
+
+def _no_season_anywhere(monkeypatch):
+    """Stand in for a fresh clone: boards on disk, no season behind them."""
+    from turnlab import recall
+
+    monkeypatch.setenv("SOC_LAB_SOURCE", "/nonexistent")
+    recall.forget()
+    assert recall.source_of(_DIARIST_BOARD)[0] == "", (
+        "this test is meaningless if the season is still reachable"
+    )
+
+
+def test_a_board_carries_the_memory_its_night_had(monkeypatch):
+    """The journal has to survive the trip into somebody else's clone.
+
+    v1.43 — the boards travel in the repo and their seasons do not, so
+    recovering memory by reading the source season worked only on the
+    machine that made the board. Every attendee got a night-six race
+    planned by an agent that had been told it kept no notes, and — worse
+    — diffed it against a baseline recorded here, with the notes. The
+    divergence view would have opened on a fabricated disagreement.
+    """
+    from turnlab import recall
+
+    _no_season_anywhere(monkeypatch)
+
+    mem = recall.memory_module("tabula_v12")
+    seen: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        mem, "save_entry",
+        lambda s, p, e, **kw: seen.append((p, int(e["day"]))),
+    )
+
+    got = recall.hydrate(
+        "LABRUN_test", "p2", "tabula_v12",
+        board_id=_DIARIST_BOARD, day=6, store=lab_store.store(),
+    )
+    assert got.error == "", got.error
+    assert got.days == [1, 2, 3, 4, 5], (
+        "the five nights before the frozen turn should have been recovered "
+        "from the board itself"
+    )
+    assert [d for _p, d in seen] == [1, 2, 3, 4, 5]
+    assert all(p == "p2" for p, _d in seen), "another seat's journal leaked in"
+
+
+def test_a_shipped_journal_is_preferred_to_a_live_season(monkeypatch):
+    """Whoever has the account must get the same turn as whoever does not.
+
+    The board is the fixed point. If the memory came from the season
+    when one was reachable and from the file otherwise, the same board
+    would pose two different questions depending on whose laptop it was
+    opened on — and the baselines only match one of them.
+    """
+    from turnlab import recall
+
+    recall.forget()
+    monkeypatch.setattr(
+        recall, "source_of", lambda _b: ("A_LIVE_SEASON", object()),
+    )
+    monkeypatch.setattr(
+        recall, "read_journal",
+        lambda *_a, **_k: [{"day": d, "plan_this_turn": "from the season"}
+                           for d in range(1, 6)],
+    )
+    mem = recall.memory_module("tabula_v12")
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        mem, "save_entry", lambda s, p, e, **kw: seen.append(dict(e)),
+    )
+
+    recall.hydrate(
+        "LABRUN_test", "p2", "tabula_v12",
+        board_id=_DIARIST_BOARD, day=6, store=lab_store.store(),
+    )
+    assert seen, "nothing was seeded at all"
+    assert not any(e.get("plan_this_turn") == "from the season" for e in seen), (
+        "the live season won over the journal frozen into the board"
+    )
+
+
+def test_the_frozen_journal_stops_before_the_night_it_is_for():
+    """Night N's own entry is written the morning after.
+
+    Cut at hydration too, so this is belt and braces — but the file is
+    what ships, and a reflection on tonight sitting inside tonight's
+    board is the kind of thing nobody would think to check for.
+    """
+    from turnlab import freeze, recall
+
+    for board in boards.discover(lab_store.store()):
+        blob = recall.frozen_journal(board.id)
+        if blob is None:
+            continue
+        day = freeze.frozen_day(board.id)
+        assert blob.get("day") == day
+        for seat, entries in (blob.get("seats") or {}).items():
+            days = [int(e.get("day") or 0) for e in entries]
+            assert all(0 < d < day for d in days), (
+                f"{board.id} {seat} ships a journal entry for night "
+                f"{max(days)}, which the turn cannot have read"
+            )
+            assert days == sorted(days), f"{board.id} {seat} is out of order"
+
+
+def test_every_board_ships_a_journal_even_when_it_is_empty():
+    """An empty file is a claim; a missing file is a shrug.
+
+    Both are legitimate answers, and the difference matters: with a file
+    present the lab can say "this seat kept no notes" without going
+    looking for a season, which is the message a minted board should
+    give. Without one it falls back, fails, and reports a fault.
+    """
+    from turnlab import recall
+
+    recall.forget()
+    for board in boards.discover(lab_store.store()):
+        blob = recall.frozen_journal(board.id)
+        assert blob is not None, (
+            f"{board.id} ships no journal.json — run python -m turnlab.freeze"
+        )
+        assert set(blob.get("seats") or {}) == set(recall.seats_of(board.id)), (
+            f"{board.id}'s frozen journal does not cover the cast it froze"
+        )
+
+
+def test_freezing_never_empties_a_board_it_cannot_place(tmp_path, monkeypatch):
+    """A missing account is not evidence that a seat kept no journal.
+
+    The freezer runs on whichever machine can still see the seasons, and
+    that will not usually be the machine with all of them. Rewriting a
+    good journal to an empty one because today's laptop cannot reach the
+    account would destroy the only copy.
+    """
+    from turnlab import freeze, recall
+
+    monkeypatch.setattr(recall, "sources_of", lambda _b: [])
+    report = freeze.freeze_board(_DIARIST_BOARD, write=True)
+    assert report["skipped"], "a board with no reachable season must be skipped"
+
+    recall.forget()
+    blob = recall.frozen_journal(_DIARIST_BOARD)
+    assert blob and len(blob["seats"]["p2"]) == 5, (
+        "the existing journal was clobbered by a run that found nothing"
+    )
+
+
 def test_a_run_remembers_which_board_it_came_from(tmp_path, monkeypatch):
     """Provenance is what makes memory recoverable without the client.
 

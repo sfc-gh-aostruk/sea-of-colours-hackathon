@@ -667,6 +667,7 @@ def cmd_lab(args) -> int:
     """
     from turnlab import boards as lab_boards
     from turnlab import cast as lab_cast
+    from turnlab import recall as lab_recall
     from turnlab import store as lab_store
 
     found = lab_boards.discover(lab_store.store())
@@ -685,6 +686,18 @@ def cmd_lab(args) -> int:
               + (f"   seed {seed}" if seed is not None else ""))
         if d.get("tests"):
             print(f"      tests: {d['tests']}")
+        # Worth saying out loud: it is the difference between an agent
+        # that remembers five nights and one that opens cold, and only
+        # one night in the library has it.
+        journal = lab_recall.frozen_journal(d["id"]) or {}
+        carries = {
+            seat: len(entries)
+            for seat, entries in (journal.get("seats") or {}).items()
+            if entries
+        }
+        if carries:
+            says = ", ".join(f"{s} {n} nights" for s, n in sorted(carries.items()))
+            print(f"      journal: {says}")
 
     print("\n  FORKS THAT CAN PLAY THEM")
     castable, _ = lab_cast.roster()

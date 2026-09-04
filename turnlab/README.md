@@ -40,6 +40,35 @@ both look reasonable until you try to play them:
 Boards are discovered from the store rather than declared, so minting a
 new set makes them appear with no code change.
 
+## A board carries its own memory
+
+A position is not the whole of what a seat knew. A V12 seat also has its
+STRATEGY JOURNAL — the INTENT it set each night and the REFLECTION it
+wrote the morning after — and a night-six agent that has been told it
+kept no notes plans a visibly different turn.
+
+That journal is frozen into the board as `journal.json`, cut at the
+night before, and read from there. It used to be recovered from the
+source season at invoke time, which worked on the machine that made the
+board and nowhere else: the boards travel in the repo and their seasons
+do not. It also made the turn depend on who you were — an attendee
+without the account got an amnesiac agent *and* diffed it against a
+baseline recorded here with the memory intact, so the divergence view
+opened on a disagreement that was nobody's fork.
+
+Refresh it from whichever machine can still see the seasons:
+
+```bash
+python -m turnlab.freeze          # what it would capture
+python -m turnlab.freeze --write  # write it into the boards
+```
+
+Most of the library reports "no seat kept one", and that is the correct
+answer rather than a failure: the minted boards were played by
+RED_HARVEST, which keeps no diary. The file is still written, because an
+empty journal is a *claim* the lab can make offline, where a missing
+file sends it hunting for a season and reporting a fault.
+
 ## The two rules
 
 **The lab renders nothing and simulates nothing.** Every board, every
@@ -76,6 +105,10 @@ because something went wrong:
 | `store.py` | The lab's own local store, and which session ids it owns |
 | `cast.py` | Who can be cast, discovered so a fork appears by existing |
 | `mint.py` | Playing a season to freeze a fresh set of boards |
+| `rewalk.py` | Grabbing a day out of a season you already played |
+| `recall.py` | Giving a frozen turn the journal the night actually had |
+| `freeze.py` | Capturing that journal into the board, so it ships |
+| `pack.py` | Trimming and gzipping the boards to fit in the repo |
 | `isolation.py` | Clearing harness memory between agents, safely |
 | `readonly.py` | A store handle that cannot write |
 | `arms.py` | The racks a seat can be handed when a board is opened |
