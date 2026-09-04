@@ -54,6 +54,8 @@ from sea_of_colours.snowpark.backend import get_store
 from sea_of_colours.snowpark import engine as soc_engine
 from sea_of_colours.game.session import MAX_SEATS, Phase
 from sea_of_colours.game import tutorial as soc_tutorial
+from turnlab import routes as turnlab_routes
+from turnlab import store as turnlab_store
 
 
 # v0.9.6 — N-seat games (1..MAX_SEATS) use canonical slugs ``p1`` … ``pN``.
@@ -460,12 +462,47 @@ if _DOCS_DIR.is_dir():
 # server for a room of attendees can point them at a URL, and an agent
 # reviewing its own bake does not have to know where the repo lives.
 # Absent until someone records, hence the existence check.
+#
+# The page itself is served from its source rather than from the copy
+# the recorder leaves in the bake directory, for two reasons (v1.41):
+# that copy is only as fresh as the last `--record`, and without one
+# there is no directory to mount at all — which would put the live diff
+# loop behind "go and run a twenty-minute suite first". Registered
+# before the mount so it wins the /battles/ path; the mount still
+# serves index.js and data/ beside it.
+_ROOM_HTML = (
+    _REPO_ROOT / "sea_of_colours" / "evals" / "battles" / "room" / "room.html"
+)
+
+
+@app.get("/battles/", include_in_schema=False)
+@app.get("/battles", include_in_schema=False)
+def battle_room() -> Response:
+    if not _ROOM_HTML.is_file():
+        raise HTTPException(status_code=404, detail="the room is missing")
+    return Response(
+        content=_ROOM_HTML.read_text(encoding="utf-8"),
+        media_type="text/html; charset=utf-8",
+        headers=_NO_CACHE_HEADERS,
+    )
+
+
 if _BATTLES_DIR.is_dir():
     app.mount(
         "/battles",
         _NoCacheStatic(directory=_BATTLES_DIR, html=True),
         name="battles",
     )
+
+
+# ── the turn lab ────────────────────────────────────────────────────
+#
+# A side experiment that clones frozen turns and lets agents play the
+# copies. It lives entirely in ``turnlab/`` — its own routes, its own
+# page, its own local store — and is included here rather than written
+# here so that nothing in it can reach for this module's store by habit.
+# See turnlab/README.md.
+app.include_router(turnlab_routes.router)
 
 
 # Markdown reachable over HTTP, by exact path. An allowlist rather than
@@ -523,7 +560,18 @@ def _store_for(game_id: str):
     side by side. Ids created before this existed, or by another process,
     aren't in the registry and fall back to the default — which is the
     backend that wrote them.
+
+    v1.42 — turn-lab sessions are routed out to the lab's own local
+    store, ahead of the registry. They have to be: a lab clone opens in
+    the ordinary game UI and is served by the ordinary game routes, so
+    without this hook the app would look for it in whichever backend the
+    process happens to be on and find nothing. Keeping the test on the
+    id (rather than registering each clone) means it also works for a
+    clone made by an earlier process, which is what you get when you
+    restart the server with a lab tab still open.
     """
+    if turnlab_store.owns(game_id):
+        return turnlab_store.store()
     return soc_backend.store_for_session(game_id)
 
 
@@ -2130,6 +2178,105 @@ def api_game_cards_markdown(
             **_NO_CACHE_HEADERS,
         },
     )
+
+
+# ── the fast diff loop ──────────────────────────────────────────────
+#
+# `soc suite` answers "is my agent good": every board, every rung,
+# several runs, twenty minutes against a model. These answer "did the
+# change I just made do anything", which is the question you have every
+# ten minutes and which needs exactly one turn.
+#
+# The battle room is a static page that works by double-clicking, and
+# must stay that way — it registers its bake with a <script> tag and a
+# fetch cannot work over file://. So these routes are strictly
+# additive: the room feature-detects them and grows a live mode when it
+# is being served, and is unchanged when it is not.
+
+
+@app.get("/api/battles/menagerie")
+def api_battles_menagerie() -> dict[str, Any]:
+    """The frozen turns, the agents that can be run on them, what is cached."""
+    from sea_of_colours.evals.battles import baseline, boards, live
+    from sea_of_colours.orchestrator_2 import binding_registry
+
+    frozen = baseline.index().get("battles", {}) or {}
+    by_board = {b.id: b for b in boards.BOARDS}
+    turns = []
+    for battle_id, entry in sorted(frozen.items()):
+        board_id = battle_id.split("@")[0]
+        board = by_board.get(board_id)
+        turns.append({
+            "id": battle_id,
+            "board": board_id,
+            "day": getattr(board, "day", None),
+            "shape": getattr(board, "shape", ""),
+            "question": getattr(board, "question", ""),
+            "v12_score": (entry or {}).get("score"),
+        })
+
+    cached = {}
+    for run in live.cached_runs():
+        cached.setdefault(run.get("agent") or "", []).append(run.get("battle_id"))
+
+    return {
+        "turns": turns,
+        # The New Game roster includes the human seat, which cannot
+        # play a turn headlessly and would offer a button that hangs.
+        "agents": [
+            a for a in binding_registry.selectable_agents()
+            if a.get("value") != "human"
+        ],
+        "baseline_agent": baseline.index().get("agent", "tabula_v12"),
+        "cached": cached,
+    }
+
+
+@app.post("/api/battles/run")
+def api_battles_run(payload: dict[str, Any]) -> dict[str, Any]:
+    """Play one frozen turn with one agent and diff it against V12.
+
+    Takes as long as the model takes — around twenty seconds — so the
+    caller should say so rather than look hung. A repeat of a run whose
+    agent has not been edited comes back from cache immediately.
+    """
+    from sea_of_colours.evals.battles import live
+
+    battle_id = str(payload.get("battle_id") or "").strip()
+    agent = str(payload.get("agent") or "").strip()
+    if not battle_id or not agent:
+        raise HTTPException(
+            status_code=400, detail="battle_id and agent are required",
+        )
+    runs = int(payload.get("runs") or 1)
+    if not 1 <= runs <= 5:
+        raise HTTPException(status_code=400, detail="runs must be 1..5")
+
+    try:
+        live.parse_battle_id(battle_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        return live.run(
+            battle_id, agent,
+            runs=runs, use_cache=not bool(payload.get("fresh")),
+        )
+    except Exception as exc:
+        # An agent that throws is the normal case here, not an
+        # exception: someone is mid-edit. Report it as a result the
+        # room can render, not a 500 that reads as "the tool is broken".
+        raise HTTPException(
+            status_code=502,
+            detail=f"{agent} raised {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@app.post("/api/battles/cache/clear")
+def api_battles_cache_clear() -> dict[str, Any]:
+    from sea_of_colours.evals.battles import live
+
+    return {"dropped": live.clear_cache()}
 
 
 def _infer_runtime(agent_id: str | None) -> str:

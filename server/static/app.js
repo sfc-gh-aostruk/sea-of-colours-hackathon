@@ -47,6 +47,19 @@
       _watchParams.get("watch") === "1");
   const WATCH_SESSION_ID = _watchParams.get("session") || "";
   const WATCH_SEASON_SLUG = _watchParams.get("season") || "";
+  // v1.42 — TURN LAB. ``?lab=<board id>`` marks a session as a throwaway
+  // clone of a frozen night, opened from /lab.
+  //
+  // It unlocks exactly one thing: the per-seat INVOKE control in the
+  // AGENT tab. Live-play invocation was removed from this UI in v1.1 in
+  // favour of the CLI, which is right for a real game — nobody should be
+  // able to hand somebody else's seat to a model mid-season. A lab clone
+  // has no such stake: it exists to be played by agents and thrown away.
+  // The server enforces the same rule independently (it refuses to
+  // invoke into anything that is not a REPLAY: clone), so this flag is a
+  // UI affordance, not the security boundary.
+  const LAB_BOARD = String(_watchParams.get("lab") || "").trim();
+  const LAB_MODE = !!LAB_BOARD && _watchParams.has("session");
   // The local "this is me" seat. Solo play (no ?player=) keeps p1 so every
   // hardcoded-p1 call site below behaves exactly as it did pre-multiplayer.
   // A joiner binds to the seat from their link; the seat picker (join with no
@@ -57,6 +70,41 @@
   }
   if (JOIN_MODE) {
     document.body.classList.add("cc-mode--join");
+  }
+  if (LAB_MODE) {
+    document.body.classList.add("cc-mode--lab");
+  }
+  /** The racks this turn was opened with, as ``{seat: rack}``.
+   *
+   *  Carried in the address rather than looked up, so RESET can rebuild
+   *  the same turn. A reset that quietly disarmed the seats would be a
+   *  different night wearing the same name.
+   */
+  const LAB_ARMS = Object.fromEntries(
+    (_watchParams.get("arms") || "")
+      .split(",")
+      .filter(Boolean)
+      .map((pair) => pair.split(":"))
+      .filter((kv) => kv.length === 2),
+  );
+  /** The calendar day this board was frozen on, read off its id
+   *  (``LAB_<source>_d2_p1``). Lets a reloaded page tell a fresh turn
+   *  from a spent one without asking the server: the clone has moved
+   *  past this day if and only if the night already resolved. */
+  const LAB_DAY = Number((/_d(\d+)_p\d+$/.exec(LAB_BOARD || "") || [])[1] || 0);
+  /** True once the night has resolved: the turn is spent, RESET only. */
+  let labResolved = false;
+
+  /** Drop anything dated before the frozen night from a replay list.
+   *
+   *  v1.42 — takes frames or day-index rows; both carry ``day``. A
+   *  no-op outside the lab, and a no-op if the board id carried no day,
+   *  because cutting a real season's history to nothing would be a far
+   *  worse bug than the rewind this prevents.
+   */
+  function _labOnlyFrozenNight(rows) {
+    if (!LAB_MODE || !LAB_DAY || !Array.isArray(rows)) return rows;
+    return rows.filter((r) => Number(r?.day || 0) >= LAB_DAY);
   }
 
   const MAX_MOVES = 21; // policy-slot cap per player per night (v0.9.9: each queued row burns a slot whether the engine accepts it or strikes it out)
@@ -2388,6 +2436,133 @@
     } catch (_e) {
       /* non-fatal — a missing footprint must never break the board */
     }
+    try {
+      paintLabPlanOverlay();
+    } catch (_e) {
+      /* non-fatal — the lab overlay must never break a real board */
+    }
+  }
+
+  // ── TURN LAB: plan overlay (v1.42) ────────────────────────────────
+  //
+  // What a seat proposes to do, drawn over the board before the night
+  // runs — and drawn by the ORDINARY planned-orders renderer, not by a
+  // layer of its own.
+  //
+  // It had one of its own, briefly: coloured rings with an hour number
+  // in each cell. That was a mistake twice over. It looked nothing like
+  // what the same orders look like when a human queues them, so you
+  // could not compare an agent's plan with your own by eye; and it was
+  // a second overlay to keep in step with the engine, which it already
+  // was not — it drew a ring for an EMP and never its blast footprint.
+  // Feeding the proposal through `paintPlannedOrdersOverlay` instead
+  // means a proposed plan and a queued policy are the same picture:
+  // numbered path badges in the seat's colour, probe and weapon
+  // markers, area footprints underneath.
+  //
+  // One seat at a time, on hover — see `showLabPlan`. Empty, and free,
+  // in a normal game.
+  const labPlans = new Map();
+  /** Whose proposal is currently on the board, or null for none. */
+  let labShownSeat = null;
+
+  /** A proposed wire move as a queue row the order renderer understands.
+   *
+   *  The two shapes are close but not the same: the wire (see
+   *  `policy.move_to_wire`) puts the target in ``at``, or ``to`` for a
+   *  step, while the composer's rows carry ``x``/``y``. And an EMP
+   *  salvo overloads ``at`` — one ``[x, y]`` for a single missile, a
+   *  LIST of them for a salvo — where the composer always wants the
+   *  list, under ``ats``.
+   */
+  function _labQueueRows(moves) {
+    const pair = (v) => (
+      Array.isArray(v) && v.length >= 2
+      && Number.isFinite(Number(v[0])) && Number.isFinite(Number(v[1]))
+    );
+    const rows = [];
+    for (const m of moves || []) {
+      if (!m || typeof m !== "object") continue;
+      const at = Array.isArray(m.at) ? m.at
+        : Array.isArray(m.to) ? m.to : null;
+      const unit = String(m.u || m.unit || "");
+      if (m.a === "emp_launch") {
+        const ats = Array.isArray(m.cells) ? m.cells
+          : pair(at) ? [at]
+          : Array.isArray(at) ? at.filter(pair) : [];
+        rows.push({ a: "emp_launch", unit, ats });
+      } else if (m.a === "pickup") {
+        rows.push({ a: "pickup", unit });
+      } else if (pair(at)) {
+        rows.push({
+          a: String(m.a || ""), unit, x: Number(at[0]), y: Number(at[1]),
+        });
+      }
+    }
+    return rows;
+  }
+
+  /** The queue the planned-orders overlay should draw.
+   *
+   *  Your own queued rows normally; a seat's proposal while the lab is
+   *  showing one. Reading it through here rather than at one call site
+   *  is what makes the substitution survive a zoom, a resize or a board
+   *  repaint — all of which redraw the overlay from their own code.
+   */
+  function _plannedQueue() {
+    if (LAB_MODE && labShownSeat) {
+      const moves = labPlans.get(labShownSeat);
+      if (moves && moves.length) return _labQueueRows(moves);
+    }
+    return soloQueue;
+  }
+
+  /** Mark the seat whose plan is on the board — from the state, always.
+   *
+   *  Re-derived on every paint rather than toggled at the moment of the
+   *  hover, because a stationary pointer is not a stationary hover: the
+   *  night's playback and the RESET bar appearing both reflow the panel
+   *  under a parked cursor, and the browser re-fires `mouseenter` for
+   *  whatever is now beneath it. Toggling on those events left the badge
+   *  claiming a seat was ON BOARD over a board that had been cleared.
+   */
+  function _syncLabShown() {
+    for (const el of document.querySelectorAll(".cc-lab-seat")) {
+      el.classList.toggle(
+        "cc-lab-seat--shown", el.dataset.seat === labShownSeat,
+      );
+    }
+  }
+
+  function paintLabPlanOverlay() {
+    if (!LAB_MODE) return;
+    _syncLabShown();
+    try {
+      paintPlannedOrdersOverlay();
+    } catch (_e) {
+      /* non-fatal — a plan preview must never break the board */
+    }
+  }
+
+  function setLabPlan(seat, moves) {
+    labPlans.set(seat, Array.isArray(moves) ? moves : []);
+    if (labShownSeat === seat) paintLabPlanOverlay();
+  }
+
+  /** Put one seat's proposal on the board, or clear with ``null``.
+   *
+   *  Only ever one. Two plans at once was the old filter's ``BOTH``, and
+   *  on the real renderer it cannot work: both seats' paths are numbered
+   *  from hour one, so overlapping chains produce two badges reading "3"
+   *  in the same square with nothing to say which is which. Hovering one
+   *  seat then the other compares them just as well and always reads.
+   */
+  function showLabPlan(seat) {
+    // A seat with nothing to show resolves to nothing, so pointing at an
+    // uncast seat takes the board back rather than leaving the previous
+    // seat's plan up under the wrong heading.
+    labShownSeat = seat && labPlans.get(seat)?.length ? seat : null;
+    paintLabPlanOverlay();
   }
 
   /**
@@ -5551,7 +5726,7 @@
       pos = rowPosition(row);
       if (pos) waypoints.push({ x: pos[0], y: pos[1], kind: "anchor" });
     }
-    for (const m of soloQueue) {
+    for (const m of _plannedQueue()) {
       if (!m || String(m.unit) !== unitId) continue;
       if (m.a === "drop" && Number.isFinite(m.x) && Number.isFinite(m.y)) {
         pos = [Number(m.x), Number(m.y)];
@@ -5681,16 +5856,19 @@
     }
     // Only meaningful on the live player's own map (not replay scrubbing).
     if (mainMapSource !== "live") return;
+    // v1.42 — normally your own queue; a lab seat's proposal when one is
+    // being previewed, so a proposal and a policy draw identically.
+    const queue = _plannedQueue();
     const armedUnit =
       assetSelect && assetSelect.unit ? String(assetSelect.unit) : null;
-    if (!soloQueue.length && !armedUnit) return;
+    if (!queue.length && !armedUnit) return;
 
     const hostRect = collisionFxLayer.getBoundingClientRect();
 
     // 1) Harvester paths, grouped by unit. The armed unit (the one you're
     //    actively chaining) draws solid; the rest dim so it stands out.
     const units = [];
-    for (const m of soloQueue) {
+    for (const m of queue) {
       if (m && (m.a === "drop" || m.a === "step" || m.a === "pickup") && m.unit) {
         const u = String(m.unit);
         if (!units.includes(u)) units.push(u);
@@ -5708,7 +5886,7 @@
     );
 
     // 2) Probe deploys + weapon targets (standalone cell markers).
-    for (const m of soloQueue) {
+    for (const m of queue) {
       if (!m) continue;
       if (m.a === "probe") {
         _drawOrderMarker(Number(m.x), Number(m.y), "probe", "\u25CF", hostRect); // ● circle
@@ -6023,6 +6201,23 @@
 
   /** @returns {Promise<Record<string, any>>} */
   async function postPolicy(pid, moves) {
+    // v1.42 — the lab takes no human turn at all. Every seat is cast
+    // from the AGENT pane, and the board's one claim is that what you
+    // watched resolve is what the agents asked for; a hand-typed order
+    // blends into the same policy and quietly breaks that. This used to
+    // refuse only a seat whose plan was already accepted, which left the
+    // composer open right up until the moment it mattered.
+    //
+    // ACCEPT does not come through here — it posts to /api/lab/commit —
+    // so this can be absolute. Guarded at this funnel because every
+    // order path shares it: board queue plus TRANSMIT, the mobile bar,
+    // the keyboard, the partner auto-lock.
+    if (LAB_MODE) {
+      throw new Error(
+        `${playerTag(pid)} is played by an agent here — invoke one from the `
+        + `AGENT tab. The lab does not take hand-typed orders.`,
+      );
+    }
     const res = await fetch(`/api/game/${sessionId}/policy`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -12941,9 +13136,13 @@
    * under the pointer while a target is being aimed.
    * @returns {{action:string, cells:number[][], live:boolean}[]}
    */
+  // v1.42 — reads `_plannedQueue()` rather than `soloQueue` directly, so
+  // a previewed lab plan gets its blast footprints too. An EMP drawn as
+  // three bare markers with no 35-cell no-drop zone under them is the
+  // single most misleading thing this overlay could show.
   function _aoeShapes(w, h) {
     const out = [];
-    for (const m of soloQueue) {
+    for (const m of _plannedQueue()) {
       if (!m) continue;
       if (m.a === "emp_launch" && Array.isArray(m.ats)) {
         // A salvo is up to three independent missiles; each gets its own
@@ -13382,6 +13581,13 @@
   function opponentSeatVisible() {
     if (WATCH_MODE) return true;
     if (livePhase === "season_complete") return true;
+    // v1.42 — a lab clone is a throwaway copy of a frozen turn where BOTH
+    // seats are yours to drive, so there is no rival and no fog to leak.
+    // Withholding the other seat's view here would withhold it from the
+    // person who just cast both agents into it. Unlocks the per-seat fog
+    // views and OBS on the transport row, and the per-seat thinking feeds
+    // in the AGENT tab.
+    if (LAB_MODE) return true;
     return false;
   }
 
@@ -13950,6 +14156,886 @@
     });
     // A lone self-tab in live play is noise — hide the strip entirely.
     agentSeatTabsEl.hidden = seats.length <= 1;
+    // v1.42 — the lab's invoke rows live above these tabs and need the
+    // same seat list. No-ops outside the lab, and builds only once.
+    if (LAB_MODE) renderLabInvoke();
+  }
+
+  // ── TURN LAB: invoke, look, accept (v1.42) ────────────────────────
+  //
+  // Live-play invocation was removed from this UI in v1.1 — games moved
+  // to the CLI and the season runner, and the AGENT tab became a
+  // read-only thinking feed. That is the right call for a real game: an
+  // agent playing a seat mid-season has consequences for somebody else's
+  // night. A lab clone is a throwaway copy of a frozen turn made to be
+  // played by agents and discarded, so the control comes back here and
+  // only here. The server checks the same condition for itself.
+  //
+  // It comes back with the V12 advisor's manners rather than the old
+  // autoplay's: INVOKE asks, the answer is painted on the board and
+  // listed in full, and nothing reaches the engine until ACCEPT. That
+  // matters more in the lab than it does for the advisor — the whole
+  // point is to look at what an agent decided and compare it with what
+  // the other one decided, which you cannot do if asking is the same
+  // act as committing.
+  let _labAgents = null;
+  // The seat list the rows were built for, joined. Claimed
+  // synchronously, because the DOM check cannot serve as the guard: the
+  // roster fetch is awaited before anything is appended, so two callers
+  // both find no panel and both build one.
+  //
+  // v1.42 — this was a boolean, which meant the boot call locked in
+  // whatever ``_activeSeatsForView()`` returned before the first status
+  // poll had landed. That is its ``["p1", "p2"]`` default, so a 3-seat
+  // board lost p3 permanently: the later, correct call found the flag
+  // already set and returned. Keyed on the seats instead, so learning
+  // the real roster rebuilds.
+  let _labInvokeSeats = "";
+  /** ``seat -> plan payload`` for plans asked for but not yet accepted. */
+  const labTakes = new Map();
+
+  async function _labRoster() {
+    if (_labAgents) return _labAgents;
+    try {
+      const res = await fetch("/api/lab/agents");
+      _labAgents = res.ok ? (await res.json()).agents || [] : [];
+    } catch (_e) {
+      _labAgents = [];
+    }
+    return _labAgents;
+  }
+
+  async function renderLabInvoke() {
+    if (!LAB_MODE || !agentSeatTabsEl) return;
+    const parent = agentSeatTabsEl.parentElement;
+    if (!parent) return;
+
+    const seats = _activeSeatsForView();
+    const key = seats.join(",");
+    if (key === _labInvokeSeats) return;
+    // A rebuild throws away the rows, and with them any plan already on
+    // screen. The roster only ever changes at boot, as the first poll
+    // replaces the default guess, so refusing once someone has asked for
+    // a plan cannot strand a seat.
+    if (_labInvokeSeats && labTakes.size) return;
+    _labInvokeSeats = key;
+    document.getElementById("lab-invoke")?.remove();
+
+    const roster = await _labRoster();
+
+    // The pane's own strapline still advertised the season feed that the
+    // lab hides. What is left here is one turn, asked for on purpose.
+    const sub = document.querySelector("#cc-panel-log .cc-panel-sub");
+    if (sub) sub.textContent = "this turn only · ask a seat, read it, accept it";
+
+    const box = document.createElement("div");
+    box.id = "lab-invoke";
+    box.className = "cc-lab";
+
+    const head = document.createElement("p");
+    head.className = "cc-block-head dim";
+    head.textContent = "# TURN LAB · cast a seat · hover it to see its plan";
+    // Leaving over the header is how you put the board back — there is
+    // no OFF button because there is nothing to turn off, only a seat to
+    // stop pointing at.
+    head.addEventListener("mouseenter", () => showLabPlan(null));
+    box.appendChild(head);
+
+    // v1.42 — RESET is built here, at the TOP, because once the night has
+    // resolved it is the only control on this panel that still does
+    // anything. It used to be appended last, under two seats' worth of
+    // agent output in a drawer that scrolls, so the answer to "how do I
+    // run this again" was "scroll past everything that no longer works".
+    box.appendChild(_labResetBar());
+
+    for (const seat of seats) {
+      const block = document.createElement("div");
+      block.className = "cc-lab-seat";
+      block.dataset.seat = seat;
+      // Seat colour is the through-line: the same cyan or magenta marks
+      // the button, the plan on the board and the order list, so two
+      // plans on one board stay tellable apart at a glance.
+      block.style.setProperty(
+        "--lab-ink", playerColor(seat) || ownerColor(seat) || "#9fa6ad",
+      );
+      // Hover to show, and it STAYS shown — deliberately not cleared on
+      // leave. The board is on the other side of the window, so a plan
+      // that vanished when the pointer left the panel could be seen and
+      // never looked at.
+      block.addEventListener("mouseenter", () => showLabPlan(seat));
+
+      const row = document.createElement("div");
+      row.className = "cc-lab-row";
+
+      const tag = document.createElement("span");
+      tag.className = "cc-lab-tag";
+      tag.textContent = `[ ${playerTag(seat)} ]`;
+      row.appendChild(tag);
+
+      const pick = document.createElement("select");
+      pick.className = "cc-lab-pick";
+      for (const a of roster) {
+        const o = document.createElement("option");
+        o.value = a.value;
+        o.textContent = a.label || a.value;
+        pick.appendChild(o);
+      }
+      row.appendChild(pick);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cli-btn cc-lab-invoke-btn";
+      btn.textContent = "[ INVOKE ]";
+      btn.addEventListener("click", () => labPlan(seat, pick.value));
+      row.appendChild(btn);
+
+      block.appendChild(row);
+
+      const out = document.createElement("div");
+      out.className = "cc-lab-out";
+      out.hidden = true;
+      block.appendChild(out);
+
+      box.appendChild(block);
+    }
+
+    // Both seats' plans as one document. The per-seat [ .TXT ] is the
+    // full exchange for one agent, prompts and all; this is the sheet you
+    // read when the question is how two agents differ on the same night.
+    const exp = document.createElement("div");
+    exp.id = "lab-export";
+    exp.className = "cc-lab-filter";
+    const expLabel = document.createElement("span");
+    expLabel.className = "dim";
+    expLabel.textContent = "plans as ";
+    exp.appendChild(expLabel);
+    for (const [text, fmt, hint] of [
+      ["[ READ ]", "html", "Open both seats' proposed plans in a new tab"],
+      ["[ .MD ]", "md", "Download both seats' proposed plans as Markdown"],
+    ]) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cli-btn";
+      b.dataset.fmt = fmt;
+      b.textContent = text;
+      b.title = hint;
+      b.addEventListener("click", () => labExportPlans(fmt));
+      exp.appendChild(b);
+    }
+    box.appendChild(exp);
+
+    parent.insertBefore(box, agentSeatTabsEl);
+    _labSyncTurnState();
+  }
+
+  /** The "start again" bar. Hidden until the night has resolved.
+   *
+   *  A fresh copy of the same board is the only way back: the turn that
+   *  just resolved cannot be un-resolved, and clearing the plans in
+   *  place would leave the engine still holding the old night.
+   */
+  function _labResetBar() {
+    const reset = document.createElement("div");
+    reset.id = "lab-reset";
+    reset.hidden = true;
+    const why = document.createElement("span");
+    why.className = "why";
+    why.textContent = "night resolved — the board is a record now.";
+    const rbtn = document.createElement("button");
+    rbtn.type = "button";
+    rbtn.className = "cli-btn cc-lab-reset-btn";
+    rbtn.textContent = "[ RESET TURN ]";
+    rbtn.title =
+      "Open a fresh copy of the same board, with the same ordnance, and "
+      + "no orders in";
+    rbtn.addEventListener("click", () => labResetTurn(rbtn));
+    reset.append(why, rbtn);
+    return reset;
+  }
+
+  /** Play this turn again from the top.
+   *
+   *  Deliberately a brand-new clone rather than a rewind. The engine has
+   *  resolved the night; there is no un-resolve, and the board it came
+   *  from is still frozen and untouched — so the honest reset is to open
+   *  it again. Same board, same seat, same racks, nobody's orders in.
+   */
+  async function labResetTurn(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "[ resetting… ]"; }
+    try {
+      const res = await fetch("/api/lab/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          board: LAB_BOARD, seat: MY_SEAT, arms: LAB_ARMS,
+        }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.detail || res.statusText);
+      window.location.href = out.url;
+    } catch (err) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "[ RESET TURN ]";
+      }
+      const why = document.querySelector("#lab-reset .why");
+      if (why) why.textContent = `reset failed: ${err.message || err}`;
+    }
+  }
+
+  function _labBlock(seat) {
+    return document.querySelector(`.cc-lab-seat[data-seat="${seat}"]`);
+  }
+
+  /** Grey out order entry once your own seat is sealed.
+   *
+   *  Cosmetic — ``postPolicy`` is what actually refuses. This exists so
+   *  the refusal is not a surprise at TRANSMIT, after the queue is
+   *  already built.
+   */
+  function _labSyncSealed() {
+    if (!LAB_MODE) return;
+    document.body.classList.toggle(
+      "cc-lab-sealed", !!labTakes.get(MY_SEAT)?.committed,
+    );
+    _labSyncTurnState();
+  }
+
+  /** The lab is one night, and it has three states.
+   *
+   *  Open, part-played, and spent. A seat that has committed cannot be
+   *  invoked again — its orders are with the engine, so asking a second
+   *  agent would either be ignored or overwrite a resolved night, and
+   *  both are worse than a disabled button. Once every seat has played
+   *  and the night has resolved the board is a record rather than a
+   *  position, and the only honest control left is RESET.
+   */
+  function _labSyncTurnState() {
+    if (!LAB_MODE) return;
+    const spent = !!labResolved;
+
+    for (const block of document.querySelectorAll(".cc-lab-seat")) {
+      const seat = block.dataset.seat;
+      const done = !!labTakes.get(seat)?.committed;
+      const pick = block.querySelector(".cc-lab-pick");
+      const btn = block.querySelector(".cc-lab-invoke-btn");
+      if (pick) pick.disabled = done || spent;
+      if (btn && !btn.dataset.busy) {
+        btn.disabled = done || spent;
+        btn.textContent = done ? "[ SELECTED ]" : "[ INVOKE ]";
+      }
+    }
+
+    document.body.classList.toggle("cc-lab-spent", spent);
+    const bar = document.getElementById("lab-reset");
+    if (bar) bar.hidden = !spent;
+
+    // The proposals have stopped being proposals: the board below is now
+    // a record of what happened, and a plan drawn over it would be read
+    // as part of it.
+    if (spent && labPlans.size) {
+      labPlans.clear();
+      showLabPlan(null);
+    }
+
+    if (spent) _labSettleDay();
+  }
+
+  /** Whether the day's orbit has been run (or is being run) already. */
+  let _labSettling = false;
+
+  /** Close the day the frozen night opened, once the night has played.
+   *
+   *  v1.42 — a night stops one beat short of the number people argue
+   *  about. RED is still in the vault when the last hour resolves; it
+   *  turns into score, and GREEN into a penalty, at the orbit
+   *  settlement. So the turn runs on through the orbit to the next
+   *  vespera and stops there.
+   *
+   *  Deliberately waits for the cinematic. Settling mid-animation would
+   *  flip the board to the morning's numbers while the player is still
+   *  watching the night that produced them, which is the same class of
+   *  bug as the hard cut this file fights elsewhere. If a cinematic owns
+   *  the board we simply return: the status poll calls this again.
+   *
+   *  ``_liveFxPlaying`` is the whole test — it is what the pull's own
+   *  ``_cinematicOwnsBoard`` is read from, and unlike that one it is
+   *  module-scoped, so it can be asked from here.
+   */
+  async function _labSettleDay() {
+    if (!LAB_MODE || _labSettling) return;
+    if (_liveFxPlaying || replayTicker) return;
+    _labSettling = true;
+    try {
+      const res = await fetch("/api/lab/settle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.detail || res.statusText);
+      // Only worth a repaint if something actually settled — otherwise
+      // this was the "already in planning" no-op and the board is right.
+      if (out.settled) await pullAllMaps({ playFx: false });
+    } catch (err) {
+      console.warn("[soc] lab: could not settle the day —", err);
+      // Left un-settled rather than retried in a loop: the board is
+      // still a truthful record of the night, just without the morning.
+    }
+  }
+
+  /** Ask an agent what it would do. Commits nothing. */
+  async function labPlan(seat, agent) {
+    const block = _labBlock(seat);
+    if (!block) return;
+    const btn = block.querySelector(".cc-lab-invoke-btn");
+    const out = block.querySelector(".cc-lab-out");
+    btn.dataset.busy = "1";
+    btn.disabled = true;
+    out.hidden = false;
+    out.textContent = "";
+    // A model seat takes the better part of half a minute, and a button
+    // that has said "thinking…" for twenty seconds is indistinguishable
+    // from one that has hung. Count out loud instead — it is also the
+    // number you want when the question is whether your fork got slower.
+    const began = Date.now();
+    const tick = () => {
+      btn.textContent =
+        `[ thinking… ${((Date.now() - began) / 1000).toFixed(1)}s ]`;
+    };
+    tick();
+    const ticking = window.setInterval(tick, 100);
+    try {
+      const res = await fetch("/api/lab/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId, seat, agent }),
+      });
+      const plan = await res.json();
+      if (!res.ok) throw new Error(plan.detail || res.statusText);
+      labTakes.set(seat, plan);
+      setLabPlan(seat, plan.moves || []);
+      // Show what you just asked for. Hovering the other seat swaps to
+      // its plan, which is the comparison this panel exists to make.
+      showLabPlan(seat);
+      renderLabTake(seat);
+    } catch (err) {
+      out.textContent = "";
+      const e = document.createElement("div");
+      e.className = "cc-lab-err";
+      e.textContent = String(err.message || err);
+      out.appendChild(e);
+    } finally {
+      window.clearInterval(ticking);
+      delete btn.dataset.busy;
+      // Not a plain re-enable: the turn may have been spent while this
+      // one was thinking, and the button's state belongs to the turn.
+      _labSyncTurnState();
+    }
+  }
+
+  /** The plan as a readable block: what it will do, then why. */
+  function renderLabTake(seat) {
+    const block = _labBlock(seat);
+    const take = labTakes.get(seat);
+    if (!block || !take) return;
+    const out = block.querySelector(".cc-lab-out");
+    out.textContent = "";
+    out.hidden = false;
+
+    // v1.42 — a fallback take is the harness's deterministic safety net,
+    // not the agent. It is identical on every invoke and never fires a
+    // weapon, so read as an ordinary plan it looks like a dull fork
+    // rather than an unreachable model. The meta tag below was the only
+    // tell and it was missed; an unreachable Cortex (no PAT, no route)
+    // costs an afternoon before anyone thinks to read the rationale.
+    if (take.plan?.fallback_used) {
+      const warn = document.createElement("div");
+      warn.className = "cc-lab-fallback";
+      const why = /\[fallback=True:([^\]]*)\]/.exec(take.rationale || "");
+      warn.textContent =
+        "FALLBACK — the model never answered, so this is the harness's "
+        + `built-in heuristic chain, not ${take.agent || "the agent"}. `
+        + "It is the same every invoke and never fires a weapon."
+        + (why ? ` Reason: ${why[1].trim()}.` : "");
+      out.appendChild(warn);
+    }
+
+    // An agent handed no journal plans a visibly different turn — it has
+    // no INTENT to carry forward and nothing to reflect on, so on night
+    // six it reasons like it is night one. That is a different test from
+    // the one the board claims to be, and it is invisible in the orders,
+    // so it is said out loud rather than left to be inferred.
+    const recalled = take.memory;
+    if (recalled && recalled.error) {
+      const warn = document.createElement("div");
+      warn.className = "cc-lab-fallback";
+      warn.textContent = `NO MEMORY — ${recalled.error}.`;
+      out.appendChild(warn);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "cc-lab-meta";
+    const secs = ((Number(take.elapsed_ms) || 0) / 1000).toFixed(1);
+    let journal = "";
+    if (recalled && recalled.entries > 0) {
+      journal = ` · journal ${recalled.entries} night(s)`;
+    } else if (recalled && recalled.note) {
+      journal = " · no journal";
+    }
+    meta.textContent =
+      `${(take.moves || []).length} order(s) · ${secs}s`
+      + journal
+      + (take.plan?.fallback_used ? " · FALLBACK (no live think)" : "")
+      + (take.committed ? " · ACCEPTED" : "");
+    if (recalled && recalled.note) meta.title = recalled.note;
+    out.appendChild(meta);
+
+    // Reuse the advisor's formatting rather than growing a second
+    // dialect for the same wire moves.
+    const ul = document.createElement("ul");
+    ul.className = "cc-lab-moves";
+    for (const line of advisorMoveLines(take.moves)) {
+      const li = document.createElement("li");
+      const h = document.createElement("span");
+      h.className = "h";
+      h.textContent = line.hour;
+      const t = document.createElement("span");
+      t.textContent = line.text;
+      li.append(h, t);
+      ul.appendChild(li);
+    }
+    out.appendChild(ul);
+
+    const rows = advisorDecisionRows(take.plan, take.thinking);
+    if (rows.length) {
+      out.appendChild(advisorDecisionList(take.plan, take.thinking));
+    } else if (take.rationale) {
+      // A heuristic has no directive to unpack, but it does say why.
+      const why = document.createElement("div");
+      why.className = "cc-lab-why";
+      why.textContent = take.rationale;
+      out.appendChild(why);
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "cc-lab-bar";
+
+    if (!take.committed) {
+      const accept = document.createElement("button");
+      accept.type = "button";
+      accept.className = "cli-btn cc-lab-accept";
+      accept.textContent = "[ ACCEPT ]";
+      accept.addEventListener("click", () => labAccept(seat));
+      bar.appendChild(accept);
+
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "cli-btn";
+      drop.textContent = "[ discard ]";
+      drop.addEventListener("click", () => {
+        labTakes.delete(seat);
+        setLabPlan(seat, []);
+        if (labShownSeat === seat) showLabPlan(null);
+        out.hidden = true;
+        out.textContent = "";
+      });
+      bar.appendChild(drop);
+    }
+
+    const vs = document.createElement("button");
+    vs.type = "button";
+    vs.className = "cli-btn cc-lab-vs";
+    vs.textContent = "[ vs V12 ]";
+    vs.title =
+      "Open the divergence view — this take against stock V12's frozen "
+      + "answer to the same board, prompts included";
+    vs.addEventListener("click", () => labOpenDiff(seat, vs));
+    bar.appendChild(vs);
+
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "cli-btn";
+    card.textContent = "[ .TXT ]";
+    card.title = "Download the full reasoning and the untruncated prompts";
+    card.addEventListener("click", () => labDownloadCard(seat));
+    bar.appendChild(card);
+
+    // The agent card proper — the same artefact a season turn produces,
+    // rendered by the same code. A lab turn is a turn, so what you hand
+    // to a teammate or paste into a coding agent should not be a
+    // different document just because of where it was taken.
+    for (const [label, fmt, tip] of [
+      ["[ CARD ]", "html",
+        "Open this turn as an agent card — the same card a season turn "
+        + "produces, in a new tab"],
+      ["[ CARD .MD ]", "md",
+        "Download this turn as an agent card in Markdown, to paste into "
+        + "a coding agent"],
+    ]) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cli-btn";
+      b.textContent = label;
+      b.title = tip;
+      b.addEventListener("click", () => labAgentCard(seat, fmt, b));
+      bar.appendChild(b);
+    }
+
+    out.appendChild(bar);
+  }
+
+  /** Submit the plan exactly as shown. */
+  async function labAccept(seat) {
+    const take = labTakes.get(seat);
+    if (!take || take.committed) return;
+    const block = _labBlock(seat);
+    const accept = block?.querySelector(".cc-lab-accept");
+    if (accept) {
+      accept.disabled = true;
+      accept.textContent = "[ sending… ]";
+    }
+    try {
+      const res = await fetch("/api/lab/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId, seat, moves: take.moves }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.detail || res.statusText);
+      take.committed = true;
+      // Set before the pull, not after: the night plays out inside
+      // ``pullAllMaps``, and a seat that is already with the engine must
+      // not look invokeable for the length of that animation.
+      labResolved = labResolved || !!out.resolved;
+      renderLabTake(seat);
+      _labSyncSealed();
+      // The last outstanding seat resolves the night, exactly as a live
+      // game does — so hand off to the ordinary pull rather than
+      // special-casing it. It already knows how to hold the reveal back,
+      // wait for the frames and play the night out.
+      await pullAllMaps({
+        playFx: !!out.resolved, expectNightFrames: !!out.resolved,
+      });
+      // Nothing here clears the plans off the board. `out.resolved` is
+      // the commit route comparing the day either side of its own call,
+      // and the engine has not turned it yet at that instant — so it is
+      // false even on the accept that ends the night. The turn being
+      // spent is decided in one place, by the status poll, and the
+      // cleanup lives with it in `_labSyncTurnState`.
+    } catch (err) {
+      const meta = block?.querySelector(".cc-lab-meta");
+      if (meta) meta.textContent = String(err.message || err);
+    }
+  }
+
+  /** This seat's take against stock V12's frozen answer, in a new tab.
+   *
+   *  The baseline is fetched rather than computed: V12 is an LLM, so
+   *  asking it again would compare against a different answer each time
+   *  and the diff would never settle. See turnlab/baseline.py.
+   *
+   *  The page is opened first and written into, rather than handed a
+   *  URL with the data on it — the two takes together run to a couple of
+   *  hundred kilobytes of prompt, which no query string will carry.
+   */
+  async function labOpenDiff(seat, btn) {
+    const take = labTakes.get(seat);
+    if (!take) return;
+    const label = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "[ loading… ]"; }
+    try {
+      const res = await fetch(
+        `/api/lab/baseline?board=${encodeURIComponent(LAB_BOARD)}`
+        + `&seat=${encodeURIComponent(seat)}`,
+      );
+      const base = await res.json();
+      if (!res.ok) throw new Error(base.detail || res.statusText);
+
+      const tab = window.open("", "_blank");
+      if (!tab) throw new Error("the browser blocked the new tab");
+      const shell = await (await fetch("/lab/diff")).text();
+      tab.document.open();
+      tab.document.write(shell);
+      tab.document.close();
+      // Written after the shell so the script, which runs on load, finds
+      // its data already there.
+      tab.__LAB_DIFF__ = { mine: take, base, board: LAB_BOARD, seat };
+      const s = tab.document.createElement("script");
+      s.src = "/lab/diff.js";
+      tab.document.body.appendChild(s);
+    } catch (err) {
+      const meta = _labBlock(seat)?.querySelector(".cc-lab-meta");
+      if (meta) meta.textContent = `no baseline: ${err.message || err}`;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+  }
+
+  function _labSave(text, mime, filename) {
+    const url = URL.createObjectURL(new Blob([text], { type: mime }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
+  /** Every seat that has a take, oldest hour first. */
+  function _labProposed() {
+    return [...labTakes.entries()].filter(([, t]) => t && Array.isArray(t.moves));
+  }
+
+  function _labDocHead(takes) {
+    const day = takes.length ? takes[0][1].day : "";
+    return {
+      day,
+      line: `board ${LAB_BOARD}  ·  day ${day}  ·  session ${sessionId}`,
+      when: new Date().toISOString().replace("T", " ").slice(0, 19) + "Z",
+    };
+  }
+
+  function _labStatus(t) {
+    return `${(t.moves || []).length} order(s)  ·  `
+      + `${((Number(t.elapsed_ms) || 0) / 1000).toFixed(1)}s  ·  `
+      + (t.committed ? "accepted" : "proposed, not accepted")
+      + (t.plan?.fallback_used ? "  ·  FALLBACK (no live think)" : "");
+  }
+
+  /** The proposed plans as Markdown — the comparison sheet.
+   *
+   *  Deliberately not the same document as ``.TXT`` beside each seat.
+   *  That one is the whole exchange for one agent, prompts included, for
+   *  when you are debugging a harness. This is what the seats intend to
+   *  do, side by side, for when you are comparing them.
+   */
+  function labPlansMarkdown() {
+    const takes = _labProposed();
+    const h = _labDocHead(takes);
+    const out = [
+      "# Sea of Colours — Turn Lab", "", "## Proposed plans", "",
+      h.line, "", `generated ${h.when}`, "",
+    ];
+    for (const [seat, t] of takes) {
+      out.push("---", "", `### ${playerTag(seat)} — ${t.agent}`, "", _labStatus(t), "");
+      const lines = advisorMoveLines(t.moves);
+      if (lines.length) {
+        out.push("| hour | order |", "| :--- | :--- |");
+        for (const l of lines) out.push(`| ${l.hour} | ${l.text} |`);
+      } else {
+        out.push("_no orders_");
+      }
+      out.push("");
+      for (const [k, v] of advisorDecisionRows(t.plan, t.thinking)) {
+        out.push(`**${k}**`, "", String(v).trim(), "");
+      }
+      if (t.rationale) {
+        out.push("> " + String(t.rationale).trim().replace(/\n/g, "\n> "), "");
+      }
+      for (const c of t.plan?.sanitizer_changes || []) {
+        out.push(`- corrected by the sanitiser: ${c}`);
+      }
+      out.push("");
+    }
+    return out.join("\n");
+  }
+
+  /** The same document as a standalone page, styled like the game. */
+  function labPlansHTML() {
+    const takes = _labProposed();
+    const h = _labDocHead(takes);
+    const seats = takes
+      .map(([seat, t]) => {
+        const ink = playerColor(seat) || ownerColor(seat) || "#9fa6ad";
+        const orders = advisorMoveLines(t.moves)
+          .map(
+            (l) =>
+              `<tr><td class="h">${esc(l.hour)}</td><td>${esc(l.text)}</td></tr>`,
+          )
+          .join("")
+          || '<tr><td colspan="2" class="dim">no orders</td></tr>';
+        const rows = advisorDecisionRows(t.plan, t.thinking)
+          .map(
+            ([k, v]) =>
+              `<dt>${esc(k)}</dt><dd>${esc(String(v).trim())}</dd>`,
+          )
+          .join("");
+        const fixes = (t.plan?.sanitizer_changes || [])
+          .map((c) => `<li>${esc(c)}</li>`)
+          .join("");
+        return `
+  <section class="seat" style="--ink:${esc(ink)}">
+    <h2><span class="tag">[ ${esc(playerTag(seat))} ]</span> ${esc(t.agent)}</h2>
+    <p class="status">${esc(_labStatus(t))}</p>
+    <table>${orders}</table>
+    ${rows ? `<dl>${rows}</dl>` : ""}
+    ${t.rationale ? `<blockquote>${esc(String(t.rationale).trim())}</blockquote>` : ""}
+    ${fixes ? `<p class="dim">corrected by the sanitiser:</p><ul>${fixes}</ul>` : ""}
+  </section>`;
+      })
+      .join("");
+
+    return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<title>Turn Lab — proposed plans</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 38px 22px 60px; background: #07090b; color: #dfe4e8;
+    font: 14px/1.6 ui-monospace, "JetBrains Mono", Consolas, monospace;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 17px; letter-spacing: .12em; margin: 0 0 3px; font-weight: 600; }
+  .head { opacity: .55; font-size: 12px; margin-bottom: 30px; }
+  .seat {
+    border-left: 3px solid var(--ink); padding: 2px 0 2px 15px; margin: 0 0 34px;
+  }
+  h2 { font-size: 14.5px; margin: 0 0 3px; font-weight: 600; }
+  .tag { color: var(--ink); }
+  .status { opacity: .55; font-size: 12px; margin: 0 0 14px; }
+  table { border-collapse: collapse; margin: 0 0 16px; width: 100%; }
+  td { padding: 3px 10px 3px 0; vertical-align: top; border-bottom: 1px solid rgba(255,255,255,.06); }
+  td.h { color: var(--ink); width: 34px; white-space: nowrap; opacity: .8; }
+  dl { display: grid; grid-template-columns: 84px 1fr; gap: 5px 14px; margin: 0 0 16px; font-size: 13px; }
+  dt { opacity: .45; }
+  dd { margin: 0; white-space: pre-wrap; }
+  blockquote {
+    margin: 0 0 14px; padding-left: 13px; border-left: 2px solid rgba(255,255,255,.16);
+    opacity: .85; white-space: pre-wrap;
+  }
+  ul { margin: 0 0 14px; padding-left: 18px; }
+  .dim { opacity: .45; font-size: 12px; }
+  @media print { body { background: #fff; color: #000; } }
+</style></head>
+<body><div class="wrap">
+  <h1>SEA OF COLOURS — TURN LAB</h1>
+  <div class="head">proposed plans<br />${esc(h.line)}<br />generated ${esc(h.when)}</div>
+  ${seats}
+</div></body></html>`;
+  }
+
+  function labExportPlans(fmt) {
+    if (!_labProposed().length) return;
+    if (fmt === "md") {
+      _labSave(
+        labPlansMarkdown(), "text/markdown",
+        `turnlab-plans-${LAB_BOARD || "board"}.md`,
+      );
+      return;
+    }
+    const url = URL.createObjectURL(
+      new Blob([labPlansHTML()], { type: "text/html" }),
+    );
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
+  /** This take as a proper agent card, rendered server-side.
+   *
+   *  The take is posted back up rather than fetched by id because a
+   *  proposed plan is never stored — it is offered, and most are thrown
+   *  away. The server owns the format so a lab card and a season card
+   *  cannot drift into being two different documents.
+   */
+  async function labAgentCard(seat, fmt, btn) {
+    const take = labTakes.get(seat);
+    if (!take) return;
+    const was = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "[ … ]"; }
+    try {
+      const r = await fetch("/api/lab/card", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          take, format: fmt, board: LAB_BOARD, session: sessionId,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+      if (fmt === "md") {
+        _labSave(j.body, "text/markdown", j.filename);
+      } else {
+        const url = URL.createObjectURL(
+          new Blob([j.body], { type: "text/html" }),
+        );
+        window.open(url, "_blank", "noopener");
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+    } catch (e) {
+      if (btn) { btn.textContent = "[ failed ]"; btn.title = String(e); }
+      setTimeout(() => { if (btn) btn.textContent = was; }, 2500);
+      return;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+    if (btn) btn.textContent = was;
+  }
+
+  /** The whole exchange as text — what the agent saw, then said. */
+  function labDownloadCard(seat) {
+    const take = labTakes.get(seat);
+    if (!take) return;
+    const plan = take.plan || {};
+    const think = take.thinking || {};
+    const prompts = take.prompts || {};
+    const rule = "=".repeat(72);
+    const out = [rule, "SEA OF COLOURS — TURN LAB CARD"];
+    out.push(`agent ${take.agent}   seat ${take.seat}   day ${take.day}`);
+    out.push(`board ${LAB_BOARD}   session ${sessionId}`);
+    out.push(`answered in ${((Number(take.elapsed_ms) || 0) / 1000).toFixed(1)}s`
+      + (plan.fallback_used ? "   FALLBACK (no live think)" : "")
+      + (take.committed ? "   ACCEPTED" : "   NOT ACCEPTED"));
+    out.push(`generated ${new Date().toISOString()}`, rule);
+
+    out.push("", "## ORDERS", "");
+    const lines = advisorMoveLines(take.moves);
+    if (!lines.length) out.push("  (none)");
+    for (const l of lines) out.push(`  ${l.hour.padEnd(4)} ${l.text}`);
+
+    const rows = advisorDecisionRows(plan, think);
+    if (rows.length) {
+      out.push("", "## DECISION", "");
+      for (const [k, v] of rows) out.push(`  ${String(k).padEnd(11)}${v}`);
+    }
+    if ((plan.sanitizer_changes || []).length) {
+      out.push("", "  corrected by the sanitiser:");
+      for (const c of plan.sanitizer_changes) out.push(`    - ${c}`);
+    }
+    if (take.rationale) {
+      out.push("", rule, "## RATIONALE", rule, "", take.rationale.trim());
+    }
+    if (think.reasoning) {
+      out.push("", rule, "## REASONING (think pass, verbatim)", rule, "");
+      out.push(String(think.reasoning).trim());
+    }
+    if (think.option_menu) {
+      out.push("", rule, "## OPTION MENU (what was on the table)", rule, "");
+      out.push(String(think.option_menu).trim());
+    }
+    for (const [label, key] of [
+      ["THINK", "think"], ["PLAN", "plan"], ["MOVER", "mover"],
+    ]) {
+      const text = String(prompts[key] || "").trim();
+      if (!text) continue;
+      out.push("", rule, `## ${label} PROMPT (untruncated, as sent)`, rule, "");
+      out.push(text);
+    }
+
+    const text = out.join("\n");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const name = `lab_${take.agent}_${take.seat}_d${take.day}_${stamp}.txt`;
+    const url = URL.createObjectURL(
+      new Blob([text], { type: "text/plain;charset=utf-8" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoke on a later tick — Safari cancels the download if the URL
+    // dies in the same frame as the click.
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
   /** Sync the active class on whatever agent seat buttons currently
@@ -14791,14 +15877,20 @@
       if (animate) runHorizonSweep(mapPlayer, "sunset", null, null);
       else setMapDaylight("night");
       if (animate && titleCardsEnabled) {
+        // v1.42 — the lab borrows this beat for the morning after its one
+        // night, which is a settlement with no night frames of its own —
+        // the same shape, and nothing like the end of a season. Saying
+        // "SEASON RESOLVES" over a day-3 turn would be a plain lie.
         const seasonLabel = _currentSeasonLabel();
         void showMapTitleCard(
-          "SEASON RESOLVES",
-          seasonLabel ? `— ${seasonLabel} —` : "",
+          tick.labMorning ? `VESPERA · DAY ${day}` : "SEASON RESOLVES",
+          tick.labMorning
+            ? "— the orbit has settled —"
+            : (seasonLabel ? `— ${seasonLabel} —` : ""),
           { holdMs: 1600 },
         );
       }
-      setClock(day, "RESOLVE");
+      setClock(day, tick.labMorning ? "VESPERA" : "RESOLVE");
       try { paintRedsignOverlay(); } catch (_e) { /* non-fatal */ }
       syncReplayScrubUi();
       lastPaintedReplayTickIdx = replayTickIdx;
@@ -15004,7 +16096,17 @@
       const res = await fetch(`/api/game/${sessionId}/replay`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json();
-      const incoming = Array.isArray(payload.frames) ? payload.frames : [];
+      // v1.42 — a frozen turn is ONE night, and the scrubber must not
+      // offer any other. The clone inherits the previous night's frames
+      // on purpose (they are what "YOU ORDERED" and the execution log
+      // are built from, so the agent can see what it just did), but the
+      // transport row read them as another day to visit and let you
+      // rewind out of the turn you came to study. The frames stay; only
+      // the timeline is cut, and it is cut here so the ticks, the day
+      // buttons, the scrub bar and their disabled states all agree.
+      const incoming = _labOnlyFrozenNight(
+        Array.isArray(payload.frames) ? payload.frames : [],
+      );
       const prevLastDay =
         nightReplayFrames.length > 0
           ? Number(nightReplayFrames[nightReplayFrames.length - 1]?.day || 0)
@@ -15018,9 +16120,9 @@
       // Fresh replay data → re-arm the per-night dawn-wipe dedupe.
       _sweptReplayNights = new Set();
       _prevPaintedReplayDay = null;
-      replayDayIndex = Array.isArray(payload.day_index)
-        ? payload.day_index
-        : [];
+      replayDayIndex = _labOnlyFrozenNight(
+        Array.isArray(payload.day_index) ? payload.day_index : [],
+      );
       // v0.9.10 — stash the seat list from the replay response so
       // the replay-view buttons show all active seats (p3/p4 too).
       if (Array.isArray(payload.players) && payload.players.length) {
@@ -15251,13 +16353,20 @@
           // DAWN of the night that just ended → bind to its last frame.
           pushSlot("dawn", lastDayBeforePush, i - 1, { dawnFrameIdx: i - 1 });
         }
-        if (currentDay > 0) {
+        if (currentDay > 0 && !LAB_MODE) {
           // DUSK opening the new night → bind to (and OWN) its hour-0 frame.
           // The ORBIT phase already resolved before this frame exists (ships
           // launched, blue burned, post[N] stamped), so hour 0 IS the
           // pre-praxis DUSK beat: post-orbital board + briefing. We no longer
           // emit a separate hour-0 "praxis begins" tick — see the open-skip
           // branch below.
+          //
+          // v1.42 — not in the lab. DUSK(N) is the settlement of the orbit
+          // that led INTO this night, and the lab is testing the night: it
+          // opened every frozen turn on a review of somebody else's
+          // shopping. Dropping the slot lets the hour-0 frame take an
+          // ordinary tick (see the open branch), so playback starts where
+          // the turn does — at PRAXIS BEGINS.
           pushSlot("dusk", currentDay, i, { duskFrameIdx: i });
         }
       }
@@ -15294,11 +16403,14 @@
           lastFrameIdx: j - 1,
         });
         i = j;
-      } else if (f && f.tag === "open") {
+      } else if (f && f.tag === "open" && !LAB_MODE) {
         // v1.3 — the hour-0 ``open`` frame gets NO standalone scrubber
         // position; the DUSK slot inserted at the day boundary owns it (it's
         // the pre-praxis orbital-resolve beat). This "combines" the redundant
         // synthetic-DUSK + hour-0 pair into one beat.
+        //
+        // v1.42 — in the lab there is no DUSK slot to own it, so the frame
+        // keeps its own position and becomes the opening board of the night.
         i += 1;
       } else if (f && f.tag === "dawn") {
         // v1.2 — the hour-22 ``dawn`` frame gets NO standalone scrubber
@@ -15334,6 +16446,25 @@
       const finalBlob = catapultByDay[String(finalDay)];
       if (finalBlob && orbitBlobHasActivity(finalBlob)) {
         pushSlot("resolve", finalDay, frames.length - 1, { resolveDay: finalDay });
+      }
+    }
+    // v1.42 — the lab's closing beat: the morning after.
+    //
+    // A frozen turn now runs on through its orbit so the RED in the vault
+    // becomes score and the GREEN becomes a penalty, and that settlement
+    // had nowhere to live on the timeline — the last position was the
+    // night's DAWN, so the numbers appeared on the board with no tick to
+    // scrub back to. It reuses the endgame's ``resolve`` slot, which is
+    // exactly this shape already: a settlement with no night frames of
+    // its own, bound to the last frame so it paints over the resolved
+    // board.
+    if (LAB_MODE && LAB_DAY && frames.length > 0) {
+      const morning = LAB_DAY + 1;
+      const blob = catapultByDay[String(morning)];
+      if (blob && orbitBlobHasActivity(blob)) {
+        pushSlot("resolve", morning, frames.length - 1, {
+          resolveDay: morning, labMorning: true,
+        });
       }
     }
   }
@@ -18277,6 +19408,14 @@
       // (cursor day instead of live day) without re-fetching.
       lastLogTail = Array.isArray(st.log_tail) ? st.log_tail : [];
       lastLiveDay = Number(st.day) || null;
+      // A reloaded lab page has no memory of the plans it accepted, but
+      // the calendar does: past the board's own day means the night has
+      // already been played, so come back locked rather than offering a
+      // second turn on a board that has had one.
+      if (LAB_MODE && LAB_DAY && lastLiveDay > LAB_DAY && !labResolved) {
+        labResolved = true;
+        _labSyncTurnState();
+      }
       const focusDay = mainMapSource === "replay" && replayTicks.length
         ? currentVisibleDay()
         : lastLiveDay;
@@ -18434,6 +19573,53 @@
     }
   }
 
+  /** The seat whose percept the live board should be showing.
+   *
+   *  v1.42 — outside the lab this is always you, because a live season
+   *  must never hand a player a rival's fog. On a frozen turn both seats
+   *  are yours to drive, so the transport row's seat buttons steer the
+   *  live board exactly as they steer a replay.
+   */
+  function _liveViewSeat() {
+    if (!LAB_MODE) return MY_SEAT;
+    if (!replayViewSeat || replayViewSeat === "obs") return MY_SEAT;
+    return replayViewSeat;
+  }
+
+  /** Fetch the live percept for whichever seat the camera is on.
+   *
+   *  v1.42 — OBS has no endpoint of its own in this shape: ``/observer``
+   *  returns the GRAPHICS drawer's mosaic, not a ``/view`` payload. So
+   *  OBS is assembled the same way the replay path assembles it — every
+   *  seat's percept, folded cell-by-cell with the existing merger — and
+   *  laid over the viewing seat's payload so the vault, hoard and orbit
+   *  blocks still belong to one seat rather than an incoherent blend.
+   */
+  async function _fetchLiveView() {
+    const get = async (seat) => {
+      const res = await fetch(
+        `/api/game/${sessionId}/view?player=${encodeURIComponent(seat)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    };
+
+    const base = await get(_liveViewSeat());
+    if (!LAB_MODE || replayViewSeat !== "obs") return base;
+
+    const seats = _activeSeatsForView();
+    if (seats.length < 2) return base;
+    const others = await Promise.all(
+      seats.filter((s) => s !== _liveViewSeat()).map(
+        (s) => get(s).catch(() => null),
+      ),
+    );
+    const grids = [base.cells, ...others.map((o) => o && o.cells)];
+    const merged = mergeAllPlayerCells(grids, (base.cells || []).length);
+    return merged.length ? { ...base, cells: merged } : base;
+  }
+
   async function refreshSoloPlayerMap() {
     const unitsEl = document.getElementById("units-player");
     const inventEl = document.getElementById("inventory-player");
@@ -18448,11 +19634,7 @@
       return;
     }
     try {
-      const res = await fetch(`/api/game/${sessionId}/view?player=${MY_SEAT}`, {
-        cache: "no-store",
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const j = await res.json();
+      const j = await _fetchLiveView();
       // v0.9.6 — stash the seat list + agent map + visibility mode
       // from the /view response on a window-scoped global so
       // ``activeSeats()`` and friends can drive N-seat rendering
@@ -19920,7 +21102,11 @@
   function applySeatIdentity() {
     agentSeat = MY_SEAT;
     vaultSeat = MY_SEAT;
-    if (mainMapSource !== "replay") replayViewSeat = MY_SEAT;
+    // v1.42 — the lab drives the live board from this seat too, so
+    // snapping it back to MY_SEAT here undid every camera switch made
+    // before the night resolved. Live play still needs the reset: there
+    // the viewer may only ever be themselves.
+    if (mainMapSource !== "replay" && !LAB_MODE) replayViewSeat = MY_SEAT;
     updateSeatIdentityBadge();
   }
 
@@ -21596,7 +22782,11 @@
     // composer can take input (a finished MP game or replay is
     // view-only), and snap off either command tab.
     const locked = WATCH_MODE || livePhase === "season_complete";
-    const isOrbit = !locked && livePhase === "orbit";
+    // The lab is one night and buys nothing for the next one, so ORBIT
+    // never opens here — without this the phase flip after the night
+    // resolves would snap the panel onto a builder for a tomorrow the
+    // board does not have.
+    const isOrbit = !locked && livePhase === "orbit" && !LAB_MODE;
     // v1.26 — AN ARMED AIM DOES NOT SURVIVE LOSING ITS COMPOSER.
     //
     // `enterAssetSelect` / `enterPickMode` raise the pick banner and put
@@ -21642,8 +22832,17 @@
     }
   }
 
+  /** Tabs the lab has no use for, and ORDERS is the one that matters:
+   *  no human turn is taken here, so the composer must be unreachable —
+   *  not by click, not by the ``[1]``..``[8]`` captions, not by a phase
+   *  snap. Hiding the button alone left all three ways in (v1.42). */
+  const LAB_SHUT_TABS = new Set(["orbit", "intel", "orders"]);
+
   /** @param {string} tabId */
   function activateCcTab(tabId) {
+    // Redirected rather than refused: something has to be on screen, and
+    // the AGENT pane is where a frozen turn is actually played.
+    if (LAB_MODE && LAB_SHUT_TABS.has(tabId)) tabId = "log";
     ccTabs.forEach((btn) => {
       const on = btn.getAttribute("data-cc-tab") === tabId;
       btn.classList.toggle("cc-tab--active", on);
@@ -21897,6 +23096,11 @@
   }
 
   function renderReplayViewButtons() {
+    // v1.42 — every site that stashes the canonical seat list calls this,
+    // which makes it the one place that reliably hears "the roster is
+    // now known". The lab's invoke rows need the same news, and hanging
+    // them here beats repeating the call at all three stash sites.
+    if (LAB_MODE) { try { renderLabInvoke(); } catch (_e) {} }
     if (!replayViewRowEl) return;
     if (!replayViewObsBtn) return;
     if (replayViewSeat === "both") replayViewSeat = "obs";
@@ -21954,6 +23158,7 @@
         replayViewSeat = seat;
         syncReplayViewBtns();
         if (mainMapSource === "replay") paintReplayFrameOntoMain("jump");
+        else if (LAB_MODE) refreshSoloPlayerMap();
         if (typeof osOnViewerChange === "function") osOnViewerChange(replayViewSeat);
       });
       replayViewRowEl.insertBefore(btn, replayViewObsBtn);
@@ -21983,6 +23188,7 @@
     replayViewSeat = "obs";
     syncReplayViewBtns();
     if (mainMapSource === "replay") paintReplayFrameOntoMain("jump");
+    else if (LAB_MODE) refreshSoloPlayerMap();
     if (typeof osOnViewerChange === "function") osOnViewerChange("obs");
   });
 
@@ -21996,6 +23202,17 @@
   // ``newGame`` directly (eval harness, console).
   newGameBtn.addEventListener("click", openNewGameModal);
   bindNewGameModal();
+
+  // v1.42 — build the lab's invoke rows at boot. They also get built
+  // from renderAgentSeatTabs(), but that only runs via
+  // updateSeatTabVisibility(), which live play has no reason to call —
+  // so relying on it alone left the control missing exactly where it is
+  // wanted. Building here is the belt; the tab path is the braces.
+  if (LAB_MODE) renderLabInvoke();
+  // ORDERS is the markup's default active tab, and in the lab it is not
+  // there — leaving it selected opened the page on a composer that has
+  // no tab to go back to. The AGENT pane is the lab's home screen.
+  if (LAB_MODE) activateCcTab("log");
 
   soloExpert?.addEventListener("change", () => syncExpertPanel());
 
