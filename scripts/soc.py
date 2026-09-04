@@ -2,8 +2,9 @@
 """``soc`` — the one command for the hackathon.
 
     python scripts/soc.py new --team redwatch --name reaper
-    python scripts/soc.py suite --agent redwatch_reaper
-    python scripts/soc.py why redwatch_reaper two_pures_poker
+    python scripts/soc.py lab
+    python scripts/soc.py season --p1 redwatch_reaper --p2 tabula_v12
+    python scripts/soc.py share            # hand it to a teammate
     python scripts/soc.py push
     python scripts/soc.py league
 
@@ -898,6 +899,98 @@ def _resolve_agent(found, requested: str | None, problems=None):
     )
 
 
+# ── share / grab ────────────────────────────────────────────────────
+
+
+def cmd_share(args) -> int:
+    """Pack your agent into one file, to hand to a teammate.
+
+    The gap this fills is between "we are on the same team" and "this is
+    finished". `soc push` is the second of those: it commits, it races
+    the room for the branch, and it puts the work on the public record.
+    A pair iterating on one agent needs the first, several times an
+    hour, and had nothing.
+    """
+    from sea_of_colours.orchestrator_2 import agent_manifest, fork_parcel
+
+    found, problems = agent_manifest.discover()
+    mine = _resolve_agent(found, args.agent, problems)
+
+    try:
+        text = fork_parcel.pack(mine)
+    except fork_parcel.ParcelError as exc:
+        _die(str(exc))
+
+    out = Path(args.out) if args.out else Path.cwd() / (
+        mine.label + fork_parcel.SUFFIX
+    )
+    out.write_text(text, encoding="utf-8")
+
+    parcel = fork_parcel.read(text)
+    size = len(text) / 1024
+    print(f"  packed {mine.label} — {parcel.header['files']} files, "
+          f"{size:.0f}K")
+    print(f"  {out}")
+    print(f"\n  fingerprint {parcel.fingerprint} — packing the same code "
+          f"always gives\n  the same one, so you can both check you are "
+          f"on the same version\n  without either of you unpacking "
+          f"anything.")
+    print(f"\n  They run:  python scripts/soc.py grab {out.name}")
+    return 0
+
+
+def cmd_grab(args) -> int:
+    """Install an agent a teammate shared with you.
+
+    Says out loud that this runs their code. The format refuses
+    anything that is not source, and unpacking cannot write outside the
+    one directory — but the Python inside is the point of the exercise
+    and it does execute, so the honest framing is "grab from people you
+    know" rather than a list of reassuring guarantees.
+    """
+    from sea_of_colours.orchestrator_2 import fork_parcel
+
+    path = Path(args.parcel)
+    if not path.is_file():
+        _die(f"no such file: {path}",
+             fix="pass the .socfork your teammate sent you")
+
+    try:
+        parcel = fork_parcel.read(path.read_text(encoding="utf-8"))
+    except fork_parcel.ParcelError as exc:
+        _die(str(exc))
+    except UnicodeDecodeError:
+        _die(f"{path} is not text, so it is not a parcel",
+             fix="a .socfork is a text file; check you sent the right one")
+
+    rename = None
+    if args.as_team or args.as_name:
+        if not (args.as_team and args.as_name):
+            _die("--as-team and --as-name go together",
+                 fix="pass both, e.g. --as-team mine --as-name theirs")
+        rename = (args.as_team, args.as_name)
+
+    print(f"  {parcel.label} by {parcel.participants or 'unnamed'} "
+          f"({parcel.header.get('files')} files, "
+          f"fingerprint {parcel.fingerprint})")
+
+    try:
+        done = fork_parcel.install(parcel, force=args.force, rename=rename)
+    except fork_parcel.ParcelError as exc:
+        _die(str(exc))
+
+    verb = "replaced" if done.replaced else "installed"
+    print(f"  {verb} {done.label} — {done.files} files")
+    if done.renamed_from:
+        print(f"  repointed from {done.renamed_from}, so both can run "
+              f"side by side")
+    print(f"\n  It is castable now, with nothing else to register:\n"
+          f"    python scripts/soc.py lab        # frozen turns to try it on\n"
+          f"    python run_web.py                # and it is in the New Game "
+          f"menu")
+    return 0
+
+
 # ── weapons ─────────────────────────────────────────────────────────
 
 
@@ -1086,6 +1179,42 @@ def build_parser() -> argparse.ArgumentParser:
     pu.add_argument("--force", action="store_true",
                     help=argparse.SUPPRESS)
     pu.set_defaults(fn=cmd_push)
+
+    sh = sub.add_parser(
+        "share",
+        help="pack your agent into one file to hand to a teammate",
+        description=(
+            "Write your fork to a single .socfork file. Send it however "
+            "you like — chat, email, AirDrop — and the other person runs "
+            "`soc grab` on it. Nothing is committed and nothing is "
+            "published; this is for passing work-in-progress inside a "
+            "team, where `soc push` would be far too heavy."
+        ),
+    )
+    sh.add_argument("--agent", default=None)
+    sh.add_argument("--out", default=None,
+                    help="where to write it (default: <label>.socfork here)")
+    sh.set_defaults(fn=cmd_share)
+
+    gr = sub.add_parser(
+        "grab",
+        help="install an agent a teammate shared with you",
+        description=(
+            "Unpack a .socfork into your harnesses/ so you can run it. "
+            "IT IS SOMEBODY ELSE'S PYTHON AND IT WILL RUN ON YOUR "
+            "MACHINE — grab from people you know. Once installed it is "
+            "castable in the lab and selectable in a new game with no "
+            "further steps."
+        ),
+    )
+    gr.add_argument("parcel", help="the .socfork file you were sent")
+    gr.add_argument("--force", action="store_true",
+                    help="replace your copy if you already have this agent")
+    gr.add_argument("--as-team", default=None,
+                    help="install under a different team, alongside yours")
+    gr.add_argument("--as-name", default=None,
+                    help="install under a different name, alongside yours")
+    gr.set_defaults(fn=cmd_grab)
 
     lg = sub.add_parser("league", help="run every submitted agent and rank them")
     lg.add_argument("--board", default="all")

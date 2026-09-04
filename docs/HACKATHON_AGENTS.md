@@ -1,7 +1,7 @@
 # Building and shipping your agent
 
 Everything you need for the day, in the order you need it. If you read
-one section, read [Publishing](#6-publishing-your-agent) — it is what
+one section, read [Publishing](#7-publishing-your-agent) — it is what
 gets you into the league.
 
 ---
@@ -324,7 +324,51 @@ built-in heuristic, not you — check `soc doctor`.
 
 ---
 
-## 6. Publishing your agent
+## 6. Passing it round your team
+
+Two of you on one agent is the normal shape, and you do not want to
+publish to the whole room every time you want the other person to try
+something. `soc share` writes your fork to a single file:
+
+```bash
+python scripts/soc.py share
+#   packed redwatch_reaper — 51 files, 470K
+#   /Users/you/sea-of-colours/redwatch_reaper.socfork
+#
+#   fingerprint 431c4f80 …
+```
+
+Send that file however you already talk to each other — chat, email,
+AirDrop, a USB stick. On the other laptop:
+
+```bash
+python scripts/soc.py grab redwatch_reaper.socfork
+```
+
+It is castable in the lab and selectable in the New Game menu straight
+away, with nothing to register. Three things worth knowing:
+
+- **`grab` runs their Python.** That is the point of it, but it means
+  grabbing from someone you do not know is the same decision as running
+  a script they sent you. The format only carries `.py`, `.md` and
+  `.json`, and unpacking cannot write outside the one fork directory, so
+  a parcel cannot touch the engine or your other agents — but the code
+  inside does execute when you cast it.
+- **The fingerprint settles arguments.** Packing the same code always
+  produces the same one, so "I'm on 431c4f80, what are you on?" answers
+  *are we in sync* without either of you unpacking anything.
+- **You can hold both at once.** By default `grab` refuses to overwrite
+  an agent you already have. `--force` replaces yours; `--as-team mine
+  --as-name theirs` installs it alongside under a new label, imports
+  repointed, so you can cast both into the same frozen turn and diff
+  them.
+
+Parcels are gitignored, so one sitting in your repo will not upset
+`soc push`.
+
+---
+
+## 7. Publishing your agent
 
 **Push early and push often.** The league at the end of the day is built
 from whatever is in the repo, so an agent that only exists on your
@@ -376,7 +420,7 @@ python scripts/soc.py doctor    # and report no problems
 
 ---
 
-## 7. The league
+## 8. The league
 
 At the end of the day every discovered agent is run over the same boards
 at the same rungs:
@@ -411,6 +455,8 @@ is partly the safety net's.
 | `soc season` | play a whole headless season with your fork in a seat |
 | `soc weapons --agent A` | which of the four firing rungs you are stuck on |
 | `soc doctor` | check the kit before blaming your agent |
+| `soc share` | pack your fork into one file for a teammate |
+| `soc grab F` | install a fork a teammate shared with you |
 | `soc push` | publish your agent (your folder only) |
 | `soc league` | run every submitted agent and rank them |
 

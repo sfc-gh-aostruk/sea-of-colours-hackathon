@@ -242,6 +242,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"    {rel}/tests/test_*.py")
     print(f"    python -m pytest {rel}")
     print()
+    # Working in a pair is the normal shape, and the alternative people
+    # reach for otherwise is pushing half-finished work to the shared
+    # branch so their partner can pull it (v1.43).
+    print("  hand it to a teammate (one file, nothing published):")
+    print(f"    python scripts/soc.py share --agent {label}")
+    print("    ...they run: python scripts/soc.py grab <that file>")
+    print()
     print("  publish it (your folder only):")
     print(f"    python scripts/soc.py push")
     return 0

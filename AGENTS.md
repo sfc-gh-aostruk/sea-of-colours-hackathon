@@ -172,6 +172,13 @@ sea_of_colours/
                  shared — that's what lets a room of teams share one repo,
                  and makes the league a directory scan. Don't add a fork to
                  binding_registry.py.
+    fork_parcel.py    One fork as one file, for handing between teammates
+                    (v1.43 — `soc share` / `soc grab`). `soc push` is the
+                    end-of-day move and far too heavy for "try this";
+                    a pair iterating on one agent needs the other thing.
+                    Carries only .py/.md/.json and cannot write outside
+                    the fork's own directory, but the code does run on
+                    arrival — that is stated, not hidden.
     orbit_policy.py   A harness owns its own buying policy (v1.40). It used to
                     live in agent/heuristic_agent.py, shared — which meant a
                     fork could not change what it spends credits on without
@@ -210,7 +217,8 @@ server/
   app.py         FastAPI thin proxy (/, /api/game/*); static mounted no-cache
   static/        Web UI — app.js, styles.css, station.js, index.html
 scripts/         deploy_soc_schema.py, run_season*.py, run_evals.py, run_battery.py
-  soc.py         the hackathon front door — new / lab / season / doctor / push,
+  soc.py         the hackathon front door — new / lab / season / doctor /
+                 share / grab / push,
                  plus the deprecated battles commands (suite / why / diff /
                  weapons / league / list, which print a notice). One entry
                  point on purpose; point attendees (and their coding agents)
