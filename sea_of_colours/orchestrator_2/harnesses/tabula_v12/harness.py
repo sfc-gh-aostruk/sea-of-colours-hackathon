@@ -370,7 +370,7 @@ def run(
     # day is authored by the plan pass below and stamped afterwards). Rendered in
     # place of the plain memory replay.
     journal_mod.enrich_prior_entry(prior_day_entry, last_night_memory)
-    memory_replay = journal_mod.render_journal(prior_entries)
+    memory_replay = journal_mod.render_journal(prior_entries, day)
 
     # 4. Precompute the hint menu (v7 compilers, now with v10 seeded variability:
     #    a per-(session, seat, night) rng breaks near-tie symmetry so seats fan
@@ -1083,7 +1083,11 @@ def run(
                         "response_text": thinker_reasoning,
                         "rationale": "[think pass — bounded reasoning]",
                         "ms_elapsed": think_ms,
-                        "prompt_excerpt": thinker_prompt[:32_000],
+                        # Full text — the audit layer decides how to fit
+                        # it. Slicing here as well used to double-truncate
+                        # from the head and threw the OPTION MENU away,
+                        # which is the one block a reader needs.
+                        "prompt_excerpt": thinker_prompt,
                     },
                     {
                         "label": THINKER_AGENT_LABEL,
@@ -1098,7 +1102,7 @@ def run(
                             if thinker_directive else "[plan=no directive]"
                         ),
                         "ms_elapsed": plan_ms,
-                        "prompt_excerpt": plan_prompt[:32_000],
+                        "prompt_excerpt": plan_prompt,
                     },
                 ]
                 if thinker_used else []
@@ -1108,7 +1112,7 @@ def run(
             "prompt_chars": len(prompt_text),
             "response_chars": len(response_text),
             "submit_result": submit_result,
-            "prompt_excerpt": prompt_text[:32_000],
+            "prompt_excerpt": prompt_text,
         },
     }
     # A season night happens ONCE and the audit's prompt_excerpt is truncated
