@@ -66,9 +66,29 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 def buffering_enabled() -> bool:
-    """``SOC_BUFFERED_STORE`` — off unless explicitly enabled."""
+    """``SOC_BUFFERED_STORE`` — on unless explicitly disabled.
+
+    On by default since v1.43. It shipped off while it was new, which
+    meant the canonical run command never used it and the saving was
+    only ever collected by whoever had read the latency brief.
+
+    Measured on a full seven-day season rather than a bench, because
+    that is what somebody actually waits for: 97.9s → 62.2s with
+    heuristic seats, 254.5s → 205.3s with V12 in one. Smaller than the
+    per-turn store figures suggest — a real season is mostly engine and
+    model time, which no amount of buffering touches.
+
+    What it costs, stated plainly: game state is still flushed every
+    turn, so a crash can never rewind or corrupt a game. The deferred
+    tier is the day's LOG text, replay frames and invocation rows, and
+    a hard crash mid-day loses that day's worth of them. You lose the
+    animation and the transcript of a day, never the game.
+
+    ``SOC_BUFFERED_STORE=0`` is the way back, and the thing to try first
+    if a Snowflake season ever looks like it is missing history.
+    """
     return os.environ.get(
-        "SOC_BUFFERED_STORE", "0"
+        "SOC_BUFFERED_STORE", "1"
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 

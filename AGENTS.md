@@ -81,6 +81,15 @@ pytest                   # tests/ (pythonpath=. via pytest.ini)
   `backend.snowpark_session_for(store)`. `tests/test_per_game_backend.py`
   pins both, including a scan that fails if a V12 module reads the
   frozen `SOC_BACKEND` constant again.
+- **Write buffering is on (v1.43).** On Snowflake every store call costs
+  ~300ms before it does any work, and the engine issues 11–14 a turn.
+  `buffered_store.py` coalesces them: a seven-day season goes 97.9s →
+  62.2s on heuristic seats, 254.5s → 205.3s with V12 in one. Game state
+  still flushes **every turn**, so a crash can never rewind or corrupt a
+  game; what a hard crash mid-day costs is that day's LOG text, replay
+  frames and invocation rows — the transcript and the animation, never
+  the game. `SOC_BUFFERED_STORE=0` turns it off, and is the first thing
+  to try if a Snowflake season looks like it is missing history.
 - **Running the server — either seat is fine, but say which one you took.**
   The canonical command, whoever types it:
   `SOC_BACKEND=snowflake python run_web.py --no-reload`.

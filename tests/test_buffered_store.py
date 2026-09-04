@@ -285,3 +285,32 @@ def test_snowpark_session_for_still_resolves_through_the_wrapper() -> None:
         "a wrapped memory store must not expose a session, or a memory-backed "
         "game writes agent memory into the account"
     )
+
+
+def test_buffering_is_on_unless_it_is_turned_off(monkeypatch):
+    """The default flipped in v1.43, and the escape hatch has to survive it.
+
+    It shipped off while it was new, which meant the canonical run
+    command never used it: the saving was collected only by whoever had
+    read the latency brief. Measured on a full seven-day season it is
+    97.9s -> 62.2s with heuristic seats and 254.5s -> 205.3s with V12 in
+    one, so leaving it off was costing every Snowflake seat real time
+    for no stated reason.
+
+    `=0` matters as much as the default. The deferred tier is a day of
+    LOG text, replay frames and invocation rows, so a season that comes
+    out missing history should have one thing to try before anyone goes
+    looking in the store.
+    """
+    from sea_of_colours.snowpark.buffered_store import buffering_enabled
+
+    monkeypatch.delenv("SOC_BUFFERED_STORE", raising=False)
+    assert buffering_enabled(), "buffering should be on when nothing says otherwise"
+
+    for off in ("0", "false", "no", "off", "OFF", " 0 "):
+        monkeypatch.setenv("SOC_BUFFERED_STORE", off)
+        assert not buffering_enabled(), f"{off!r} must turn buffering off"
+
+    for on in ("1", "true", "yes", "on", "ON"):
+        monkeypatch.setenv("SOC_BUFFERED_STORE", on)
+        assert buffering_enabled(), f"{on!r} must leave buffering on"
