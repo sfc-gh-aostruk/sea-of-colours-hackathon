@@ -24,19 +24,69 @@ from sea_of_colours.snowpark import engine as soc_engine
 # orchestrator's ``RATIONALE_CHAR_CAP``.
 RATIONALE_CHAR_CAP = 2_000
 
-# Soft cap on the prompt-excerpt column so a 40KB STATE JSON doesn't
-# blow up the audit row. 32KB captures ~80% of a typical V12
-# prompt — enough to include world.grid PLUS the extras blocks
-# (candidates / combat / threat / memory_summary) that live at the
-# end of the STATE JSON. 8KB was too aggressive: it truncated inside
-# the fog-null world.grid before reaching the interesting content.
-PROMPT_EXCERPT_CHAR_CAP = 32_000
+# Cap on the prompt-excerpt column.
+#
+# v1.42 — raised from 32,000, which was cutting roughly 80KB out of the
+# middle of every card. A V12 think or plan prompt runs to about 115,000
+# characters, so the old cap did not store an excerpt of the prompt so
+# much as its two ends, and the card could never answer the question it
+# exists to answer: what, exactly, was this agent looking at?
+#
+# The old number was chosen against a "40KB STATE JSON" the prompt has
+# long since outgrown, and nothing else was holding it down: the column
+# is a Snowflake STRING (16MB), it is not part of the primary key, and
+# hybrid tables constrain the width of *indexed* columns rather than
+# payload ones. A whole prompt was always within reach.
+#
+# Kept as a cap rather than removed, because an audit writer should have
+# a bound on what a single row can cost and a fork with a runaway prompt
+# builder should degrade rather than take the turn down with it. At
+# roughly twice the real figure it should not fire in practice — and
+# when it does, it now says so in the row itself.
+PROMPT_EXCERPT_CHAR_CAP = 262_144
+
+#: How much of the prompt's TAIL to keep if the cap ever does fire.
+#:
+#: The excerpt used to be a plain head slice, and that quietly threw
+#: away the single most useful block in the whole prompt. V12 renders
+#: the OPTION MENU last on purpose ("the last thing it reads before it
+#: reasons"), so a head slice reliably decapitated it: every saved card
+#: could show what the agent *said* but never what it was *offered*,
+#: which is exactly the comparison a fork needs.
+PROMPT_EXCERPT_TAIL_CHARS = 60_000
+
+#: Loud on purpose. A card that has been cut should read as a card that
+#: has been cut rather than as a short prompt: whoever is reading it is
+#: usually trying to work out why two agents diverged, and a silent gap
+#: in the middle of the evidence is the worst thing to hand them.
+_ELISION = (
+    "\n\n[!! {n:,} CHARACTERS CUT FROM THE MIDDLE OF THIS PROMPT — the audit "
+    "row's cap was reached, so this card is NOT the whole prompt. The turn "
+    "lab keeps an uncut copy of every prompt it sends. !!]\n\n"
+)
 
 
 def _truncate(s: str, cap: int) -> str:
     if len(s) <= cap:
         return s
     return s[: cap - 1] + "…"
+
+
+def _truncate_prompt(s: str, cap: int = PROMPT_EXCERPT_CHAR_CAP) -> str:
+    """Fit a prompt into the excerpt column, keeping BOTH ends.
+
+    Generic on purpose: it preserves the tail rather than hunting for a
+    named marker, so it keeps working for a fork that renames its menu
+    or reorders its closing blocks.
+    """
+    if len(s) <= cap:
+        return s
+    tail = min(PROMPT_EXCERPT_TAIL_CHARS, cap // 2)
+    marker = _ELISION.format(n=len(s) - cap)
+    head = cap - tail - len(marker)
+    if head <= 0:
+        return s[-cap:]
+    return s[:head] + marker + s[-tail:]
 
 
 def write_invocation(
@@ -68,7 +118,7 @@ def write_invocation(
     if isinstance(extras, Mapping):
         raw = extras.get("prompt_excerpt")
         if isinstance(raw, str) and raw:
-            prompt_excerpt = _truncate(raw, PROMPT_EXCERPT_CHAR_CAP)
+            prompt_excerpt = _truncate_prompt(raw, PROMPT_EXCERPT_CHAR_CAP)
 
     # Multi-agent observability: a harness that fires more than one Cortex call
     # per turn (e.g. the v7 split's THINKER + MOVER) can expose each extra call
@@ -97,7 +147,7 @@ def write_invocation(
                 _truncate(str(sub.get("rationale") or ""), RATIONALE_CHAR_CAP),
                 runtime=str(sub.get("kind") or "sub"),
                 prompt_excerpt=(
-                    _truncate(sub_prompt, PROMPT_EXCERPT_CHAR_CAP)
+                    _truncate_prompt(sub_prompt, PROMPT_EXCERPT_CHAR_CAP)
                     if isinstance(sub_prompt, str) and sub_prompt else None
                 ),
                 tool_calls=[],

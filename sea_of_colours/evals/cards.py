@@ -46,6 +46,42 @@ _EXTRA_SECTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 
 
+#: How V12 opens its option menu. Matched loosely (the sentence after
+#: it is long and has been reworded more than once) and treated as a
+#: hint, not a contract — a fork is free to render its own menu and
+#: simply won't match, which costs it this one section and nothing else.
+_MENU_MARKER = "OPTION MENU (SELECT by ID"
+
+#: The menu is followed by the pass's task block, which always opens a
+#: new ``=== ... ===`` banner.
+_MENU_END = re.compile(r"^=== ", re.M)
+
+
+def menu_from_prompt(prompt: str) -> str:
+    """Recover the option menu from a stored prompt.
+
+    The menu is the most useful block on a card — it is the difference
+    between "here is what the agent said" and "here is what it was
+    offered and what it passed over" — but it is not persisted as a
+    field. ``extras`` only ever exists on a live envelope, and the
+    invocation row has no column for it, so a card rebuilt from the
+    database has never had one.
+
+    It IS in the prompt, though, which is stored. So carve it back out.
+    Returns "" when the prompt does not contain one, which is the
+    honest answer for a heuristic seat (it has no menu) and for any
+    card saved before the excerpt stopped truncating the menu away.
+    """
+    if not prompt:
+        return ""
+    start = prompt.find(_MENU_MARKER)
+    if start < 0:
+        return ""
+    rest = prompt[start:]
+    end = _MENU_END.search(rest, 1)
+    return rest[: end.start()].strip() if end else rest.strip()
+
+
 def _text(value: Any) -> str:
     if value is None:
         return ""
@@ -151,7 +187,22 @@ def normalise(
     row = row or {}
     env = envelope or {}
     extras = env.get("extras")
-    extras = extras if isinstance(extras, Mapping) else {}
+    extras = dict(extras) if isinstance(extras, Mapping) else {}
+
+    prompt = (
+        _first(row, ("prompt_excerpt", "prompt"))
+        or _first(extras, ("thinker_prompt", "plan_prompt"))
+        or ""
+    )
+    # A card rebuilt from the database has no ``extras`` at all — that
+    # key only ever exists on a live envelope — so the "Options offered"
+    # section was empty for every saved season. The menu is recoverable
+    # from the prompt, so fill the gap rather than leave the section
+    # permanently blank.
+    if not extras.get("option_menu_block"):
+        recovered = menu_from_prompt(str(prompt))
+        if recovered:
+            extras["option_menu_block"] = recovered
 
     return {
         "season": season,
@@ -166,15 +217,13 @@ def normalise(
         "rationale": _first(row, ("rationale",))
         or _first(env, ("rationale", "agent_rationale"))
         or "",
-        "prompt": _first(row, ("prompt_excerpt", "prompt"))
-        or _first(extras, ("thinker_prompt", "plan_prompt"))
-        or "",
+        "prompt": prompt,
         "response": _first(row, ("response_text",))
         or _first(extras, ("thinker_reasoning",))
         or _first(env, ("response",))
         or "",
         "tool_calls": row.get("tool_calls") or [],
-        "extras": dict(extras),
+        "extras": extras,
         # ``orchestrator_2.runtime`` does not copy the harness's top-level
         # ``moves`` into the envelope it returns, so for every LLM seat
         # the only surviving copy is ``extras.final_moves`` — which is why
@@ -300,6 +349,18 @@ def normalise_group(
     card["passes"] = passes
     card["prompts"] = [{"label": l, "body": b} for l, b in prompts]
     card["prompt"] = prompts[-1][1] if prompts else card.get("prompt") or ""
+
+    # ``normalise`` above only saw the LAST pass row — the packager —
+    # and the packager's prompt carries the menu only when it has no
+    # recipe to follow. The menu reliably lives in the think and plan
+    # prompts, so search every pass rather than just the one that
+    # happened to be last.
+    if not card["extras"].get("option_menu_block"):
+        for _label, body in prompts:
+            recovered = menu_from_prompt(body)
+            if recovered:
+                card["extras"]["option_menu_block"] = recovered
+                break
     # The decision pass's JSON is the turn's actual choice; lift the
     # option ids out so the card can show them without the reader
     # parsing a blob.
