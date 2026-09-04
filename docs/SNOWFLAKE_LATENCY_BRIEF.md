@@ -1010,9 +1010,19 @@ SELECT 1, warm, same connection      median  311.9 ms   (server total_elapsed_ti
   overhead) reconcile only loosely.
 
 **There is nothing to tune here.** No result format, keepalive, or
-session setting reaches it. It is ~300ms per statement, full stop, and
+session setting reaches it. It is ~300ms per statement, and
 **statement count is the only lever.** That promotes S2(d) from "the
 option for the tournament" to the primary recommendation.
+
+> **CORRECTION (added after §V6).** An earlier draft of this paragraph said
+> "~300ms per statement, **full stop**". That absolute is wrong. The floor
+> holds for standard tables and for hybrid-table queries that miss the
+> operational fast path — including the 375KB `json_state` read, still
+> ~540ms. But a **hybrid point lookup returning under 100KB comes back in
+> ~90ms**, measured on `SOC_AGENT_MEMORY` (`tables-hybrid-operational-query-performance`).
+> So the floor is a property of the query shape, not of the connection, and
+> making a read a small point lookup is a second lever alongside reducing
+> statement count.
 
 ### T1.2 MERGE / UPDATE / hybrid shape matrix
 
@@ -1427,8 +1437,8 @@ So the ordering of what is left is unambiguous:
 
 # Result: v1.43 buffered store — target met
 
-**Date:** 2026-09-01. **Status:** implemented, validated, opt-in via
-`SOC_BUFFERED_STORE=1`.
+**Date:** 2026-09-01. **Status:** implemented, validated, and **on by
+default since v1.43** — `SOC_BUFFERED_STORE=0` is the way back.
 
 ## V1. The ledger
 
@@ -1525,8 +1535,19 @@ line at the bottom of `_emit()`, in one place, pinned by
 
 ## V5. Operational notes
 
-- **Off by default.** `SOC_BUFFERED_STORE=1` enables it. To default it on,
-  flip the default in `buffered_store.buffering_enabled()`.
+- **On by default**, flipped after a full seven-day season confirmed the
+  gain end to end rather than per statement: 97.9s → 62.2s heuristic,
+  254.5s → 205.3s with a V12 seat. `SOC_BUFFERED_STORE=0` disables it, and
+  is the first thing to try if a Snowflake season looks short of history.
+- **The read cache is scoped to sessions this process writes**, which is
+  §T2's "bypass the cache when more than one process can write the
+  session" honoured. It has no expiry, so serving every read would have
+  pinned a spectating server to the day it first saw — a real hazard the
+  moment buffering became the default, since `soc season` in one terminal
+  and a server in another is the ordinary way to work here. Pinned by
+  `test_a_session_we_only_read_is_never_answered_from_a_stale_cache`.
+  Two processes *writing* one session is still unsafe; that wants §V6's
+  `state_version`, not a cache policy.
 - **A restart during a table rename degrades the server to file-only.** The
   `multi` store is documented to degrade rather than fail, and it caches
   that decision. Observed live: a server started mid-rename served 19
@@ -1555,6 +1576,29 @@ value:
    plan cannot cache.
 3. A stored procedure would collapse the remaining round trips, but at
    ~1.2s/turn the return no longer justifies moving `engine.py` server-side.
+
+## V7. CORRECTION to an earlier draft of this section
+
+An earlier version of §V7 claimed `frontier.py` had no in-process cache and
+that `enemy_probe_disk_history` was therefore dead on the file backend. **That
+was wrong.** `frontier.py:86` declares `_ENEMY_LANDINGS`, and both
+`record_enemy_landings` (:114) and `enemy_landings` (:143) hydrate on a cold
+cache and then accumulate in process — the same pattern as `hazard_memory.py`.
+The error came from grepping for `_CACHE|_IN_MEMORY|_MEM`, matching only
+`_MEM_KIND`, and then reading `_hydrate_enemy` in isolation.
+
+All four memory kinds work in-process on every backend. The only difference is
+resuming a session in a **new process**: Snowflake rehydrates, the file backend
+starts cold. That is by design.
+
+Also corrected: the `except Exception: pass` around agent-memory writes is
+**intentional**, not a latent bug. The agent is sometimes fired on a human turn
+with no store or session, and the quiet skip is what makes that work.
+
+The audit itself, and the handover for whoever picks this up, is in
+`docs/SNOWFLAKE_PERF_HANDOVER.md` — including the one genuinely actionable
+finding (every orbit turn in an LLM season runs on a heuristic while
+`fallback_turns` reports 0).
 
 ## V7. Audit: did any of this affect the agents or the game?
 

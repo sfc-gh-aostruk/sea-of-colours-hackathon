@@ -137,6 +137,27 @@ def test_repeat_loads_after_a_save_hit_the_cache() -> None:
     )
 
 
+def test_a_session_we_only_read_is_never_answered_from_a_stale_cache() -> None:
+    """A spectator must see the writer's day, not the one it first saw.
+
+    The cache has no expiry, so answering reads from it would freeze a
+    session at whatever this process last saw — for the life of the
+    process. Reachable the moment buffering became the default: a server
+    with a Snowflake game open while ``soc season`` advances it in
+    another terminal showed a board that never moved again.
+    """
+    inner = _RecordingStore()
+    reader = BufferedSocStore(inner)
+    inner.save_session(_row("s1", day=1))
+
+    assert reader.load_session("s1")["day"] == 1
+    inner.save_session(_row("s1", day=4))  # another process took the night
+
+    assert reader.load_session("s1")["day"] == 4, (
+        "a reader that never wrote this session must go back to the store"
+    )
+
+
 def test_day_rollover_flushes_the_previous_days_appends() -> None:
     """The self-managing boundary: no caller has to remember to flush."""
     inner = _RecordingStore()
