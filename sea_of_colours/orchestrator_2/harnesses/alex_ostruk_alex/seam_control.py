@@ -2209,6 +2209,55 @@ def _rival_deny_pattern(
     return [deny]
 
 
+def _beacon_axis_comb(
+    beacon: Tuple[int, int],
+    drop: Tuple[int, int],
+    width: int,
+    height: int,
+    bad: Set[Tuple[int, int]],
+    max_steps: int,
+) -> List[List[int]]:
+    """A straight walk from ``drop`` continuing along the beacon->drop ray.
+
+    On a blind rival seam the red deposit sits on the beacon gradient
+    SPINE and the surrounding cells are unknowable (fully fogged at plan
+    time). A value-fan comb (:func:`_comb_path`) breaks its ties by
+    fanning OUTWARD, which strays laterally onto the columns either side
+    of the spine — and those are exactly the cells a rival most often
+    already stripped (synthetic green, -100 a parcel, invisible to us in
+    fog). Riding the axis away from the beacon keeps the second unit on
+    the spine and off those laterals: e.g. drop (16,7) below a beacon at
+    (16,6) walks (16,8),(16,9)... down column x=16 rather than east onto
+    (17,7).
+
+    Returns ``[]`` when the drop sits on the beacon (no ray to follow) so
+    the caller can fall back to the value-fan; stops early at the board
+    edge or the first ``bad`` cell (a short spine beats a -100 step).
+    """
+    bx, by = beacon
+    dx0, dy0 = drop
+    vx, vy = dx0 - bx, dy0 - by
+    # Dominant axis of the beacon->drop offset. A clean cardinal line has
+    # no lateral wobble, which is the whole anti-green property here.
+    if abs(vx) >= abs(vy) and vx != 0:
+        step = (1 if vx > 0 else -1, 0)
+    elif vy != 0:
+        step = (0, 1 if vy > 0 else -1)
+    else:
+        return []
+    path: List[List[int]] = []
+    cur = (dx0, dy0)
+    for _ in range(max_steps):
+        nx, ny = cur[0] + step[0], cur[1] + step[1]
+        if not (0 <= nx < width and 0 <= ny < height):
+            break
+        if (nx, ny) in bad:
+            break
+        path.append([nx, ny])
+        cur = (nx, ny)
+    return path
+
+
 def _rival_blind_attack_patterns(
     agent_view: Mapping[str, Any],
     hint: Mapping[str, Any],
@@ -2390,10 +2439,18 @@ def _rival_blind_attack_patterns(
         agent_view, beacon, probe_f, width, height, exclude=wave1_wake,
     )
     flank_steps = _CHAFF_CHAIN_STEPS if weapons else steps
-    comb_f = _comb_path(
-        probe_f[0], probe_f[1], drop_f, width, height, wave1_wake, value_cells,
-        max_steps=flank_steps,
+    # Ride the beacon spine away from the drop rather than fanning outward:
+    # the value-fan strays onto the fogged laterals a rival has usually
+    # already stripped (synthetic green, -100). Fall back to the fan only
+    # when the drop sits on the beacon and there is no ray to follow.
+    comb_f = _beacon_axis_comb(
+        beacon, drop_f, width, height, wave1_wake, flank_steps,
     )
+    if not comb_f:
+        comb_f = _comb_path(
+            probe_f[0], probe_f[1], drop_f, width, height, wave1_wake,
+            value_cells, max_steps=flank_steps,
+        )
     flank = SeamPattern(
         pattern_id="UNBEATEN_FLANK",
         kind="UNBEATEN_FLANK",
