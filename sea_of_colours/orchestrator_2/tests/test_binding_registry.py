@@ -80,11 +80,30 @@ def test_shipped_roster_is_exactly_the_documented_four():
     """The roster is the New Game dropdown (served at /api/meta/agents),
     so an accidental addition ships a selectable agent to players.
 
-    Hackathon forks land here too — if this fails on your machine because
-    you ran scripts/new_agent.py, that is the test working."""
-    assert set(br.AGENT_LABEL_BINDINGS) == {
+    Only the *shipped* four are pinned. Forks join the dropdown too —
+    that is the whole design, and this used to fail for everyone who
+    minted one, on a day when minting one is step two of the guide."""
+    assert set(br.SHIPPED_AGENT_LABELS) == {
         "human", "red_harvest", "red_harvest_lite", "tabula_v12",
     }
+
+
+def test_anything_beyond_the_shipped_four_arrived_via_a_manifest():
+    """The other half of the guarantee above.
+
+    Loosening the roster test is only safe if the extras are accounted
+    for. A label that is neither shipped nor declared by an
+    ``agent.json`` got in by someone editing this registry, which is
+    exactly what forks are told not to do."""
+    from sea_of_colours.orchestrator_2 import agent_manifest
+
+    manifests, _ = agent_manifest.discover()
+    accounted = set(br.SHIPPED_AGENT_LABELS) | {m.label for m in manifests}
+    assert set(br.AGENT_LABEL_BINDINGS) <= accounted, (
+        "an agent is in the roster that neither shipped nor declared "
+        "itself — register a fork with an agent.json, don't edit "
+        "binding_registry.py"
+    )
 
 
 def test_human_is_listed_but_never_dispatched():
@@ -101,8 +120,10 @@ def test_selectable_agents_matches_the_registry():
         k for k, v in br.AGENT_LABEL_BINDINGS.items() if v.menu_label
     ]
     assert all(a["label"] for a in roster), "every listed agent needs a menu label"
-    # Only V12 needs credentials today; a heuristic must never demand a PAT.
-    assert {a["value"] for a in roster if a["needs_llm"]} == {"tabula_v12"}
+    # No heuristic may demand a PAT. Checked over the shipped agents only:
+    # a fork of V12 needs one too, and that is correct, not a regression.
+    shipped = [a for a in roster if a["value"] in br.SHIPPED_AGENT_LABELS]
+    assert {a["value"] for a in shipped if a["needs_llm"]} == {"tabula_v12"}
 
 
 def test_unknown_cortex_agent_with_override_becomes_bare(monkeypatch):
