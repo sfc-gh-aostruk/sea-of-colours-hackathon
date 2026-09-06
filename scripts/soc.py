@@ -53,8 +53,9 @@ def _die(msg: str, *, fix: str = "") -> None:
 _SUPERSEDED = {
     "suite": "open a frozen turn in the lab and invoke your fork on it",
     "why": "the lab's divergence view diffs your take against V12's",
-    "diff": "the lab's divergence view, which diffs prompts too",
     "list": "the lab's launcher lists every frozen turn and every fork",
+    # `diff` is NOT here — unlike these, it is gone rather than
+    # deprecated (v1.43). See `cmd_diff_gone`.
     # v1.42 — `weapons` and `league` are deliberately NOT here. They are
     # the two reasons battles/ still exists, and the lab does not replace
     # either. `weapons` is a static scan of a fork's source: it answers
@@ -292,94 +293,30 @@ def cmd_why(args) -> int:
     return 0
 
 
-def cmd_diff(args) -> int:
-    """One turn, one agent, against the frozen V12 turn for the same board.
+def cmd_diff_gone(args) -> int:
+    """`soc diff` is gone. Say where it went.
 
-    The fast loop. ``soc suite`` answers "is my agent good" and costs
-    twenty minutes against a model; this answers "did the change I just
-    made do anything", which is the question you actually have every ten
-    minutes, and costs one model call.
+    v1.43 — it ran one turn and diffed it against the frozen V12 turn
+    for the same board. The lab's divergence view does that on a turn
+    that was really played, and diffs the prompts too, so the command
+    went with the module behind it.
 
-    The output leads with what a single run can prove — an option is in
-    the menu or it is not, a verb reached the engine or it could not —
-    and puts the score last with its caveat attached, because one sample
-    of a non-deterministic model is a direction and not a number.
+    Kept as a hidden subcommand rather than deleted outright because it
+    is quoted in four docs and in old chat logs, and argparse's "invalid
+    choice" tells a reader nothing about where the feature went.
     """
-    import textwrap
-
-    from sea_of_colours.evals.battles import live
-
-    battle_id = args.board if "@" in args.board else (
-        f"{args.board}@{args.rung}+{args.loadout}"
+    print(
+        "`soc diff` has been removed (v1.43).\n"
+        "\n"
+        "  The turn lab's divergence view replaces it, and does more: it\n"
+        "  diffs the prompts and the reasoning as well as the moves, on a\n"
+        "  turn out of a real season rather than a constructed board.\n"
+        "\n"
+        "    python run_web.py     then open /lab\n"
+        "    python scripts/soc.py lab      # the turns, without a server\n",
+        file=sys.stderr,
     )
-    try:
-        live.parse_battle_id(battle_id)
-    except ValueError as exc:
-        print(f"\n  {exc}\n")
-        return 2
-
-    print(f"\n  running {args.agent} on {battle_id} …", flush=True)
-    out = live.run(
-        battle_id, args.agent, runs=args.runs, use_cache=not args.fresh,
-    )
-    d = out["diff"]
-
-    print()
-    print("═" * 74)
-    print(f"  {battle_id}   ·   {args.agent}")
-    print("═" * 74)
-    took = "cached" if out["cached"] else f"{out['seconds']}s"
-    print(f"\n  {took}   ·   {out['runs']} run(s)   ·   "
-          f"source {out['fingerprint']}\n")
-
-    if not d.get("available"):
-        print(_para("NO COMPARISON", d.get("why", "")))
-        print(f"  Your score: {out['score']:.0%} of checks.\n")
-        return 0
-
-    print(_para("VERDICT", d["headline"]))
-
-    cat = d["categorical"]
-    print("  WHAT CHANGED STRUCTURALLY   (one run is enough to trust these)")
-    print("  " + "─" * 70)
-    _line("chose", cat["options_chosen"]["mine"])
-    _line("V12 chose", cat["options_chosen"]["theirs"])
-    _line("options gained", cat["options_gained"])
-    _line("options lost", cat["options_lost"])
-    if not cat["menus_comparable"]:
-        print(f"    {'menus':<18} not compared — the frozen turn records "
-              f"what V12 picked,\n{'':<23}not what it was offered")
-    _line("verbs gained", cat["verbs_gained"])
-    _line("verbs lost", cat["verbs_lost"])
-    fired = cat["weapons_fired"]
-    print(f"    {'ordnance':<18} you {fired['mine']}  ·  V12 {fired['theirs']}")
-    corr = cat["corrections"]
-    print(f"    {'corrections':<18} you {corr['mine']}  ·  V12 {corr['theirs']}")
-
-    ind = d["indicative"]
-    print()
-    print("  SAMPLED   (a direction, not a score)")
-    print("  " + "─" * 70)
-    s = ind["score"]
-    print(f"    {'checks':<18} you {s['mine']:.0%}  ·  V12 {s['theirs']:.0%}"
-          f"  ·  {s['delta']:+.0%}")
-    _line("only you failed", ind["checks_only_you_failed"])
-    _line("only V12 failed", ind["checks_only_v12_failed"])
-    _line("both failed", ind["checks_both_failed"])
-    print()
-    print(textwrap.fill(" ".join(ind["caveat"].split()), width=70,
-                        initial_indent="    ", subsequent_indent="    "))
-    print()
-
-    if args.moves:
-        _print_baseline_moves(battle_id)
-    return 0
-
-
-def _line(label: str, values) -> None:
-    """One row of the diff, or nothing when there is nothing to say."""
-    if values:
-        print(f"    {label:<18} {', '.join(str(v) for v in values)}")
+    return 2
 
 
 def _print_baseline_moves(battle_id: str) -> None:
@@ -1119,19 +1056,13 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--runs", type=int, default=1)
     w.set_defaults(fn=cmd_why)
 
-    df = sub.add_parser(
-        "diff", help="run ONE turn and diff it against stock V12 (~20s)")
-    df.add_argument("board", help="board id, or board@rung+loadout")
-    df.add_argument("agent")
-    df.add_argument("--rung", default="armed")
-    df.add_argument("--loadout", default="emp")
-    df.add_argument("--runs", type=int, default=1,
-                    help="3 narrows the noise; it still is not a score")
-    df.add_argument("--fresh", action="store_true",
-                    help="ignore the cache and re-run")
-    df.add_argument("--moves", action="store_true",
-                    help="print both move lists in full")
-    df.set_defaults(fn=cmd_diff)
+    # Hidden: removed in v1.43, but four docs still name it and argparse's
+    # "invalid choice" would not say where it went.
+    # No `help=`, which is what keeps it out of the listing — argparse
+    # renders `help=SUPPRESS` literally rather than hiding the row.
+    dg = sub.add_parser("diff")
+    dg.add_argument("rest", nargs="*", help=argparse.SUPPRESS)
+    dg.set_defaults(fn=cmd_diff_gone)
 
     se = sub.add_parser(
         "season", help="play a full season headlessly and keep every card")

@@ -2180,103 +2180,12 @@ def api_game_cards_markdown(
     )
 
 
-# ── the fast diff loop ──────────────────────────────────────────────
-#
-# `soc suite` answers "is my agent good": every board, every rung,
-# several runs, twenty minutes against a model. These answer "did the
-# change I just made do anything", which is the question you have every
-# ten minutes and which needs exactly one turn.
-#
-# The battle room is a static page that works by double-clicking, and
-# must stay that way — it registers its bake with a <script> tag and a
-# fetch cannot work over file://. So these routes are strictly
-# additive: the room feature-detects them and grows a live mode when it
-# is being served, and is unchanged when it is not.
-
-
-@app.get("/api/battles/menagerie")
-def api_battles_menagerie() -> dict[str, Any]:
-    """The frozen turns, the agents that can be run on them, what is cached."""
-    from sea_of_colours.evals.battles import baseline, boards, live
-    from sea_of_colours.orchestrator_2 import binding_registry
-
-    frozen = baseline.index().get("battles", {}) or {}
-    by_board = {b.id: b for b in boards.BOARDS}
-    turns = []
-    for battle_id, entry in sorted(frozen.items()):
-        board_id = battle_id.split("@")[0]
-        board = by_board.get(board_id)
-        turns.append({
-            "id": battle_id,
-            "board": board_id,
-            "day": getattr(board, "day", None),
-            "shape": getattr(board, "shape", ""),
-            "question": getattr(board, "question", ""),
-            "v12_score": (entry or {}).get("score"),
-        })
-
-    cached = {}
-    for run in live.cached_runs():
-        cached.setdefault(run.get("agent") or "", []).append(run.get("battle_id"))
-
-    return {
-        "turns": turns,
-        # The New Game roster includes the human seat, which cannot
-        # play a turn headlessly and would offer a button that hangs.
-        "agents": [
-            a for a in binding_registry.selectable_agents()
-            if a.get("value") != "human"
-        ],
-        "baseline_agent": baseline.index().get("agent", "tabula_v12"),
-        "cached": cached,
-    }
-
-
-@app.post("/api/battles/run")
-def api_battles_run(payload: dict[str, Any]) -> dict[str, Any]:
-    """Play one frozen turn with one agent and diff it against V12.
-
-    Takes as long as the model takes — around twenty seconds — so the
-    caller should say so rather than look hung. A repeat of a run whose
-    agent has not been edited comes back from cache immediately.
-    """
-    from sea_of_colours.evals.battles import live
-
-    battle_id = str(payload.get("battle_id") or "").strip()
-    agent = str(payload.get("agent") or "").strip()
-    if not battle_id or not agent:
-        raise HTTPException(
-            status_code=400, detail="battle_id and agent are required",
-        )
-    runs = int(payload.get("runs") or 1)
-    if not 1 <= runs <= 5:
-        raise HTTPException(status_code=400, detail="runs must be 1..5")
-
-    try:
-        live.parse_battle_id(battle_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    try:
-        return live.run(
-            battle_id, agent,
-            runs=runs, use_cache=not bool(payload.get("fresh")),
-        )
-    except Exception as exc:
-        # An agent that throws is the normal case here, not an
-        # exception: someone is mid-edit. Report it as a result the
-        # room can render, not a 500 that reads as "the tool is broken".
-        raise HTTPException(
-            status_code=502,
-            detail=f"{agent} raised {type(exc).__name__}: {exc}",
-        ) from exc
-
-
-@app.post("/api/battles/cache/clear")
-def api_battles_cache_clear() -> dict[str, Any]:
-    from sea_of_colours.evals.battles import live
-
-    return {"dropped": live.clear_cache()}
+# v1.43 — the `/api/battles/*` fast-diff routes lived here. They drove
+# a live mode in the battle room: pick a frozen turn, pick an agent, get
+# one turn back diffed against V12. The turn lab does that on turns that
+# were actually played rather than constructed ones, so the routes went
+# with the module behind them. `/battles/` still serves the recorded
+# room, which is static and never fetched anything.
 
 
 def _infer_runtime(agent_id: str | None) -> str:

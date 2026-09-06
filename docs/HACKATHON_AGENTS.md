@@ -197,11 +197,13 @@ python scripts/soc.py doctor
 
 ### The old scoring suite
 
-`soc suite`, `soc why` and `soc diff` scored a fork against ten
-*constructed* boards — positions assembled to pose a question, rather
-than positions a season actually reached. They still run and still pass
-their tests, but they are **deprecated as of v1.42** and print a notice
-saying so. The lab replaced them because a real frozen turn asks a
+`soc suite` and `soc why` scored a fork against ten *constructed*
+boards — positions assembled to pose a question, rather than positions
+a season actually reached. They still run and still pass their tests,
+but they are **deprecated as of v1.42** and print a notice saying so.
+`soc diff` was the same idea for a single turn and is **gone as of
+v1.43**; the divergence view above replaces it and diffs the prompts
+too. The lab replaced them because a real frozen turn asks a
 better question and is far less to keep true as the rules move. See
 [the suite's README](../sea_of_colours/evals/battles/README.md) if you
 need the rungs and loadouts.
@@ -466,7 +468,7 @@ landing page. `python -m turnlab grab <season> <day>` adds a night of
 your own to the library.
 
 Deprecated as of v1.42, still working, and superseded by the lab:
-`soc suite`, `soc why`, `soc diff`, `soc list`. Each prints a notice
-naming what to use instead.
+`soc suite`, `soc why`, `soc list`. Each prints a notice naming what to
+use instead. `soc diff` was removed in v1.43 — use the divergence view.
 
 Every command takes `--help`, and `soc` on its own lists them all.
