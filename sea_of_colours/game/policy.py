@@ -70,6 +70,7 @@ MoveTag = Literal[
     "wait",
     "emp_launch",
     "chaff_flare",
+    "snap_launch",
     "waste",
 ]
 
@@ -80,10 +81,30 @@ MoveTag = Literal[
 # carry ``mine_lay``, and a named refusal is worth far more than the
 # generic "unknown action" shrug — especially to an agent, which can only
 # stop asking for a thing if it is told why the thing failed.
+#
+# v1.36 — the "here is what you CAN do instead" half of the message is
+# now derived from the price table rather than typed out. The old text
+# read "EMP and chaff are the remaining weapons", which was true for
+# five versions and then quietly was not: a refusal that names a stale
+# roster is worse than one that names none, because the agent it is
+# talking to has no other source for that list.
+def _live_weapons_phrase(singular: str, plural: str) -> str:
+    from sea_of_colours.game.weapons import BLUE_COST_BY_KIND
+
+    names = sorted(k.upper() for k in BLUE_COST_BY_KIND)
+    if not names:
+        return "nothing else ships in its place"
+    if len(names) == 1:
+        return f"{names[0]} {singular}"
+    return f"{', '.join(names[:-1])} and {names[-1]} {plural}"
+
+
 _RETIRED_MOVE_TAGS: Dict[str, str] = {
     "mine_lay": (
-        "the caltrop mine was retired in v1.31 — EMP and chaff are the "
-        "remaining weapons"
+        "the caltrop mine was retired in v1.31 — "
+        + _live_weapons_phrase(
+            "is the remaining weapon", "are the remaining weapons"
+        )
     ),
 }
 
@@ -168,6 +189,28 @@ class ChaffFlareMove:
 
 
 @dataclass(frozen=True)
+class SnapLaunchMove:
+    """Fire a SNAP at one cell (RULEBOOK §4.9.4, v1.36).
+
+    One missile, one square, a cloud that lasts ``SNAP_CLOUD_HOURS``.
+    Any PROBE on the cell is destroyed and any HARVESTER on it is
+    damaged — including one that arrives during the hour, which is the
+    half that lets a SNAP guard a square rather than merely punish one.
+
+    The reason it is its own move rather than an EMP with a radius of
+    zero is ordering, not shape. SNAP resolves above the hour-start
+    vision snapshot and an EMP resolves below it (see
+    ``NightSimulator._snap_preempt_phase``), so a SNAP can deny the drop
+    its target beacon was validating and an EMP never can. Two weapons
+    that differ only in which side of one line they sit on still have
+    to be two weapons.
+    """
+
+    at: Tuple[int, int]
+    tag: MoveTag = "snap_launch"
+
+
+@dataclass(frozen=True)
 class WasteMove:
     """A queue slot the parser kept because it was structurally bad.
 
@@ -187,6 +230,7 @@ Move = Union[
     WaitMove,
     EmpLaunchMove,
     ChaffFlareMove,
+    SnapLaunchMove,
     WasteMove,
 ]
 
@@ -272,6 +316,19 @@ def _parse_one(raw: Any) -> Move:
     if action in ("chaff", "chaff_flare", "chaff-flare"):
         return ChaffFlareMove()
 
+    # v1.36 — SNAP takes a single cell, never a list. Accepting one is
+    # the difference between the weapon and the salvo, so a payload that
+    # offers several is refused by name rather than silently taking the
+    # first: an agent that thinks it bought a spread should find out.
+    if action in ("snap", "snap_launch", "snap-launch"):
+        pt = _pair(raw.get("at"))
+        if pt is None:
+            return WasteMove(
+                reason="snap_launch.at must be [x,y] — SNAP hits one cell",
+                raw=raw,
+            )
+        return SnapLaunchMove(at=pt)
+
     # v1.31 — retired night moves. Normalise the punctuation variants the
     # old parser accepted so a stale queue gets the real reason back.
     _canon = action.replace("-", "_")
@@ -336,6 +393,8 @@ def move_to_wire(m: Move) -> dict:
         return {"a": "emp_launch", "at": list(m.at)}
     if isinstance(m, ChaffFlareMove):
         return {"a": "chaff_flare"}
+    if isinstance(m, SnapLaunchMove):
+        return {"a": "snap_launch", "at": list(m.at)}
     return {"a": "waste", "reason": m.reason}
 
 
@@ -365,6 +424,7 @@ OrbitTag = Literal[
     "build_probe",
     "build_emp",
     "build_chaff",
+    "build_snap",
     "repair",
     "orbit_waste",
 ]
@@ -381,7 +441,8 @@ _RETIRED_ORBIT_TAGS: Dict[str, str] = {
     "solar_jettison": "GREEN is now auto-settled at a flat -100/parcel (v1.13)",
     # v1.31 — the caltrop went with the mechanic, not the buy button.
     "build_mine": (
-        "the caltrop mine was retired in v1.31 — build EMP or chaff instead"
+        "the caltrop mine was retired in v1.31 — build "
+        + _live_weapons_phrase("instead", "instead")
     ),
 }
 
@@ -428,6 +489,19 @@ class BuildEmpAction:
 
 
 @dataclass(frozen=True)
+class BuildSnapAction:
+    """v1.36 — Construct ``count`` SNAP rounds in orbit (§4.9.4).
+
+    Cost: ``count × (SNAP_COST_BLUE_PURITY + SNAP_COST_CREDITS)`` —
+    100 blue and 250 credits each, the only weapon that costs more
+    credits than blue. Same whole-batch-or-nothing rule as the others.
+    """
+
+    count: int = 1
+    tag: OrbitTag = "build_snap"
+
+
+@dataclass(frozen=True)
 class BuildChaffAction:
     """v0.9.3 — Construct ``count`` orbital chaff flares.
 
@@ -467,6 +541,7 @@ OrbitAction = Union[
     BuildProbeAction,
     BuildEmpAction,
     BuildChaffAction,
+    BuildSnapAction,
     RepairAction,
     OrbitWasteAction,
 ]
@@ -509,6 +584,14 @@ def _parse_orbit_one(raw: Any) -> OrbitAction:
         except (TypeError, ValueError):
             count = 1
         return BuildChaffAction(count=max(1, count))
+
+    if a in ("build_snap", "build-snap", "buildsnap"):
+        raw_count = raw.get("count", raw.get("n"))
+        try:
+            count = int(raw_count) if raw_count is not None else 1
+        except (TypeError, ValueError):
+            count = 1
+        return BuildSnapAction(count=max(1, count))
 
     if a == "repair":
         unit = raw.get("unit")
@@ -577,8 +660,8 @@ def orbit_action_to_wire(a: OrbitAction) -> dict:
             out["count"] = int(a.count)
         return out
     # v0.9.3 — symmetric serialiser for the weapon-build actions. Same
-    # "skip count when 1" rule as build_probe. (v1.31 — two of them now;
-    # ``build_mine`` retired with the caltrop.)
+    # "skip count when 1" rule as build_probe. (v1.31 — ``build_mine``
+    # retired with the caltrop; v1.36 — ``build_snap`` took the slot.)
     if isinstance(a, BuildEmpAction):
         out = {"a": "build_emp"}
         if int(getattr(a, "count", 1) or 1) > 1:
@@ -586,6 +669,11 @@ def orbit_action_to_wire(a: OrbitAction) -> dict:
         return out
     if isinstance(a, BuildChaffAction):
         out = {"a": "build_chaff"}
+        if int(getattr(a, "count", 1) or 1) > 1:
+            out["count"] = int(a.count)
+        return out
+    if isinstance(a, BuildSnapAction):
+        out = {"a": "build_snap"}
         if int(getattr(a, "count", 1) or 1) > 1:
             out["count"] = int(a.count)
         return out

@@ -84,6 +84,24 @@ def _stamp_blue_parcels(
     sess.hoard_squares[owner] = list(sess.hoard_squares[owner]) + extra
 
 
+def _blue_parcels_worth(total: int, *, cap: int = 255) -> List[int]:
+    """Split ``total`` blue into parcels no richer than the purity cap.
+
+    v1.36 — weapon prices are no longer guaranteed to fit in one parcel
+    (chaff is 300, purity clamps at 255 per §3.14). Chunking here rather
+    than writing two literals keeps these fixtures correct through the
+    next retune as well as this one.
+    """
+    out: List[int] = []
+    rest = int(total)
+    while rest > cap:
+        out.append(cap)
+        rest -= cap
+    if rest > 0:
+        out.append(rest)
+    return out
+
+
 def _fresh_night_session(seed: int = 17) -> GameSession:
     """Spin up a session ready for an explicit PRAXIS run.
 
@@ -327,7 +345,11 @@ def test_build_emp_batch_is_atomic() -> None:
 
 def test_build_chaff_round_trip() -> None:
     sess = _fresh_night_session()
-    _stamp_blue_parcels(sess, "p1", [CHAFF_COST_BLUE_PURITY])
+    # v1.36 — a chaff now costs 300 and a parcel's purity is clamped at
+    # 255 (§3.14), so no single parcel can fund one. That is a real
+    # consequence of the retune and not a fixture wart: chaff is the
+    # first thing in the game you cannot buy out of one good harvest.
+    _stamp_blue_parcels(sess, "p1", _blue_parcels_worth(CHAFF_COST_BLUE_PURITY))
     sess.credits["p1"] = CHAFF_COST_CREDITS
     ok, _ = sess.apply_build_chaff("p1", count=1)
     assert ok
@@ -390,8 +412,10 @@ def test_weapons_used_counter_bumps_on_every_successful_fire() -> None:
     assert sess.weapons_used["p1"]["chaff"] == 1
     assert sess.weapons_used["p1"]["emp"] == 2
 
-    # Opposing seat must remain at zero — counters are per-seat.
-    assert sess.weapons_used["p2"] == {"emp": 0, "chaff": 0}
+    # Opposing seat must remain at zero — counters are per-seat. Spelled
+    # against the game's own price list rather than a literal pair, so
+    # adding or retiring a weapon does not fail a test about seats.
+    assert sess.weapons_used["p2"] == dict.fromkeys(sess.weapon_prices(), 0)
 
 
 def test_weapons_used_counter_round_trips_via_to_from_dict() -> None:
@@ -414,7 +438,9 @@ def test_weapons_used_counter_round_trips_via_to_from_dict() -> None:
     # still loads with zero counters rather than KeyError-ing.
     legacy = {k: v for k, v in snap.items() if k != "weapons_used"}
     legacy_revived = type(sess).from_dict(legacy)
-    assert legacy_revived.weapons_used["p1"] == {"emp": 0, "chaff": 0}
+    assert legacy_revived.weapons_used["p1"] == dict.fromkeys(
+        legacy_revived.weapon_prices(), 0
+    )
 
 
 def test_inventory_pack_surfaces_both_weapon_bays() -> None:
@@ -736,13 +762,23 @@ def test_emp_clouds_round_trip_via_to_dict() -> None:
 
 
 def test_weapon_stock_round_trips_via_to_dict() -> None:
-    """v0.9.3 — built weapon stockpile survives JSON round-trip."""
+    """v0.9.3 — built weapon stockpile survives JSON round-trip.
+
+    v1.36 — the counters are dense over the kinds the game prices, so
+    what comes back carries a zero for anything this seat did not set.
+    The round trip is about the numbers surviving, not about which
+    weapons exist, so it asks only about the ones it wrote.
+    """
     sess = _fresh_night_session()
     sess.weapon_stock["p1"] = {"emp": 3, "chaff": 1}
     sess.weapon_stock["p2"] = {"emp": 0, "chaff": 4}
     restored = GameSession.from_dict(sess.to_dict())
-    assert restored.weapon_stock["p1"] == {"emp": 3, "chaff": 1}
-    assert restored.weapon_stock["p2"] == {"emp": 0, "chaff": 4}
+    assert restored.weapon_stock["p1"]["emp"] == 3
+    assert restored.weapon_stock["p1"]["chaff"] == 1
+    assert restored.weapon_stock["p2"]["emp"] == 0
+    assert restored.weapon_stock["p2"]["chaff"] == 4
+    for seat in ("p1", "p2"):
+        assert set(restored.weapon_stock[seat]) == set(restored.weapon_prices())
 
 
 def test_stale_mine_stock_refunds_as_blue_on_load() -> None:
@@ -760,7 +796,11 @@ def test_stale_mine_stock_refunds_as_blue_on_load() -> None:
 
     restored = GameSession.from_dict(blob)
     assert restored.mines == {}
-    assert set(restored.weapon_stock["p1"]) == {"emp", "chaff"}
+    # The dead bay is gone, and what survives is exactly what this game
+    # prices — asked that way round so the test keeps saying "no retired
+    # weapon leaks through" when a live weapon is added beside it.
+    assert "mine" not in restored.weapon_stock["p1"]
+    assert set(restored.weapon_stock["p1"]) == set(restored.weapon_prices())
     assert restored.blue_bank["p1"] == pre_blue + 2 * _MINE_REFUND_BLUE_EACH
 
 

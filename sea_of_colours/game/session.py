@@ -554,6 +554,101 @@ STATION_PURITY_HIGH = "high"
 STATION_BLUE_PIP_STEP: int = 150
 STATION_BLUE_PIP_MAX: int = 5
 
+
+def _shipped_weapon_blue_costs() -> Dict[str, int]:
+    """Today's weapon prices, for stamping into a NEW game (v1.36).
+
+    Imported lazily and copied, matching how every other weapons
+    constant is reached from this module: a session owns its prices
+    from birth, and must not share a dict with the module that a later
+    retune would edit under it.
+    """
+    from sea_of_colours.game.weapons import BLUE_COST_BY_KIND
+
+    return dict(BLUE_COST_BY_KIND)
+
+
+def _fresh_weapon_counters() -> Dict[str, Dict[str, int]]:
+    """A zeroed counter row per seat, over the kinds shipped today (v1.36).
+
+    Derived rather than written out, so that adding or withdrawing a
+    weapon is an edit to ``BLUE_COST_BY_KIND`` and nothing else. The
+    literal this replaced was the last place a retired weapon could
+    still materialise a bay for itself on a brand-new game.
+    """
+    return {
+        seat: dict.fromkeys(_shipped_weapon_blue_costs(), 0)
+        for seat in ("p1", "p2")
+    }
+
+
+def _shipped_arsenal_cap() -> int:
+    from sea_of_colours.game.weapons import WEAPONISED_BLUE_CAP
+
+    return int(WEAPONISED_BLUE_CAP)
+
+
+def _weapon_costs_from_save(data: Mapping[str, Any]) -> Dict[str, int]:
+    """Price table for a loading save — stamped, else pre-retune."""
+    from sea_of_colours.game.weapons import LEGACY_BLUE_COST_BY_KIND
+
+    raw = data.get("weapon_blue_costs")
+    if isinstance(raw, Mapping) and raw:
+        out: Dict[str, int] = {}
+        for kind, cost in raw.items():
+            try:
+                out[str(kind)] = int(cost)
+            except (TypeError, ValueError):
+                continue
+        if out:
+            return out
+    return dict(LEGACY_BLUE_COST_BY_KIND)
+
+
+def _weapon_counters_from_save(
+    raw: Any,
+    seats: Sequence[str],
+    costs: Mapping[str, int],
+) -> Dict[str, Dict[str, int]]:
+    """Re-hydrate ``weapon_stock`` / ``weapons_used`` (v1.36).
+
+    A hydrated seat carries **exactly the kinds this game prices** — a
+    zero for each, and nothing else. A kind the save mentions that is no
+    longer priced is a RETIRED weapon, and it is dropped here rather
+    than carried: leaving it in would put a bay nobody can fill in front
+    of the player, and give the arsenal a row the cap does not count.
+
+    Dropping it is not the same as confiscating it. Retirement owes the
+    seat its blue back, and the migration that pays it reads the RAW
+    save (see the caltrop block in :meth:`GameSession.from_dict`), not
+    this dict — which is what lets this stay a clean "kinds we price"
+    projection. ``docs/ADDING_A_WEAPON.md`` states the obligation: retire
+    a weapon and you write the refund block in the same change.
+    """
+    src = raw if isinstance(raw, Mapping) else {}
+    out: Dict[str, Dict[str, int]] = {}
+    for seat in seats:
+        row = src.get(seat)
+        row = row if isinstance(row, Mapping) else {}
+        slot: Dict[str, int] = {}
+        for kind in costs:
+            try:
+                slot[str(kind)] = int(row.get(kind) or 0)
+            except (TypeError, ValueError):
+                slot[str(kind)] = 0
+        out[str(seat)] = slot
+    return out
+
+
+def _arsenal_cap_from_save(data: Mapping[str, Any]) -> int:
+    from sea_of_colours.game.weapons import LEGACY_WEAPONISED_BLUE_CAP
+
+    try:
+        cap = int(data.get("weapon_blue_cap"))
+    except (TypeError, ValueError):
+        cap = 0
+    return cap if cap > 0 else int(LEGACY_WEAPONISED_BLUE_CAP)
+
 #: Fuzzy green-parcel count ranges broadcast to rivals (exact count is
 #: only revealed to self): ``0 / 1-3 / 4-7 / 8-12 / 13+``.
 STATION_GREEN_COUNT_BANDS: List[Tuple[int, str]] = [
@@ -1041,6 +1136,28 @@ class GameSession:
     #: Off together: a board with one and not the other teaches a signage
     #: model that does not exist in a real season.
     signs_enabled: bool = True
+    #: v1.36 — the weapon economy this GAME was created under: the blue
+    #: price of each weapon kind, and the arsenal ceiling those prices
+    #: are denominated in (§4.9.8).
+    #:
+    #: Stamped rather than read live because a price is not a process
+    #: setting, it is a fact about a season. A game in flight when
+    #: someone retunes ``weapons.py`` must keep the numbers its players
+    #: have been buying against all week, and a finished season replayed
+    #: afterwards must price its arsenal bar the way it was actually
+    #: played — the client reads these off ``meta.rules`` to move the
+    #: bar hour by hour, so a stale price makes a rack go negative
+    #: mid-night in front of somebody.
+    #:
+    #: A save written before this field existed has neither, and
+    #: ``from_dict`` fills them from ``LEGACY_*`` rather than from
+    #: today's constants. Always reach for :meth:`weapon_prices` /
+    #: :meth:`arsenal_cap`; never import the module constants at a call
+    #: site that has a session in hand.
+    weapon_blue_costs: Dict[str, int] = field(
+        default_factory=lambda: _shipped_weapon_blue_costs()
+    )
+    weapon_blue_cap: int = field(default_factory=lambda: _shipped_arsenal_cap())
     #: ``""`` for an ordinary season, else the teaching preset that made
     #: this game (``"basic"`` / ``"advanced"``). The client reads it to pick
     #: which film reel the tutorial modal opens on; the engine only stores
@@ -1178,10 +1295,7 @@ class GameSession:
     #: a yellow log line ("``emp_launch: no EMP in stockpile``"),
     #: never live-debited mid-night.
     weapon_stock: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: {
-            "p1": {"emp": 0, "chaff": 0},
-            "p2": {"emp": 0, "chaff": 0},
-        }
+        default_factory=_fresh_weapon_counters
     )
 
     #: v0.9.5 — lifetime "weapons used" counter per seat. Mirrors the
@@ -1193,10 +1307,7 @@ class GameSession:
     #: view surfaces it for symmetry with the existing
     #: ``weapon_stock`` block. Keyed by seat → ``{emp, mine, chaff}``.
     weapons_used: Dict[str, Dict[str, int]] = field(
-        default_factory=lambda: {
-            "p1": {"emp": 0, "chaff": 0},
-            "p2": {"emp": 0, "chaff": 0},
-        }
+        default_factory=_fresh_weapon_counters
     )
 
     #: Stashed Orbit-phase action queue per seat. ``None`` until the seat
@@ -1326,7 +1437,11 @@ class GameSession:
     #: ``probes_crushed`` (harvester rode over a probe), ``probes_superseded``
     #: (a newer probe destroyed an older one on the same cell), ``emp_probes``
     #: (probe fried inside an EMP cloud), ``emp_harvesters`` (DISTINCT harvester
-    #: smothered by an EMP — counted once per unit per season), ``chaff_jams``
+    #: smothered by an EMP — counted once per unit per season),
+    #: ``snap_harvesters`` (harvester crippled by a SNAP, whether caught on the
+    #: square, walked onto it, or turned back from landing on it — v1.36; kept
+    #: apart from ``harv_damaged`` so a shot hull cannot be read as a rammed
+    #: one), ``chaff_jams``
     #: (a rival action-slot cancelled by an orbital chaff), ``harv_damaged``
     #: (harvester-on-harvester collision damage), ``harv_lost_chaff`` (a
     #: harvester stranded at dawn because its egress was chaff-cancelled).
@@ -1429,6 +1544,20 @@ class GameSession:
     #: a world view; clouds are not gated by fog.
     emp_clouds: List[Dict[str, Any]] = field(default_factory=list)
 
+    #: v1.36 — Active SNAP clouds (RULEBOOK §4.9.4). Same row shape as
+    #: :attr:`emp_clouds` so the replay and the FX path can treat them
+    #: as one family, but kept in its own list rather than sharing one
+    #: with a ``kind`` discriminator.
+    #:
+    #: That separation is the retirement plan. SNAP is new and may not
+    #: survive; if it does not, this list goes the way ``mines`` did —
+    #: left standing and always empty — and no EMP code has to be
+    #: untangled from it first. It also keeps the two weapons' very
+    #: different rules from sharing a loop that would need a branch on
+    #: every line: SNAP's radius is 0, its cloud lasts one hour, and it
+    #: damages harvesters where the EMP merely smothers them.
+    snap_clouds: List[Dict[str, Any]] = field(default_factory=list)
+
     #: v0.9 — Active caltrop mines on the surface (RULEBOOK §5).
     #:
     #: Keyed by ``"x:y"`` (JSON-safe) → ``{owner, laid_at_hour,
@@ -1447,6 +1576,7 @@ class GameSession:
     #: archived frames keep their shape.)
     pending_emp_events: List[Dict[str, Any]] = field(default_factory=list)
     pending_chaff_events: List[Dict[str, Any]] = field(default_factory=list)
+    pending_snap_events: List[Dict[str, Any]] = field(default_factory=list)
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
@@ -1518,8 +1648,14 @@ class GameSession:
             self.credits.setdefault(seat, 0)
             self.blue_bank.setdefault(seat, 0)
             self.probe_stock.setdefault(seat, PROBE_INITIAL_STOCK)
-            self.weapon_stock.setdefault(seat, {"emp": 0, "chaff": 0})
-            self.weapons_used.setdefault(seat, {"emp": 0, "chaff": 0})
+            self.weapon_stock.setdefault(seat, {})
+            self.weapons_used.setdefault(seat, {})
+            # v1.36 — off the stamped price table, not a literal pair, so
+            # a game that stocks a third weapon backfills a slot for it
+            # and a game that does not never grows a key it cannot use.
+            for _kind in self.weapon_prices():
+                self.weapon_stock[seat].setdefault(_kind, 0)
+                self.weapons_used[seat].setdefault(_kind, 0)
             self.pending_orbit_actions.setdefault(seat, None)
             self.agents.setdefault(seat, "human")
             self.cumulative_shipped_score.setdefault(seat, 0.0)
@@ -3843,9 +3979,14 @@ class GameSession:
         VAULT can render AVAILABLE (current stockpile) and USED
         (lifetime fired) accurately at any cursor, the same way
         ``_hoard_snap_payload`` backs the hoard grid. Keyed by seat →
-        ``{stock: {emp, mine, chaff}, used: {emp, mine, chaff}}``,
-        mirroring the live ``inventory_pack`` weapon block."""
-        keys = ("emp", "chaff")
+        ``{stock: {emp, chaff, snap}, used: {emp, chaff, snap}}``,
+        mirroring the live ``inventory_pack`` weapon block.
+
+        Keyed off this game's own price table (v1.36) so an archived
+        season renders the weapons it actually had — a frame stamped
+        with a key that game never knew reads to the VAULT as a bay
+        stuck at zero, which looks like a bug in the replay."""
+        keys = tuple(self.weapon_prices())
         out: Dict[str, Any] = {}
         for p in self.players:
             stock = self.weapon_stock.get(p, {})
@@ -3891,6 +4032,7 @@ class GameSession:
         mine: Optional[List[Dict[str, Any]]] = None,
         emp: Optional[List[Dict[str, Any]]] = None,
         chaff: Optional[List[Dict[str, Any]]] = None,
+        snap: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Append one snapshot frame to the night replay timeline.
 
@@ -3962,6 +4104,8 @@ class GameSession:
             frame["emp"] = [dict(c) for c in emp]
         if chaff:
             frame["chaff"] = [dict(c) for c in chaff]
+        if snap:
+            frame["snap"] = [dict(c) for c in snap]
         if attempted is not None:
             frame["attempted"] = attempted
         if outcome is not None:
@@ -3982,6 +4126,22 @@ class GameSession:
                     "owner": str(c.get("owner", "")),
                 }
                 for c in self.emp_clouds
+                if int(c.get("hours_remaining", 0)) > 0
+            ]
+        # v1.36 — the same snapshot for SNAP scorch marks. Its own key
+        # rather than folded into ``emp_clouds``: a client that paints
+        # one of these as an EMP cloud would be telling the watcher a
+        # harvester standing there is smothered, and it is not.
+        if self.snap_clouds:
+            frame["snap_clouds"] = [
+                {
+                    "cx": int(c.get("cx", 0)),
+                    "cy": int(c.get("cy", 0)),
+                    "r": int(c.get("radius", 0)),
+                    "hours_remaining": int(c.get("hours_remaining", 0)),
+                    "owner": str(c.get("owner", "")),
+                }
+                for c in self.snap_clouds
                 if int(c.get("hours_remaining", 0)) > 0
             ]
         # v1.31 — a ``mines_active`` snapshot used to ride every frame so
@@ -4114,10 +4274,10 @@ class GameSession:
             "harvested_tiles": hoard_copy,
             "orbital_holds_red": orbital_hold,
             "weapon_stock": {
-                k: int(wstock.get(k, 0)) for k in ("emp", "chaff")
+                k: int(wstock.get(k, 0)) for k in self.weapon_prices()
             },
             "weapons_used": {
-                k: int(wused.get(k, 0)) for k in ("emp", "chaff")
+                k: int(wused.get(k, 0)) for k in self.weapon_prices()
             },
         }
 
@@ -4577,6 +4737,65 @@ class GameSession:
             f"awarded to every seat."
         )
 
+    def award_tutorial_blue_topup(self) -> None:
+        """v1.34 — hand the teaching seat the blue its next lesson costs.
+
+        The Advanced tutorial asks the player to buy one weapon per
+        orbit — an EMP, then a SNAP, then a chaff. Only the EMP is
+        affordable out of the opening bank, because it spends 200 of the
+        250 and a few nights on a 24x16 board will not reliably mine the
+        400 the other two want. The lesson was therefore failing on the
+        economy rather than on anything it meant to teach.
+
+        Three things this deliberately is not:
+
+        * **Not silent.** It logs, and the orbit reel says it out loud.
+          A tutorial that quietly edits your balance is teaching an
+          economy that does not exist, and the player will carry that
+          misunderstanding into a real season.
+        * **Not for every seat.** Only seats a human is flying. The
+          heuristic opponent handed a weapon's worth of blue buys a
+          weapon with it, and the Advanced films — shot on this exact
+          preset and seed — would stop matching the game the player is
+          looking at.
+        * **Not a rule.** Gated on ``tutorial`` naming a teaching
+          preset, so no ordinary season can reach it, including
+          ``quick``, which is a short game and not a lesson.
+
+        Idempotent within a day, mirroring :meth:`award_orbit_credits` —
+        the gate is persisted so a reload cannot re-gift. Note the gate
+        is "the last day paid", not "has been paid", which is what lets
+        v1.36 make a second grant on day 4 without touching it.
+        """
+        from sea_of_colours.game.tutorial import (
+            blue_grant_for,
+            blue_grant_weapon_for,
+        )
+
+        cur_day = int(self.day)
+        preset = getattr(self, "tutorial", "")
+        amount = blue_grant_for(preset, cur_day)
+        if amount <= 0:
+            return
+        last = int(getattr(self, "_tutorial_blue_granted_day", 0) or 0)
+        if last >= cur_day:
+            return
+        seats = [
+            p for p in self.players
+            if str(self.agents.get(p, "human")).lower() == "human"
+        ]
+        self._tutorial_blue_granted_day = cur_day  # type: ignore[attr-defined]
+        if not seats:
+            return
+        for p in seats:
+            self.blue_bank[p] = int(self.blue_bank.get(p, 0)) + amount
+        kind = blue_grant_weapon_for(preset, cur_day).upper() or "weapon"
+        self.log_info(
+            f"[tutorial] day {cur_day}: +{amount} BLUE granted to "
+            f"{', '.join(seats)} — a training subsidy, enough for one "
+            f"{kind}. Real seasons mine their own."
+        )
+
     def harvesters_owned_alive(self, player: PlayerId) -> int:
         """Count harvesters owned by ``player`` that are not destroyed.
 
@@ -4700,10 +4919,8 @@ class GameSession:
         so seats loaded from a legacy snapshot (pre-v0.9.5) don't
         crash when the counter is bumped on a fire.
         """
-        slot = self.weapons_used.setdefault(
-            str(player), {"emp": 0, "chaff": 0},
-        )
-        for k in ("emp", "chaff"):
+        slot = self.weapons_used.setdefault(str(player), {})
+        for k in self.weapon_prices():
             slot.setdefault(k, 0)
         return slot
 
@@ -4729,11 +4946,58 @@ class GameSession:
         on the first orbit action.
         """
         slot = self.weapon_stock.setdefault(
-            str(player), {"emp": 0, "chaff": 0},
+            str(player), {"emp": 0, "chaff": 0, "snap": 0},
         )
-        for k in ("emp", "chaff"):
+        for k in self.weapon_prices():
             slot.setdefault(k, 0)
         return slot
+
+    # ── The stamped weapon economy (v1.36, §4.9.8) ──────────────────
+    # Three accessors so no call site ever imports the module constants
+    # while holding a session. That indirection is the whole migration:
+    # an archived season keeps the prices it was played under, and a
+    # weapon can be withdrawn by deleting a dict entry.
+
+    def _weapon_counter_keys(
+        self, counter: Mapping[str, Mapping[str, int]],
+    ) -> List[str]:
+        """Every kind to serialise: what this game prices, plus whatever
+        is already sitting in the counter (v1.36).
+
+        The second half is the retirement clause. A withdrawn weapon
+        leaves the price table but its stock has to keep round-tripping
+        or the refund at load has nothing to find.
+        """
+        keys = list(self.weapon_prices())
+        for row in counter.values():
+            for kind in (row or {}):
+                if kind not in keys:
+                    keys.append(str(kind))
+        return keys
+
+    def weapon_prices(self) -> Dict[str, int]:
+        """Blue price per weapon kind, as of this game's creation."""
+        stamped = getattr(self, "weapon_blue_costs", None)
+        if isinstance(stamped, Mapping) and stamped:
+            return {str(k): int(v) for k, v in stamped.items()}
+        return _shipped_weapon_blue_costs()
+
+    def arsenal_cap(self) -> int:
+        """Most blue-worth of ordnance a seat may hold in this game."""
+        stamped = getattr(self, "weapon_blue_cap", None)
+        try:
+            cap = int(stamped)
+        except (TypeError, ValueError):
+            cap = 0
+        return cap if cap > 0 else _shipped_arsenal_cap()
+
+    def arsenal_blue(self, player: PlayerId) -> int:
+        """Public weaponised-blue reading for ``player`` (§4.9.8)."""
+        from sea_of_colours.game.weapons import weaponised_blue
+
+        return weaponised_blue(
+            self.weapon_stock.get(str(player)), self.weapon_prices(),
+        )
 
     def _apply_build_weapon(
         self,
@@ -4761,9 +5025,39 @@ class GameSession:
                 f"{player}: build_{kind} refused — weapons are disabled in "
                 "this game (teaching mode)"
             )
+        # v1.36 — a game can only build what its own price table names.
+        #
+        # This is the retirement seam, and the reason it is worth a
+        # branch: withdrawing a weapon is deleting its entry from
+        # ``BLUE_COST_BY_KIND``, after which every NEW game refuses it
+        # here by name while every game already stamped with it plays
+        # on unchanged. Without this the two halves disagree — the
+        # arsenal reading iterates the stamp and would value the
+        # unpriced weapon at nothing, so a seat could buy an unlimited
+        # number of them straight through the cap.
+        if kind not in self.weapon_prices():
+            return False, (
+                f"{player}: build_{kind} refused — this game does not "
+                f"stock {display}s. Nothing was spent."
+            )
         n = max(1, int(count or 1))
         blue_needed = n * int(blue_cost_each)
         credits_needed = n * int(credit_cost_each)
+        # v1.34 — the arsenal ceiling (RULEBOOK §4.9.8). Refused here,
+        # above the debit, for the same reason the affordability checks
+        # are: a rejected build must cost nothing. Whole-batch, matching
+        # the "no partial fill" guarantee below — a batch that would
+        # breach the cap buys none of itself, rather than topping up to
+        # the line and leaving the seat guessing how many it got.
+        held_blue = self.arsenal_blue(player)
+        cap = self.arsenal_cap()
+        if held_blue + blue_needed > cap:
+            return False, (
+                f"{player}: build_{kind} ×{n} refused — would hold "
+                f"{held_blue + blue_needed} blue of ordnance, over the "
+                f"{cap} cap (holding {held_blue}). "
+                "No blue or credits were spent."
+            )
         avail = self.blue_purity_available(player)
         if avail < blue_needed:
             return False, (
@@ -4832,6 +5126,31 @@ class GameSession:
             blue_cost_each=CHAFF_COST_BLUE_PURITY,
             credit_cost_each=CHAFF_COST_CREDITS,
             display="chaff flare",
+        )
+
+    def apply_build_snap(
+        self, player: PlayerId, count: int = 1,
+    ) -> Tuple[bool, str]:
+        """v1.36 — Build ``count`` SNAP rounds into the stockpile (§4.9.4).
+
+        Prices come off the game's own stamp rather than the module, so
+        a season keeps buying at the numbers it started with — see
+        :meth:`weapon_prices`. Credits are not stamped (they are not
+        what the arsenal cap is denominated in) and come live.
+        """
+        from sea_of_colours.game.weapons import (
+            SNAP_COST_BLUE_PURITY,
+            SNAP_COST_CREDITS,
+        )
+        return self._apply_build_weapon(
+            player,
+            kind="snap",
+            count=count,
+            blue_cost_each=self.weapon_prices().get(
+                "snap", SNAP_COST_BLUE_PURITY,
+            ),
+            credit_cost_each=SNAP_COST_CREDITS,
+            display="SNAP round",
         )
 
     def apply_repair(
@@ -4975,6 +5294,11 @@ class GameSession:
             # decides them (see the field docs).
             "weapons_enabled": bool(self.weapons_enabled),
             "signs_enabled": bool(self.signs_enabled),
+            # v1.36 — the prices this season was played at, travelling
+            # with it. See the field docs: a retune must not reach
+            # backwards into a game already on disk.
+            "weapon_blue_costs": dict(self.weapon_prices()),
+            "weapon_blue_cap": int(self.arsenal_cap()),
             "tutorial": str(self.tutorial or ""),
             "pending_policies": {
                 p: (moves_to_wire(self.pending_policies[p] or [])
@@ -5031,10 +5355,14 @@ class GameSession:
             # {emp, mine, chaff} integer counters. Defaults to all-zero
             # for legacy sessions that pre-date the build-first weapons
             # flow (from_dict re-fills any missing slot).
+            # v1.36 — keyed by what this game actually stocks, plus any
+            # kind already sitting in the counter. The second half is
+            # what lets a RETIRED weapon survive a save: the stock has
+            # to still be there at load for the refund to find it.
             "weapon_stock": {
                 p: {
                     k: int(self.weapon_stock.get(p, {}).get(k, 0) or 0)
-                    for k in ("emp", "chaff")
+                    for k in self._weapon_counter_keys(self.weapon_stock)
                 }
                 for p in self.players
             },
@@ -5044,7 +5372,7 @@ class GameSession:
             "weapons_used": {
                 p: {
                     k: int(self.weapons_used.get(p, {}).get(k, 0) or 0)
-                    for k in ("emp", "chaff")
+                    for k in self._weapon_counter_keys(self.weapons_used)
                 }
                 for p in self.players
             },
@@ -5103,6 +5431,9 @@ class GameSession:
             "_orbit_credits_awarded_day": int(
                 getattr(self, "_orbit_credits_awarded_day", 0) or 0
             ),
+            "_tutorial_blue_granted_day": int(
+                getattr(self, "_tutorial_blue_granted_day", 0) or 0
+            ),
             "asset_records": {
                 k: r.to_dict() for k, r in self.asset_records.items()
             },
@@ -5148,6 +5479,7 @@ class GameSession:
             },
             # v0.9 — interdiction state (RULEBOOK §5).
             "emp_clouds": [dict(c) for c in self.emp_clouds],
+            "snap_clouds": [dict(c) for c in self.snap_clouds],
             "mines": {k: dict(v) for k, v in self.mines.items()},
             # SquareLedger keeps natural + synthetic-green identities with
             # full provenance. Without it persisted, every Snowflake-backed
@@ -5217,6 +5549,13 @@ class GameSession:
             # games, so both default to on.
             weapons_enabled=bool(data.get("weapons_enabled", True)),
             signs_enabled=bool(data.get("signs_enabled", True)),
+            # v1.36 — a save with no stamp predates the retune, so it
+            # loads at the LEGACY prices, not today's. Falling back to
+            # the live constants is the one wrong answer here: it would
+            # reprice a finished season's arsenal to numbers nobody in
+            # it ever paid, and do it plausibly enough to be believed.
+            weapon_blue_costs=_weapon_costs_from_save(data),
+            weapon_blue_cap=_arsenal_cap_from_save(data),
             tutorial=str(data.get("tutorial") or ""),
             probe_seq=probe_seq_init,
             log=_normalize_log_entries(data.get("log")),
@@ -5254,24 +5593,16 @@ class GameSession:
             # keys (legacy sessions) collapse to 0 so the new build-
             # first flow is invisible to old saves until the first
             # Build*Action lands.
-            weapon_stock={
-                p: {
-                    k: int(((data.get("weapon_stock") or {}).get(p) or {}).get(k, 0) or 0)
-                    for k in ("emp", "chaff")
-                }
-                for p in seat_ids
-            },
+            weapon_stock=_weapon_counters_from_save(
+                data.get("weapon_stock"), seat_ids, _weapon_costs_from_save(data),
+            ),
             # v0.9.5 — lifetime weapons-used counter. Defaults to 0
             # for any seat/key absent from the snapshot so a
             # pre-v0.9.5 save round-trips into a clean state instead
             # of crashing on the dict lookup.
-            weapons_used={
-                p: {
-                    k: int(((data.get("weapons_used") or {}).get(p) or {}).get(k, 0) or 0)
-                    for k in ("emp", "chaff")
-                }
-                for p in seat_ids
-            },
+            weapons_used=_weapon_counters_from_save(
+                data.get("weapons_used"), seat_ids, _weapon_costs_from_save(data),
+            ),
             # v0.8.1 — re-parse the wire dicts back into OrbitAction
             # instances. The resolver expects typed actions (it reads
             # ``.tag`` etc.); stringy / raw-dict actions blow up.
@@ -5404,6 +5735,7 @@ class GameSession:
             # won't have these fields; ``default_factory`` plus an empty
             # ``.get()`` fall through to fresh containers.
             emp_clouds=[dict(c) for c in (data.get("emp_clouds") or [])],
+            snap_clouds=[dict(c) for c in (data.get("snap_clouds") or [])],
             # v1.31 — caltrops are NOT rehydrated. See the migration
             # below: a weapon that no longer exists must not still be
             # killing harvesters on a board mid-season.
@@ -5500,6 +5832,14 @@ class GameSession:
                 sess._orbit_credits_awarded_day = int(awarded_day)  # type: ignore[attr-defined]
             except (TypeError, ValueError):
                 sess._orbit_credits_awarded_day = 0  # type: ignore[attr-defined]
+        # v1.34 — same gate for the teaching blue subsidy, so a reload
+        # mid-tutorial cannot hand out a second one.
+        granted_day = data.get("_tutorial_blue_granted_day")
+        if granted_day is not None:
+            try:
+                sess._tutorial_blue_granted_day = int(granted_day)  # type: ignore[attr-defined]
+            except (TypeError, ValueError):
+                sess._tutorial_blue_granted_day = 0  # type: ignore[attr-defined]
         return sess
 
     # --- Primitive move applicators (used by NightSimulator) --------
@@ -5553,6 +5893,7 @@ class GameSession:
 
     def _damage_harvester(
         self, h: Entity, by: Optional[str] = None,
+        *, category: str = "harv_damaged",
     ) -> int:
         """Flip a harvester to ``damaged`` and spill its cargo.
 
@@ -5567,14 +5908,20 @@ class GameSession:
         ``by`` is the house that caused this damage (the OTHER party in
         a collision) for the v1.6 kill-feed; called once per damaged
         unit per collision so counts don't double up.
+
+        ``category`` names the kill-feed bucket, and defaults to the
+        collision one because collisions are where this started (v1.36).
+        A weapon that maims must pass its own: ``harv_damaged`` is
+        documented as harvester-on-harvester damage, so filing a shot
+        hull there would tell a reader the two houses rammed each other.
         """
         spilled = len(h.cargo_squares)
         h.cargo_squares = []
         h.carrying_red = False
         h.damaged = True
-        # v1.6 kill-feed: credit the colliding house for this unit's damage.
+        # v1.6 kill-feed: credit the house that did it.
         if by:
-            self._attrib("harv_damaged", str(by), str(h.owner))
+            self._attrib(category, str(by), str(h.owner))
         return spilled
 
     def _record_collision(
@@ -5759,6 +6106,66 @@ class GameSession:
             "victim": str(victim),
             "by": [str(attacker)] if attacker else [],
             "hours": [int(hour)],
+            "day": int(self.day),
+        })
+
+    def record_snap_strike(
+        self, owner: str, x: int, y: int, *, hour: int,
+    ) -> None:
+        """Record a PUBLIC SNAP strike (v1.36, §4.9.4).
+
+        The twin of :meth:`record_emp_artifacts`, and public for the
+        same reason: the round leaves a scorch mark every seat can see,
+        so hiding the event would only cost agents an inference every
+        human gets for free off the map.
+
+        No decaying scar to stamp, though — a SNAP cloud lives one hour
+        and there is no ``emp_marks`` equivalent to age. The event *is*
+        the record.
+
+        What it deliberately does not carry is who it hit. That is the
+        victim's private detail and rides on :meth:`note_snap_hit`,
+        exactly as ``emp`` and ``emp_hit`` are split.
+        """
+        self._record_combat_event({
+            "type": "snap",
+            "owner": str(owner),
+            "at": [int(x), int(y)],
+            "hours": [int(hour)],
+            "day": int(self.day),
+        })
+
+    def note_snap_hit(
+        self, unit: str, victim: str, attacker: str, *,
+        hour: int, outcome: str,
+    ) -> None:
+        """Record one harvester a SNAP crippled — the victim's copy.
+
+        ``outcome`` is ``"crippled"`` for a hull caught standing on the
+        square or walking onto it, and ``"landing_aborted"`` for one
+        turned back at the door. The distinction is worth carrying
+        rather than inferring: both leave a damaged harvester, but one
+        of them is damaged *in orbit* with its outing unspent, and an
+        agent that cannot tell them apart will look for a wreck on the
+        board that is not there.
+        """
+        if not unit or not victim:
+            return
+        for ev in self._combat_events_today():
+            if ev.get("type") == "snap_hit" and ev.get("unit") == str(unit):
+                if attacker and str(attacker) not in ev["by"]:
+                    ev["by"].append(str(attacker))
+                if int(hour) not in ev["hours"]:
+                    ev["hours"].append(int(hour))
+                    ev["hours"].sort()
+                return
+        self._record_combat_event({
+            "type": "snap_hit",
+            "unit": str(unit),
+            "victim": str(victim),
+            "by": [str(attacker)] if attacker else [],
+            "hours": [int(hour)],
+            "outcome": str(outcome),
             "day": int(self.day),
         })
 
@@ -6188,6 +6595,7 @@ class GameSession:
         harvest_budget: int = 0,  # back-compat; no longer used (v0.6.0)
         live_override: Optional[Set[Tuple[int, int]]] = None,
         emp_blocked_cells: Optional[Set[Tuple[int, int]]] = None,
+        snap_hot_cells: Optional[Dict[Tuple[int, int], Dict[str, Any]]] = None,
     ) -> Tuple[bool, str, bool]:
         """Drop a berthed harvester onto the surface.
 
@@ -6204,6 +6612,12 @@ class GameSession:
         hour's own launches resolved (passed by the night simulator).
         The harvester still lands on such a cell — the drop itself is
         unaffected — but the auto-harvest is denied.
+
+        v1.36 (§4.9.4) — ``snap_hot_cells`` maps cells SNAPped earlier
+        this hour to ``{"by": seat, "hour": h}``. A landing into one is
+        refused outright and the hull is damaged in orbit, which is the
+        same shape as arriving into a rival harvester and a harder stop
+        than an EMP cloud (which lands you and only denies the harvest).
         """
         del harvest_budget  # unused — kept for signature compat
         hh = self.entities.get(harvester_id)
@@ -6340,6 +6754,45 @@ class GameSession:
                 False,
             )
 
+        # v1.36 (§4.9.4) — a SNAP put on this cell earlier in the hour.
+        # Resolved here, ABOVE the landing, and shaped exactly like the
+        # collision immediately above: a landing that arrives into
+        # something does not complete. The hull is damaged and stays in
+        # orbit, and because it never touched down it never spends its
+        # one outing for the night (§3.9.2) either.
+        #
+        # This is the one place SNAP treats a landing differently from a
+        # walk-in. A harvester STEPPING onto a hot cell does move — it is
+        # already on the surface, so there is nowhere to refuse it to —
+        # and is crippled where it stands. A landing has an orbit to be
+        # sent back to, so it is.
+        #
+        # Below the collision check on purpose: a cell holding both a
+        # rival hull and a SNAP is a collision first, because that is the
+        # rarer thing and the one the caption should name.
+        if snap_hot_cells and (x, y) in snap_hot_cells:
+            hit = snap_hot_cells[(x, y)]
+            by, hr = str(hit.get("by", "")), int(hit.get("hour", 0))
+            spilled = self._damage_harvester(
+                hh, by=by, category="snap_harvesters",
+            )
+            self.note_snap_hit(
+                harvester_id, str(hh.owner), by,
+                hour=hr, outcome="landing_aborted",
+            )
+            lost = (
+                f", {spilled} cargo square(s) lost" if spilled else ""
+            )
+            return (
+                True,
+                (
+                    f"{owner} dropped {harvester_id} at ({x},{y}); "
+                    f"SNAP on the cell — landing ABORTED, {harvester_id} "
+                    f"stays orbital damaged{lost}"
+                ),
+                False,
+            )
+
         hh.x, hh.y = x, y
         self._bump_path(owner_play, x, y, harvester_id=harvester_id)
         self._note_asset_deployed(harvester_id)
@@ -6386,6 +6839,7 @@ class GameSession:
         ny: int,
         harvest_budget: int = 0,  # back-compat; no longer used (v0.6.0)
         emp_blocked_cells: Optional[Set[Tuple[int, int]]] = None,
+        snap_hot_cells: Optional[Dict[Tuple[int, int], Dict[str, Any]]] = None,
     ) -> Tuple[bool, str, bool]:
         """Step a harvester to an adjacent tile.
 
@@ -6401,6 +6855,12 @@ class GameSession:
         hour's own launches resolved (passed by the night simulator).
         The step itself still lands on such a cell; the auto-harvest
         is denied.
+
+        v1.36 (§4.9.4) — ``snap_hot_cells`` maps cells SNAPped earlier
+        this hour to ``{"by": seat, "hour": h}``. The step completes and
+        the harvester is crippled where it lands, harvesting nothing —
+        which is the half of SNAP that lets it guard a square instead of
+        only punishing one.
         """
         del harvest_budget  # unused — kept for signature compat
         h = self.entities.get(harvester_id)
@@ -6480,6 +6940,27 @@ class GameSession:
         self._note_asset_deployed(harvester_id)
 
         origin_tile = self.grid[ny][nx].tile
+        # v1.36 (§4.9.4) — stepping onto a cell SNAPped earlier this
+        # hour. Unlike the drop path this does NOT rewind the move: the
+        # harvester is already on the surface, so there is no orbit to
+        # refuse it back to, and the square it walked onto is the square
+        # it is now wrecked on. Above the EMP gate because damage
+        # outranks a denied harvest as a description of what happened.
+        if snap_hot_cells and (nx, ny) in snap_hot_cells:
+            hit = snap_hot_cells[(nx, ny)]
+            self._snap_damage_harvesters_at(
+                {(nx, ny)},
+                by=str(hit.get("by", "")),
+                hour=int(hit.get("hour", 0)),
+            )
+            return (
+                True,
+                (
+                    f"{harvester_id} → ({nx},{ny}) into a SNAP — "
+                    f"crippled, no harvest"
+                ),
+                False,
+            )
         # v1.10 (RULEBOOK §4.9.3) — stepping into an ALREADY-established
         # EMP cloud denies the auto-harvest outright. The step still
         # lands (the harvester moves onto the cell) and will go empd
@@ -7003,6 +7484,11 @@ class GameSession:
         numbers alongside the grade; ``fuzzy=True`` (rivals) returns
         only the grade bands / count range so opponents never learn the
         precise vault contents — just the silhouette.
+
+        The ``arms`` block is the exception and is exact for everyone
+        (v1.34, §4.9.8). Omitted entirely when ``weapons_enabled`` is
+        off, so a teaching game has no weapon vocabulary anywhere in the
+        payload for the UI to render.
         """
         hoard = self.hoard_squares.get(player, []) or []
         count = len(hoard)
@@ -7034,6 +7520,17 @@ class GameSession:
                 "estimate": self._grade_green_count(green_count),
             },
         }
+        # v1.34 — the arsenal is public (RULEBOOK §4.9.8). Deliberately
+        # ABOVE the ``fuzzy`` gate below: everything up here is what any
+        # rival can read from orbit, and ordnance is now part of that.
+        # Weapons are the one thing on this platform whose whole point is
+        # to be aimed at somebody else, so hiding the count made the
+        # counter-play a guessing game rather than a decision.
+        if self.weapons_enabled:
+            obs["arms"] = {
+                "blue": self.arsenal_blue(player),
+                "cap": self.arsenal_cap(),
+            }
         if not fuzzy:
             obs["fullness"].update({"count": count, "capacity": capacity})
             obs["blue"]["total"] = int(blue_total)
@@ -7069,6 +7566,13 @@ class GameSession:
             "mines": 0,
             "emps": 0,
             "chaff": 0,
+            # v1.38 — SNAP shipped in v1.36 with no counter here, so a
+            # seat could fire one every night and its public orbital
+            # silhouette stayed flat. That is a fog leak in the
+            # generous direction: the strike itself is public (§4.9.4),
+            # so withholding the count only cost agents an inference a
+            # human reads straight off the board.
+            "snaps": 0,
             # v0.9.15 — harvester-loss / field-state counts so the
             # count-fallback recap path (``eventsFromActivityTally``)
             # renders abandoned / damaged / emp'd lines, not just
@@ -7130,6 +7634,8 @@ class GameSession:
                 out.setdefault(owner, self._empty_activity_tally())["emps"] += 1
             elif tag == "chaff_flare":
                 out.setdefault(owner, self._empty_activity_tally())["chaff"] += 1
+            elif tag == "snap_launch":
+                out.setdefault(owner, self._empty_activity_tally())["snaps"] += 1
 
         # v0.9.15 — fold in field-state losses so the count-fallback recap
         # (``eventsFromActivityTally``) renders the same abandoned /
@@ -7200,6 +7706,7 @@ class GameSession:
     #: silhouette of every archived season that used caltrops.
     _ORBITAL_EVENT_TAGS = (
         "probe", "drop", "pickup", "mine_lay", "emp_launch", "chaff_flare",
+        "snap_launch",
     )
 
     def tally_orbital_events(
@@ -7708,6 +8215,202 @@ class GameSession:
             return
         self.emp_harv_seen[key] = True
         self._attrib("emp_harvesters", attacker, victim)
+
+    # ── SNAP (v1.36, RULEBOOK §4.9.4) ───────────────────────────────
+    #
+    # Deliberately a self-contained block, and the one thing to preserve
+    # if this is ever edited: SNAP is the newest weapon and the most
+    # likely to be withdrawn. Everything it owns is in here, in
+    # ``snap_clouds`` / ``pending_snap_events``, and in
+    # ``NightSimulator._snap_preempt_phase``. Retiring it should look
+    # like the caltrop's retirement a few lines below — a deleted block
+    # and a refund at load — not an archaeology exercise.
+
+    def apply_snap_launch(
+        self, player: PlayerId, x: int, y: int, *, hour: int,
+    ) -> Tuple[bool, str]:
+        """Fire one SNAP at ``(x, y)`` from the stockpile.
+
+        Destroys any probe on the cell and damages any harvester
+        standing there. Harvesters that ARRIVE during the hour are hit
+        too, but not here — this method stamps the cell hot and
+        ``try_step_unit`` / ``try_drop_unit`` do the second half, because
+        an arrival that has not happened yet cannot be damaged by a
+        function that runs before it.
+
+        Friendly fire is on, exactly as it is for the salvo. A SNAP put
+        down on your own beacon kills your own beacon.
+
+        Called from the simulator's pre-empt phase ABOVE the hour-start
+        vision snapshot, which is the entire weapon — see
+        ``NightSimulator._snap_preempt_phase``. Firing it from anywhere
+        else in the hour would leave it a worse EMP.
+        """
+        from sea_of_colours.game.weapons import (
+            SNAP_CLOUD_HOURS,
+            SNAP_RADIUS,
+        )
+
+        if not self.weapons_enabled:
+            return False, (
+                f"{player}: snap_launch refused — weapons are disabled in "
+                "this game (teaching mode)"
+            )
+        tx, ty = int(x), int(y)
+        if not (0 <= tx < self.width and 0 <= ty < self.height):
+            return False, f"snap_launch: ({tx},{ty}) out of bounds"
+
+        slot = self._ensure_weapon_stock_slot(player)
+        if int(slot.get("snap", 0)) <= 0:
+            return False, (
+                "snap_launch: no SNAP in stockpile — build one in the "
+                "next Orbit phase before firing"
+            )
+        slot["snap"] = int(slot.get("snap", 0)) - 1
+        self._bump_weapons_used(player, "snap")
+
+        self.snap_clouds.append({
+            "owner": str(player),
+            "cx": tx,
+            "cy": ty,
+            "radius": int(SNAP_RADIUS),
+            "hours_remaining": int(SNAP_CLOUD_HOURS),
+            "launched_at_hour": int(hour),
+            "launched_at_day": int(self.day),
+        })
+        cells = _manhattan_disk(
+            tx, ty, int(SNAP_RADIUS), self.width, self.height,
+        )
+
+        # Public first, so the strike is on the feed whether or not it
+        # found anything — "they spent a SNAP on an empty square" is
+        # intelligence too, and the scorch mark says it regardless.
+        self.record_snap_strike(str(player), tx, ty, hour=int(hour))
+
+        destroyed_probes = self._emp_sweep_destroy(
+            cells, owner=str(player), hour=int(hour),
+        )
+        damaged = self._snap_damage_harvesters_at(
+            cells, by=str(player), hour=int(hour),
+        )
+
+        # Stamp the cell hot for the rest of the hour. A harvester that
+        # walks or drops onto it later this hour is maimed on arrival —
+        # which is what makes SNAP a square you can guard rather than a
+        # unit you have to already have found.
+        #
+        # Carries the hour as well as the seat because the drop and step
+        # paths have neither, and both have to file a ``snap_hit`` that
+        # says WHEN — an agent reading "hour 0" cannot line the hit up
+        # against the strike that caused it.
+        hot = getattr(self, "_snap_hot_cells_this_hour", None)
+        if hot is None:
+            hot = {}
+            self._snap_hot_cells_this_hour = hot  # type: ignore[attr-defined]
+        for cell in cells:
+            hot[cell] = {"by": str(player), "hour": int(hour)}
+
+        self.pending_snap_events.append({
+            "kind": "snap_launch",
+            "owner": str(player),
+            "at": [tx, ty],
+            "targets": [[tx, ty]],
+            "radius": int(SNAP_RADIUS),
+            "missiles": 1,
+            "hours_remaining": int(SNAP_CLOUD_HOURS),
+            "launched_at_hour": int(hour),
+            "from_stockpile": True,
+            "stock_remaining": int(slot["snap"]),
+            "destroyed_probes": destroyed_probes,
+            "damaged_harvesters": damaged,
+        })
+
+        bits = []
+        if destroyed_probes:
+            bits.append(f"{len(destroyed_probes)} probe(s) fried")
+        if damaged:
+            bits.append(f"{len(damaged)} harvester(s) crippled")
+        tail = f"; {', '.join(bits)}" if bits else "; nothing on the cell yet"
+        return True, (
+            f"{player} fired SNAP at ({tx},{ty}){tail} "
+            f"(stock {slot['snap']} SNAP left)"
+        )
+
+    def _snap_damage_harvesters_at(
+        self, cells: Set[Tuple[int, int]], *, by: str, hour: int,
+    ) -> List[Dict[str, Any]]:
+        """Cripple every harvester standing in ``cells``. Friendly fire on.
+
+        Uses the ordinary ``damaged`` flag (§3.6.1) rather than a
+        SNAP-specific state: a maimed harvester is a maimed harvester
+        however it got that way, and inventing a second kind of broken
+        would mean auditing every ``damaged`` check in the engine for
+        which one it meant. The 500c repair applies.
+
+        Only finds hulls ON the surface, which is why the drop path does
+        its own damage rather than calling this: a landing refused at
+        the door is still in orbit and this scan would walk straight
+        past it.
+        """
+        out: List[Dict[str, Any]] = []
+        if not cells:
+            return out
+        for ent in self.entities.values():
+            if ent.entity_type != "harvester":
+                continue
+            if ent.x is None or ent.y is None:
+                continue
+            if (int(ent.x), int(ent.y)) not in cells:
+                continue
+            if bool(getattr(ent, "damaged", False)):
+                continue  # already wreckage; don't double-count the kill feed
+            spilled = self._damage_harvester(
+                ent, by=by, category="snap_harvesters",
+            )
+            self.note_snap_hit(
+                str(ent.id), str(ent.owner), by,
+                hour=int(hour), outcome="crippled",
+            )
+            out.append({
+                "harvester_id": str(ent.id),
+                "owner": str(ent.owner),
+                "at": [int(ent.x), int(ent.y)],
+                "cargo_lost": int(spilled),
+            })
+        return out
+
+    def tick_snap_clouds(self) -> None:
+        """Age SNAP clouds by one hour and prune (v1.36).
+
+        No standing-cloud sweep, unlike :meth:`tick_emp_clouds`. A SNAP
+        is a moment, not a field: whatever was on the square when it
+        landed is dealt with at launch, and whatever arrives later that
+        hour is dealt with by the hot-cell stamp. By the time this tick
+        would matter the cloud is already gone.
+        """
+        for c in self.snap_clouds:
+            c["hours_remaining"] = max(0, int(c.get("hours_remaining", 0)) - 1)
+        self.snap_clouds = [
+            c for c in self.snap_clouds
+            if int(c.get("hours_remaining", 0)) > 0
+        ]
+
+    def cells_in_any_snap_cloud(self) -> Set[Tuple[int, int]]:
+        """Union of active SNAP cloud cells — for the map overlay only.
+
+        Explicitly NOT folded into ``cells_in_any_emp_cloud``: a SNAP
+        cloud does not smother anybody. It is the scorch mark left where
+        one already went off.
+        """
+        out: Set[Tuple[int, int]] = set()
+        for c in self.snap_clouds:
+            if int(c.get("hours_remaining", 0)) <= 0:
+                continue
+            out |= _manhattan_disk(
+                int(c.get("cx", -1)), int(c.get("cy", -1)),
+                int(c.get("radius", 0)), self.width, self.height,
+            )
+        return out
 
     # ── Mines — RETIRED v1.31 ───────────────────────────────────────
     #

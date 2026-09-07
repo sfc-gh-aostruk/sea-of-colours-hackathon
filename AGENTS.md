@@ -168,14 +168,26 @@ sea_of_colours/
                     declaring team, name and participants (v1.41 — the league
                     is the day's public record, so an entrant that names
                     nobody cannot be credited or chased),
-                 discovered at import (v1.39). Registering one edits nothing
-                 shared — that's what lets a room of teams share one repo,
-                 and makes the league a directory scan. Don't add a fork to
-                 binding_registry.py.
+                        discovered at import (v1.39). Registering one edits nothing
+                        shared — that's what lets a room of teams work at once,
+                        and makes an entrant a directory rather than a merge.
+                        Don't add a fork to binding_registry.py.
+    fork_collect.py     The league's collation (v1.44 — `soc collect`). The day
+                        runs on GitHub forks: each team forks, clones their own
+                        copy and pushes there, so nobody needs write access to
+                        the repo the event runs from. This takes each fork's
+                        agent directory and assembles the field in a SEPARATE
+                        staging checkout (`../soc-league`), never in this repo
+                        and never in anyone's fork — attendees are still pulling
+                        from upstream all day. It resets before each run, so a
+                        collection is a snapshot of the forks, not a pile of
+                        every earlier run. Won't take a fork's `tabula_v12`
+                        (every fork has one; the baseline comes from upstream)
+                        and won't silently resolve two forks claiming one name.
     fork_parcel.py    One fork as one file, for handing between teammates
-                    (v1.43 — `soc share` / `soc grab`). `soc push` is the
-                    end-of-day move and far too heavy for "try this";
-                    a pair iterating on one agent needs the other thing.
+                    (v1.43 — `soc share` / `soc grab`). `soc push` goes to
+                    your own fork, so a teammate's work is a remote you do
+                    not have; a pair iterating on one agent needs this.
                     Carries only .py/.md/.json and cannot write outside
                     the fork's own directory, but the code does run on
                     arrival — that is stated, not hidden.
@@ -218,8 +230,8 @@ server/
   static/        Web UI — app.js, styles.css, station.js, index.html
 scripts/         deploy_soc_schema.py, run_season*.py, run_evals.py, run_battery.py
   soc.py         the hackathon front door — new / lab / season / doctor /
-                 share / grab / push,
-                 plus the deprecated battles commands (suite / why / diff /
+                 share / grab / push, and collect for organisers,
+                 plus the deprecated battles commands (suite / why /
                  weapons / league / list, which print a notice). One entry
                  point on purpose; point attendees (and their coding agents)
                  here, not at four scripts. `season` supersedes run_season.py
@@ -268,7 +280,10 @@ Checklist for any rule/constant/formula change:
 
 1. **Engine (source of truth).** Change the single canonical definition — a
    constant at the top of `game/session.py` (capacities, costs, multipliers),
-   `game/weapons.py` (EMP/chaff dials), `game/tuning.py` (env-tunable vision
+   `game/weapons.py` (SNAP/EMP/chaff dials, and the `BLUE_COST_BY_KIND` /
+   `CREDIT_COST_BY_KIND` / `SPEC_BY_KIND` tables that are the single home
+   for a weapon's published price and behaviour — see
+   `docs/ADDING_A_WEAPON.md`), `game/tuning.py` (env-tunable vision
    knobs), or `game/policy.py` (slot caps). Never duplicate a literal you could
    import.
 2. **RULEBOOK.md.** Update the prose **and** the `Canonical Configuration` table,
@@ -323,3 +338,17 @@ Checklist for any rule/constant/formula change:
 
 - **Do not commit unless explicitly asked.** When asked, follow the repo's
   concise commit style and never touch git config.
+- **The day runs on GitHub forks (v1.44).** Each team forks this repo,
+  clones their own fork, and pushes there; nobody but the organiser has
+  write access to this one. `soc push` enforces the rule that makes it
+  work — your diff stays inside your own harness directory — and refuses
+  if `origin` is not yours, which catches the attendee who cloned
+  upstream instead of forking. `soc doctor` reports the same thing before
+  it costs anyone an afternoon. If you are an agent helping an attendee,
+  their remote is theirs: never point it at upstream.
+- **The league is assembled elsewhere.** `soc collect` builds the field in
+  a separate staging checkout (`../soc-league`), because attendees pull
+  from upstream all day and forty entrants landing here would hand the
+  whole room a conflict. Each agent goes on living in the fork it came
+  from — the staging area is where the league is run, not where work is
+  kept, and it is disposable by design.
