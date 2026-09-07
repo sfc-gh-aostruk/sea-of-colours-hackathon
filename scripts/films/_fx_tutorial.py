@@ -171,6 +171,25 @@ def main() -> int:
         # whether the orbit reel lets itself in.
         _api(base, f"/api/game/{sid}/policy",
              {"player": "p1", "moves": [{"a": "probe", "at": [8, 7]}]})
+        # v1.35 — and it has to let the board finish first. The modal
+        # covers the map, and it used to open the instant the phase
+        # flipped: straight over the night cinematic and the orbital
+        # resolution, so the tutorial hid the very things it narrates.
+        # Sampled rather than asserted at one instant, because the
+        # failure is an OVERLAP and an overlap has to be caught while
+        # it is happening.
+        pg.evaluate("""() => {
+            window.__tutOverlap = 0;
+            window.__tutBusySeen = 0;
+            window.__tutWatch = setInterval(() => {
+              const m = document.querySelector('.soc-tut');
+              const shown = !!(m && !m.hidden);
+              const busy = !!(window._socBoardMidAnimation
+                              && window._socBoardMidAnimation());
+              if (busy) window.__tutBusySeen += 1;
+              if (busy && shown) window.__tutOverlap += 1;
+            }, 100);
+        }""")
         try:
             pg.wait_for_function(
                 """() => {
@@ -181,6 +200,22 @@ def main() -> int:
                 }""",
                 timeout=90000,
             )
+            watch = pg.evaluate("""() => {
+                clearInterval(window.__tutWatch);
+                return {overlap: window.__tutOverlap,
+                        busy: window.__tutBusySeen};
+            }""")
+            print(f"  modal-vs-board: {watch['busy']} busy samples, "
+                  f"{watch['overlap']} of them with the modal up")
+            if not watch["busy"]:
+                print("  note: board never reported busy — FX may be off, "
+                      "so the overlap check proved nothing this run")
+            elif watch["overlap"]:
+                fails.append(
+                    f"the tutorial modal was up for {watch['overlap']} of the "
+                    f"{watch['busy']} samples where the board was still "
+                    "animating — it is covering the resolution it teaches"
+                )
             fails.extend(_check_film(pg, "the orbit reel"))
             pg.screenshot(path="reports/_fx_tutorial_orbit.png")
         except Exception:

@@ -476,7 +476,7 @@
     {
       preset: "tut-advanced",
       name: "Advanced",
-      blurb: "same board, three nights, weapons and signage switched on",
+      blurb: "same board, four nights, weapons and signage switched on",
     },
     {
       preset: "quick",
