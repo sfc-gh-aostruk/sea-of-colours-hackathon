@@ -22,10 +22,30 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional
 
-#: Every teaching game runs three nights. Long enough to see a full loop
-#: (orbit → plan → night → orbit), short enough that a first-timer
-#: reaches a score card rather than abandoning a half-played season.
+#: Three nights. Long enough to see a full loop (orbit → plan → night →
+#: orbit), short enough that a first-timer reaches a score card rather
+#: than abandoning a half-played season.
 TUTORIAL_DAY_CAP = 3
+
+#: ...except Advanced, which runs FOUR (v1.36).
+#:
+#: Not a change of heart about length — a change in what has to fit. The
+#: weapon set went from two to three when SNAP arrived, and Advanced is
+#: the mode that teaches weapons: each one needs an orbit to be bought in
+#: and a night to be fired on, and three nights hold two weapons.
+#:
+#: Cramming it was tried on paper and is worse than lengthening. Night
+#: two was already the heaviest turn in either tutorial at four chapters
+#: (redsign, rival redsign, smash-and-grab, blind-grab), and the fourth
+#: night is what lets that split in half. It also repairs an existing
+#: mismatch: the ``adv_chaff`` film is *shot* on night four, because the
+#: rival needs a night to land, work and be caught mid-lift — but on a
+#: three-night cap the reel had to play on night three, so the player was
+#: shown a sequence their own game could no longer run.
+#:
+#: Basic and Quick are untouched. Basic teaches no weapons, so it has
+#: nothing to fit.
+ADVANCED_TUTORIAL_DAY_CAP = 4
 
 #: The teaching board. Smaller than the 40x28 default so a probe's
 #: radius-4 disk is a visible fraction of the map rather than a dot, and
@@ -77,7 +97,7 @@ TUTORIAL_PRESETS: Dict[str, Dict[str, Any]] = {
     "advanced": {
         "width": TUTORIAL_WIDTH,
         "height": TUTORIAL_HEIGHT,
-        "season_day_cap": TUTORIAL_DAY_CAP,
+        "season_day_cap": ADVANCED_TUTORIAL_DAY_CAP,
         "seed": ADVANCED_TUTORIAL_SEED,
         "weapons_enabled": True,
         "signs_enabled": True,
@@ -85,7 +105,9 @@ TUTORIAL_PRESETS: Dict[str, Dict[str, Any]] = {
     },
     # Not a tutorial: a full-size, full-rules season that is merely
     # short. It lives here because it is the third card on the same
-    # chooser and shares the "three nights, heuristic opponent" shape.
+    # chooser and shares the "short, heuristic opponent" shape. It keeps
+    # the three-night cap: Advanced grew a fourth night to fit a weapon
+    # lesson, and Quick teaches nothing, so it inherits nothing.
     "quick": {
         "season_day_cap": TUTORIAL_DAY_CAP,
         "weapons_enabled": True,
@@ -98,6 +120,66 @@ TUTORIAL_PRESETS: Dict[str, Dict[str, Any]] = {
 #: put the player in a teaching UI. Only these presets set
 #: ``GameSession.tutorial`` and therefore only these show the film modal.
 TEACHING_PRESETS = ("basic", "advanced")
+
+
+#: Blue handed to the human seat at a teaching game's orbit open (v1.34,
+#: extended to a second grant in v1.36).
+#:
+#: Advanced asks the player to buy one weapon per orbit: an EMP at orbit
+#: 2, a SNAP at orbit 3, a chaff at orbit 4. Only the first is affordable
+#: unaided — 200 out of the 250 opening bank — and one night on a 24x16
+#: teaching board will not reliably mine the 400 the other two want. A
+#: lesson the player cannot complete teaches them the button is broken.
+#:
+#: So each of the two later orbits is credited **exactly the weapon it
+#: asks for**, on the morning it asks. What the player still has to
+#: supply is the credits and the judgement; what they are not asked to
+#: supply is a mining result the board may not offer.
+#:
+#: Two properties worth keeping if you edit this:
+#:
+#: * **Priced off the weapon, never written as a literal.** The amount IS
+#:   "one chaff" / "one SNAP". Chaff moved 255 → 300 at v1.36 and this
+#:   needed no edit, which is the whole point of the indirection.
+#: * **The grant lands on the turn that spends it**, not earlier. Paying
+#:   day 3's SNAP money on day 2 would leave the player carrying blue
+#:   through a night with nothing the tutorial wants them to do with it,
+#:   reading a bank they had not earned.
+#:
+#: Paid into ``blue_bank``, not as a parcel. That matters more than it
+#: used to: a parcel's purity is clamped at 255 (§3.14), so from v1.36 a
+#: chaff's worth of blue will no longer FIT in one parcel.
+#:
+#: Only teaching presets appear here, and the grant is announced in the
+#: log rather than slipped in — a tutorial that silently edits your
+#: balance is teaching an economy that does not exist.
+TUTORIAL_BLUE_GRANT_WEAPON: Dict[str, Dict[int, str]] = {
+    "advanced": {3: "snap", 4: "chaff"},
+}
+
+
+def blue_grant_weapon_for(tutorial: Any, day: Any) -> str:
+    """Which weapon ``day``'s subsidy is the price of, or ``""``.
+
+    Separate from the amount so the log line can name what the money is
+    for. "+100 BLUE" on its own reads like a bug; "+100 BLUE — enough
+    for one SNAP" reads like a lesson.
+    """
+    key = normalise_preset(tutorial)
+    if not key:
+        return ""
+    return TUTORIAL_BLUE_GRANT_WEAPON.get(key, {}).get(int(day or 0), "")
+
+
+def blue_grant_for(tutorial: Any, day: Any) -> int:
+    """Blue owed to each seat at ``day``'s orbit open, or ``0``."""
+    from sea_of_colours.game.weapons import BLUE_COST_BY_KIND
+
+    kind = blue_grant_weapon_for(tutorial, day)
+    # A weapon that has been withdrawn owes no stipend. Returning 0
+    # rather than raising means retiring SNAP does not also break the
+    # tutorial on the way out — the reel goes, and this goes quiet.
+    return int(BLUE_COST_BY_KIND.get(kind, 0)) if kind else 0
 
 
 def normalise_preset(name: Any) -> str:

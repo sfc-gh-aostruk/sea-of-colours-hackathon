@@ -81,6 +81,15 @@ pytest                   # tests/ (pythonpath=. via pytest.ini)
   `backend.snowpark_session_for(store)`. `tests/test_per_game_backend.py`
   pins both, including a scan that fails if a V12 module reads the
   frozen `SOC_BACKEND` constant again.
+- **Write buffering is on (v1.43).** On Snowflake every store call costs
+  ~300ms before it does any work, and the engine issues 11–14 a turn.
+  `buffered_store.py` coalesces them: a seven-day season goes 97.9s →
+  62.2s on heuristic seats, 254.5s → 205.3s with V12 in one. Game state
+  still flushes **every turn**, so a crash can never rewind or corrupt a
+  game; what a hard crash mid-day costs is that day's LOG text, replay
+  frames and invocation rows — the transcript and the animation, never
+  the game. `SOC_BUFFERED_STORE=0` turns it off, and is the first thing
+  to try if a Snowflake season looks like it is missing history.
 - **Running the server — either seat is fine, but say which one you took.**
   The canonical command, whoever types it:
   `SOC_BACKEND=snowflake python run_web.py --no-reload`.
@@ -133,11 +142,15 @@ sea_of_colours/
                Markdown card per turn (orbit and night kept separate).
   cards.py     Renders one turn as Markdown, from a store row or a harness
                envelope. Shared by seasons.py and /api/game/{id}/agent-cards.
-  battles/     The redsign battles — 10 boards x 5 difficulty rungs x 4
-                 weapon loadouts, all offline. The hackathon's scoring suite;
-                 see its README.md. Nine are redsign nights; the tenth,
-                 plain_night_armed, is the no-jackpot control that asks what
-                 an agent does with a rack on an ordinary seam.
+  battles/     DEPRECATED (v1.42) — superseded by turnlab/. Still runs, still
+                 tested, nothing removed; don't build on it and don't spend
+                 effort keeping its constructed boards in step with a rules
+                 change. `soc weapons` and `soc league` have no lab
+                 equivalent yet, which is the only reason it is still here.
+               The redsign battles — 10 boards x 5 difficulty rungs x 4
+                 weapon loadouts, all offline. Nine are redsign nights; the
+                 tenth, plain_night_armed, is the no-jackpot control that
+                 asks what an agent does with a rack on an ordinary seam.
       baseline/  Stock V12's own run over the lot, frozen and checked in, so
                  `soc why` can show a fork what it forked without a PAT or a
                  model call. Re-record it when a board changes —
@@ -155,10 +168,29 @@ sea_of_colours/
                     declaring team, name and participants (v1.41 — the league
                     is the day's public record, so an entrant that names
                     nobody cannot be credited or chased),
-                 discovered at import (v1.39). Registering one edits nothing
-                 shared — that's what lets a room of teams share one repo,
-                 and makes the league a directory scan. Don't add a fork to
-                 binding_registry.py.
+                        discovered at import (v1.39). Registering one edits nothing
+                        shared — that's what lets a room of teams work at once,
+                        and makes an entrant a directory rather than a merge.
+                        Don't add a fork to binding_registry.py.
+    fork_collect.py     The league's collation (v1.44 — `soc collect`). The day
+                        runs on GitHub forks: each team forks, clones their own
+                        copy and pushes there, so nobody needs write access to
+                        the repo the event runs from. This takes each fork's
+                        agent directory and assembles the field in a SEPARATE
+                        staging checkout (`../soc-league`), never in this repo
+                        and never in anyone's fork — attendees are still pulling
+                        from upstream all day. It resets before each run, so a
+                        collection is a snapshot of the forks, not a pile of
+                        every earlier run. Won't take a fork's `tabula_v12`
+                        (every fork has one; the baseline comes from upstream)
+                        and won't silently resolve two forks claiming one name.
+    fork_parcel.py    One fork as one file, for handing between teammates
+                    (v1.43 — `soc share` / `soc grab`). `soc push` goes to
+                    your own fork, so a teammate's work is a remote you do
+                    not have; a pair iterating on one agent needs this.
+                    Carries only .py/.md/.json and cannot write outside
+                    the fork's own directory, but the code does run on
+                    arrival — that is stated, not hidden.
     orbit_policy.py   A harness owns its own buying policy (v1.40). It used to
                     live in agent/heuristic_agent.py, shared — which meant a
                     fork could not change what it spends credits on without
@@ -176,15 +208,35 @@ sea_of_colours/
                            must obey. Fork it with scripts/new_agent.py; never
                            edit it in place — it is the baseline forks are
                            measured against.
+turnlab/         The turn lab (v1.42) — the way a fork gets tested now, and
+                 the replacement for evals/battles/. A *frozen turn* is a real
+                 turn out of a real season, snapshotted the instant before a
+                 seat planned; you cast any fork into any seat, watch the
+                 night resolve in the ordinary game UI, and diff your take
+                 against V12's. See its README.md.
+                 Three rules it exists to keep. It writes only to
+                 turnlab/data/ — never seasons/, never Snowflake, so a lab
+                 run cannot touch a live game. It reuses the real UI and the
+                 real night simulator rather than drawing its own, so what
+                 you watch is what the engine did. And it adds no scoring:
+                 the question is "how is my fork different", not "what mark
+                 did it get".
+                 Boards are minted (mint.py, a played season frozen per turn)
+                 or grabbed (rewalk.py, a finished season replayed to a day).
+                 Minting is reproducible — same arguments, same boards — and
+                 test_mint_is_reproducible.py keeps it that way.
 server/
   app.py         FastAPI thin proxy (/, /api/game/*); static mounted no-cache
   static/        Web UI — app.js, styles.css, station.js, index.html
 scripts/         deploy_soc_schema.py, run_season*.py, run_evals.py, run_battery.py
-  soc.py         the hackathon front door — new / list / suite / why / weapons
-                 / season / doctor / push / league. One entry point on purpose;
-                 point attendees (and their coding agents) here, not at four
-                 scripts. `season` supersedes run_season.py for anything that
-                 needs a fork or an LLM seat — that script is heuristic-only.
+  soc.py         the hackathon front door — new / lab / season / doctor /
+                 share / grab / push, and collect for organisers,
+                 plus the deprecated battles commands (suite / why /
+                 weapons / league / list, which print a notice). One entry
+                 point on purpose; point attendees (and their coding agents)
+                 here, not at four scripts. `season` supersedes run_season.py
+                 for anything that needs a fork or an LLM seat — that script
+                 is heuristic-only.
   films/         the tutorial film rig — self-contained, see its README.md
 snowflake/       SOC_* schema, views, procedures, agent SQL
 ```
@@ -228,7 +280,10 @@ Checklist for any rule/constant/formula change:
 
 1. **Engine (source of truth).** Change the single canonical definition — a
    constant at the top of `game/session.py` (capacities, costs, multipliers),
-   `game/weapons.py` (EMP/chaff dials), `game/tuning.py` (env-tunable vision
+   `game/weapons.py` (SNAP/EMP/chaff dials, and the `BLUE_COST_BY_KIND` /
+   `CREDIT_COST_BY_KIND` / `SPEC_BY_KIND` tables that are the single home
+   for a weapon's published price and behaviour — see
+   `docs/ADDING_A_WEAPON.md`), `game/tuning.py` (env-tunable vision
    knobs), or `game/policy.py` (slot caps). Never duplicate a literal you could
    import.
 2. **RULEBOOK.md.** Update the prose **and** the `Canonical Configuration` table,
@@ -283,3 +338,17 @@ Checklist for any rule/constant/formula change:
 
 - **Do not commit unless explicitly asked.** When asked, follow the repo's
   concise commit style and never touch git config.
+- **The day runs on GitHub forks (v1.44).** Each team forks this repo,
+  clones their own fork, and pushes there; nobody but the organiser has
+  write access to this one. `soc push` enforces the rule that makes it
+  work — your diff stays inside your own harness directory — and refuses
+  if `origin` is not yours, which catches the attendee who cloned
+  upstream instead of forking. `soc doctor` reports the same thing before
+  it costs anyone an afternoon. If you are an agent helping an attendee,
+  their remote is theirs: never point it at upstream.
+- **The league is assembled elsewhere.** `soc collect` builds the field in
+  a separate staging checkout (`../soc-league`), because attendees pull
+  from upstream all day and forty entrants landing here would hand the
+  whole room a conflict. Each agent goes on living in the fork it came
+  from — the staging area is where the league is run, not where work is
+  kept, and it is disposable by design.

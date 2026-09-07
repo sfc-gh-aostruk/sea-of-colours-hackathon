@@ -41,10 +41,21 @@ from typing import Dict, List, Optional
 #: Wire verbs the engine accepts for ordnance (``game/policy.py``).
 WEAPON_VERBS = ("emp_launch", "chaff_flare")
 
-#: Files whose weapon-awareness does NOT count for rung 1. Buying happens
-#: in orbit and already reads the rack; the question is whether the
-#: NIGHT phase — the half that could actually fire — knows about it.
-_BUYING_FILES = ("orbit.py", "orbit_policy.py")
+#: Files whose weapon-awareness does NOT count for rung 1.
+#:
+#: The rung asks whether the half of the agent that could actually FIRE
+#: knows what is in the rack, so a read only counts if it could change a
+#: decision. Two kinds cannot:
+#:
+#:   * Buying code. It happens in orbit and reads the rack by
+#:     construction — counting it would pass every fork on day zero.
+#:   * Reporting code. ``card.py`` renders the turn for a human after
+#:     the fact (v1.38 gave it an arsenal line so a lab card says who was
+#:     armed). Printing the rack on a diagnostic is not the night phase
+#:     knowing it, and a fork that got a green rung 1 out of a debug
+#:     render would be sent up the ladder with the bottom rung missing —
+#:     which is precisely the misdiagnosis this module exists to stop.
+_BUYING_FILES = ("orbit.py", "orbit_policy.py", "card.py")
 
 #: Doctrine counts as offensive when it tells the seat to SPEND its own
 #: ordnance. Matching loose phrases like "deny their" does not work — the

@@ -733,6 +733,53 @@ KNOW WHO HAS WHAT — weapons are ORBITAL strikes, not ground units:
 """
 
 
+# Deliberately the shortest of the three BEWARE blocks, and the only one
+# that ends with a single instruction.
+#
+# The first draft carried a four-bullet mitigation section — land offset,
+# spread across distinct cells, assume the rack is not spent — which is a
+# defensive playbook against a weapon the agent cannot see coming. SNAP
+# is one cell chosen by somebody else with no tell; there is no read to
+# make, so that section could only buy timid play across the board, paid
+# for out of the attention the seat needs for harvesting.
+#
+# What survives is the part that is actionable BEFORE the fact, and it is
+# one line: a grab resting on one probe rests on one deletable cell.
+# Everything else about a SNAP is learned afterwards from the combat feed
+# (``snap_hit``), which is why that renderer is worth more here than any
+# amount of doctrine.
+DOCTRINE_BEWARE_SNAP = """\
+OPPONENT WEAPONS — beware_snap (one square, taken off you first):
+  What it does to you:
+    * ONE missile at ONE cell, resolved there BEFORE the hour's vision
+      snapshot and before every drop, step and pickup on it.
+    * A probe on that cell is DESTROYED BEFORE IT SEES. The sight it
+      would have given never exists, so a landing that depended on it
+      is refused for want of vision — not blocked, unsighted.
+    * A harvester on the cell, or stepping into it, is DAMAGED and
+      harvests nothing. A landing into it is turned back: the hull
+      stays in orbit, damaged, its outing unspent.
+
+  The one thing that CAN be done in advance, if you judge it worth a
+  probe: a grab resting on a SINGLE probe rests on a single cell a rival
+  can delete for 100 blue, the cheapest thing on the ladder. A SECOND
+  probe that sees the same cell from a different one keeps the sight
+  when the first is taken — SNAP lands on one square, so it cannot have
+  both.
+
+  When the menu can build that cover it offers it as PRSNAP*, and it is
+  an OPTION, not an instruction. It banks nothing, it costs a probe and
+  an hour on ground you can already see, and it is worth nothing at all
+  if the rival never bought a SNAP — which you cannot know, only bound.
+  Weigh it like any other play: how sorry you would be to lose this
+  landing, against what else that probe could open. Declining it is a
+  perfectly good answer on most nights.
+
+  Beyond that, do not re-plan around SNAP. You cannot see it coming, and
+  the rest of what it did you will read in the combat feed afterwards.
+"""
+
+
 DOCTRINE_WEAPONS_MULTIWAVE = """\
 WEAPONS => MORE UNITS ON THE SEAM, NOT ONE SHORTER CHAIN (offensive read):
   The defensive rules above (short chains, dodge predictable pickup windows) are
@@ -765,84 +812,152 @@ WEAPONS => MORE UNITS ON THE SEAM, NOT ONE SHORTER CHAIN (offensive read):
 
 
 DOCTRINE_SCORCH = """\
-FIRE AN EMP — you are holding a charge, and a charge in the rack scores 0:
-  Every rule above this one is about SURVIVING someone else's weapon. This one
-  is about spending yours. You own EMP stock (see YOUR RACK) and the menu is
-  offering EMP_SCORCH / SCORCH_REDSIGN because a target exists tonight.
+FIRE AN EMP — you are holding a charge, and a charge in the rack scores 0.
+Every rule above this one is about SURVIVING someone else's weapon; this one
+is about spending yours. You own EMP stock (see YOUR RACK).
 
-  WHAT IT COSTS. One charge, and — the part that decides most calls — ONE of
+FIRST QUESTION: is a REDSIGN live tonight? Check the OPTION MENU for a
+[BLIND_SCORCH] / [SCORCH_REDSIGN] / [SMASH_THEN_LOCK] / [RACE_CRASH_EMP]
+entry. If any of those appear, a redsign is on the board and this section's
+REDSIGN CASES below are the ONLY correct EMP plays. If none appear, no
+redsign is live and the QUIET NIGHT rule at the bottom applies.
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ REDSIGN-LIVE rule — never fire EMP_SCORCH away from the redsign     │
+  │ when a redsign fight is on the board. EMP_SCORCH kills far-away     │
+  │ probes for TOMORROW's vision denial. That is worth an hour on a     │
+  │ quiet night. On a redsign night it is worth almost nothing: the     │
+  │ rival is coming for the pure at THIS beacon, not for the ground     │
+  │ their scattered probes light. Denying their side probes leaves the  │
+  │ redsign contest unchanged — you spent a charge to affect ground     │
+  │ nobody is fighting for. The charge belongs at the beacon.           │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  WHAT IT COSTS. One charge and — the part that decides most calls — ONE of
   your 21 hour-slots. A launch pre-empts the seat for that hour (§3.10): you
   fire OR you move, never both. So the honest comparison is never "EMP vs
-  nothing", it is "EMP vs the chain I drop instead". Price it that way.
+  nothing", it is "EMP vs the chain I drop instead". Price it that way — and
+  price the whole play, not the salvo in isolation: SMASH_THEN_LOCK and
+  RACE_CRASH_EMP each carry a REAL red yield on the deferred harvester wave,
+  and the salvo is what buys that ground.
 
-  WHEN TO SPEND IT:
-    * KILL THE FRESHEST EYE. Launch an EMP onto the newest rival probe on the
-      board and it dies at hour 1. Probes die the hour the cloud forms, and again on
-      every later tick. A probe launched LAST NIGHT is vision the rival has not
-      converted into a landing yet — kill that one. A probe from three days ago
-      has already told them what is there; scorching it burns an hour to destroy
-      information they already have.
-    * DENY A SIGN YOU CANNOT REACH. If a redsign is THEIRS and you cannot get
-      to the pure first, SCORCH_REDSIGN makes the smear worthless to them for 8
-      hours. This banks nothing. It is worth an hour only when you actually
-      believe they are coming — if the board says they are working the other
-      side, you just spent an hour bombing empty ground.
-    * BETTER: SHAPE THE SALVO AND STAND IN IT (BLIND_SCORCH). A cell is only
-      darkened when a missile lands within the blast radius of it, and YOU
-      choose where the three missiles land. Place them all one cell further out
-      than the blast reaches and the middle stays clear. Now the cloud is not a
-      wall between you and the seam — it is a wall around a cell only you can
-      use. Probe the hole, drop into it, and you are the only house on that
-      ground for eight hours. When the cloud lifts you comb outward from the
-      middle of the seam while the rival is still in orbit. Prefer this to a
-      blanket SCORCH_REDSIGN whenever the menu offers it: same denial, and you
-      end the night holding the ground instead of looking at it.
-    * FIRE IT FIRST OR DO NOT FIRE IT. A salvo is worth its slot at hour 1 or
-      hour 2, and close to nothing after that. Three reasons, and they stack:
-      probes die on CONTACT, so an early kill costs them a night of vision
-      while a late one destroys a picture they have already used; landings
-      happen early, so darkened ground only denies anything while they still
-      have hours to land in; and a cloud lit at hour 15 of a 21-hour Nox loses
-      most of its eight hours to Aurora — full charge, full hour-slot, a
-      fraction of the cloud. If the only slot you can spare for a salvo is late
-      in the night, the honest read is that you do not have room for one
-      tonight: keep the charge and spend the hour on a chain. The compiler
-      enforces this — a salvo queued later is hoisted to the front and you are
-      told — but plan it at the front yourself, because everything you queued
-      before it moves back an hour when it is.
+  THE THREE REDSIGN CASES — pick by REDSIGN STATE:
+
+  CASE A — the redsign is NOT YOURS and you cannot see the pure:
+    * The correct play is [BLIND_SCORCH] in the EMP SALVOS block (shaped
+      salvo + probe + drop on the hole). Not EMP_SCORCH, not SCORCH_REDSIGN,
+      not a probe attack — BLIND_SCORCH.
+    * BLIND_SCORCH IS the shield play. The three missiles are placed so a
+      single cell of the smear stays clear, you probe that cell (on the rim
+      so the landing does not crush it), and drop the harvester on it. For
+      the next 8h that hole is a cell ONLY you can walk on, and the whole
+      smear is dark for every rival converging on the beacon. When the
+      cloud lifts you comb outward from the middle of the seam while they
+      are still in orbit.
+    * The yield line on BLIND_SCORCH reads "red ~+0" because the comb is
+      blind. Do NOT read that as "worth nothing". The play banks the
+      halo when the cloud lifts AND denies the smear to 3 rivals for 8h.
+      Its real value is 400-600 red + a full night of rival tempo lost.
+      A blind gamble at BLIND_AND_GRAB banks similar expected red WITHOUT
+      the denial and WITHOUT the hole-occupation certainty. BLIND_SCORCH
+      dominates it whenever you own a charge.
+    * DO NOT delay the landing to cloud-lift. A harvester in orbit is a
+      harvester banking nothing — one outing per unit per night (§3.9.2),
+      so waiting until H9 doesn't buy you a second play, it just starts
+      the chain later on unprobed ground. BLIND_SCORCH's H3 landing is on
+      a cell you PICKED (the hole) with a probe that lit it. That
+      certainty is worth more than the 6 hours of "flexibility" a delayed
+      drop pretends to offer.
+    * Prefer BLIND_SCORCH over BLIND_SCORCH_T (which lands the harvester
+      ON its own probe and crushes it, going blind mid-cloud). Prefer
+      BLIND_SCORCH over SCORCH_REDSIGN (blanket denial, no hole, no
+      follow-up).
+    * DO NOT run BLIND_SCORCH if you have your OWN live probe on the pure:
+      you have a smash-grab in that case, take the certain +765 first.
+
+  CASE B — YOUR REDSIGN, and you are alone or dominant (0-1 rivals):
+    * Menu offers SMASH_THEN_LOCK (H1 smash + H3 halo salvo + cloud-lift 2nd
+      unit comb).
+    * SMASH FIRST — the H1 landing on YOUR pure beats every weapon. Certain
+      +765. Only chaff denies it.
+    * H3 EMP the HALO around the pure, hole = pure. The three missiles are
+      placed so the pure cell stays clear while the ring of mass around it
+      goes dark. Result: your rivals cannot work the halo for 8h; your
+      second harvester can. The pure was banked at H2, so the salvo denies
+      nothing you would have taken yourself.
+    * If you have no 2nd harvester the pattern still runs as smash + lock
+      (2 waves): the pure is banked and the seam is still yours next night.
+    * NEVER SCORCH YOUR OWN PURE. The salvo is aimed at the halo AROUND it;
+      any menu play that darkens the pure itself locks you out too.
+
+  CASE C — SHARED VISION: you and >=1 rival both see the pure:
+    * Menu offers RACE_CRASH_EMP (H1 drop expecting crash + H3 salvo with
+      hole=pure + cloud-lift 2nd unit re-drop).
+    * H1 you both drop on the pure. If you land, +765. If you mutually
+      collide, both harvesters are damaged and both spill — but AERIAL
+      DENIAL DOES NOT CONSUME THE PURE (§4.9), it is still on the board.
+    * H3 EMP the halo, hole = pure. Rivals cannot walk in for 8h; you can.
+    * Cloud-lift, your second harvester drops on the pure. Either way (you
+      landed at H1 OR you crashed and re-took at H9), the pure is banked
+      and every rival lost their whole night on it.
+    * REQUIRES TWO HARVESTERS. With one, fall back to SMASH_THEN_LOCK — a
+      crash-and-recover you cannot recover from is a night thrown away.
+    * SKIP IF CHAFF IS IN PLAY. Chaff cancels the H1 landing outright, and
+      the second-unit re-drop cannot follow a landing that never happened.
+      The pattern is not offered on a chaffed night; heed that.
+
+  QUIET NIGHT (no redsign anywhere on the board): kill the freshest eye
+  with EMP_SCORCH. Launch it on the newest rival probe. Probes die the
+  hour the cloud forms, so an early kill costs the rival a NIGHT of vision
+  they have not yet converted into a landing. An old probe has already told
+  them what is there — scorching it burns an hour to destroy information
+  they already used. Freshest first. This is a one-move play (no harvester),
+  so the hour cost is compared against ONE chain you drop instead. Take it
+  when killing the eye is worth more than the RED that chain would have
+  banked. IF A REDSIGN IS LIVE this rule DOES NOT APPLY — go to the REDSIGN
+  CASES above.
+
+  BLIND_SCORCH's shorter siblings (fallback plays only):
+    * SCORCH_REDSIGN is a blanket salvo over a rival smear with no hole
+      and no follow-up. Weakest of the salvo family — offered because it
+      is legal, but BLIND_SCORCH almost always dominates.
+    * EMP_SCORCH (probe-kill away from the beacon) is the QUIET-NIGHT
+      play. On a redsign night the charge belongs at the beacon; using
+      it on far probes is the failure mode this doctrine exists to
+      prevent.
+
+  FIRE IT FIRST OR DO NOT FIRE IT — a salvo is worth its slot at hour 1 or
+  hour 3, and close to nothing after that. Probes die on CONTACT so an
+  early kill costs them a night of vision; landings happen early so darkened
+  ground only denies anything while they still have hours to land in; and a
+  cloud lit at hour 15 loses most of its eight hours to Aurora. If the only
+  slot you can spare is late in the night, the honest read is that you do
+  not have room for one tonight — keep the charge and spend the hour on a
+  chain.
 
   WHEN NOT TO — the two ways this play loses you the game:
-    * NEVER SCORCH YOUR OWN REDSIGN WHEN YOU CAN GRAB IT. If the sign is yours
-      (`mine: true`) and the menu is offering a CERTAIN take — a GRAB* on pure
-      or mass you can SEE, or a SMASH_GRAB on your own seam — take the RED. You
-      would be spending an hour to lock your OWN harvesters out of your OWN pure
-      for 8 hours, to deny a rival who may not be coming, while the certain
-      points sat there. Certain RED outranks speculative denial every time.
-      SCORCH_REDSIGN is a play for a sign you do NOT own.
-    * NEVER FIRE INTO YOUR OWN NIGHT. Friendly fire is on. Your harvesters go
-      'empd' in your own cloud — hour spent, nothing banked — and your own
-      probes are DESTROYED by it. Aim where your fleet is not going, or plan the
-      walk-in for after the cloud clears. The compiler moves your unaffected
-      plays ahead of the affected ones and warns you when a play still lands
-      inside the diamond; that warning is not decoration, it means that unit is
-      about to do nothing.
+    * NEVER SCORCH YOUR OWN REDSIGN when you can grab it. Grading in the
+      compound patterns keeps the pure clear (hole = pure). A blanket
+      SCORCH_REDSIGN on your own sign locks your harvesters out of your own
+      +765 for 8h to deny a rival who may not even be coming.
+      Certain RED outranks speculative denial every time.
+    * NEVER FIRE INTO YOUR OWN NIGHT. Friendly fire is on. Your harvesters
+      go 'empd' in your own cloud — hour spent, nothing banked — and your
+      own probes are DESTROYED by it. The compound patterns handle this
+      for you (deferred waves land AFTER the cloud lifts, rim probes sit
+      OUTSIDE the blast); do NOT hand-schedule a walk-in for hour 4 of a
+      cloud that clears at hour 9.
 
-  THE CLOUD'S EIGHT HOURS ARE NOT YOUR EIGHT HOURS — the mistake that makes
-  this play look bad:
-    You get ONE action per hour across the WHOLE FLEET (§3.10), and the queue
-    is a single interleaved timeline. A harvester holding a hole is not
-    "your turn"; it is one unit standing still while every other unit works.
-    So a night built around a scorch should ALSO pick a full slate of chains
-    and probes somewhere else on the map. The compiler splices the held walk
-    in at the exact hour the cloud lifts and pushes your other moves out
-    behind it, so a long chain elsewhere runs its first steps DURING the
-    cloud, the held unit combs the seam the moment it clears, and the chain
-    then finishes. You do not have to sequence any of that by hand — you only
-    have to GIVE IT ENOUGH TO DO. If the log says it inserted WAITs, that is
-    the night telling you the plan was too thin, not that the scorch was wrong.
-    And do NOT try to save time by walking in early: a step into a standing
-    cloud lands but harvests NOTHING, and the unit is disabled from the next
-    hour — you lose the hour and the cell.
+  THE CLOUD'S EIGHT HOURS ARE NOT YOUR EIGHT HOURS. You get ONE action per
+  hour across the WHOLE FLEET (§3.10), and the queue is a single interleaved
+  timeline. A harvester holding a hole (or waiting for cloud-lift) is one
+  unit standing still while every other unit works. So a night built around
+  a compound scorch should ALSO pick a full slate of chains and probes
+  somewhere else on the map. The compiler splices the held walk in at the
+  exact hour the cloud lifts and pushes your other moves out behind it —
+  you only have to GIVE IT ENOUGH TO DO. If the log says it inserted WAITs,
+  that is the night telling you the plan was too thin, not that the scorch
+  was wrong.
 """
 
 
@@ -854,6 +969,7 @@ __all__ = [
     "DOCTRINE_LASTDAY_SUPERSEDE",
     "DOCTRINE_BEWARE_EMP",
     "DOCTRINE_BEWARE_CHAFF",
+    "DOCTRINE_BEWARE_SNAP",
     "DOCTRINE_COMPREHENSION",
     "DOCTRINE_CERTAINTY",
     "DOCTRINE_RISK_LADDER",

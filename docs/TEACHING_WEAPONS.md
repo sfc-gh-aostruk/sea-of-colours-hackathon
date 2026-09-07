@@ -10,6 +10,28 @@ It is a companion to
 not a replacement: the guide says what the four rungs *are*, this says
 what each one cost to build.
 
+> **Where the firing test lives now (v1.42).** `soc weapons` is
+> **current** and unchanged — it is a static scan of your fork's source,
+> it needs no model and no credentials, and it is still the first thing
+> to run. It prints the same deprecation notice as the rest of the
+> battles commands, which is a wrinkle rather than an instruction:
+> nothing in the lab replaces a source scan, so ignore the notice on
+> this one. What has changed is the other half. The battles suite
+> (`soc suite`, `soc why`, `soc diff`) is **deprecated**, superseded by
+> the **turn lab** (`turnlab/` — see its README). Instead of a
+> constructed board at a difficulty rung with a loadout attached, you
+> open a real turn out of a real season, hand a seat a rack, cast your
+> fork into it and watch the night resolve in the ordinary game UI:
+> `python run_web.py` then `/lab`, or `python scripts/soc.py lab` to see
+> what is in there without a server.
+>
+> That matters here more than anywhere else in the docs, because this is
+> the document about whether an agent *fires*. `soc weapons` proves the
+> salvo can reach the engine; the lab is where you find out whether the
+> model reaches for it on a night somebody really played. The battles
+> commands still run and print a notice — nothing has been removed, and
+> §6's findings below were measured on them.
+
 The fork is `emp_harvest_test`, and it is **in the repo** — a real
 minted agent with its own `agent.json`, registered the same way yours
 will be, and every snippet below is quoted from it. Read it alongside
@@ -39,6 +61,12 @@ python scripts/soc.py weapons --agent emp_harvest_test   # or your own fork
 It reads your fork's source — no model, no credentials, instant — and
 tells you which rung you are stuck on. Run it after every change. The
 whole exercise below is just walking it from four FAILs to four PASSes.
+
+This is one of the two jobs the turn lab does not do, which is why it is
+still the right first command in v1.42. A source scan and a played night
+answer different questions: the scan says the play is *possible*, the
+lab says whether it *happened*, and a fork that fails the scan cannot be
+diagnosed by watching it — the option was never on the menu to refuse.
 
 The rungs must be built **in order**, because each one is invisible
 until the one before it works. An option that emits a verb the schema
@@ -271,7 +299,13 @@ from board variance, and the widest margin was the season where nothing
 fired.
 
 **In the combat suite it fired nothing at all** across three armed
-battles with a full rack. Following the debugging order from the guide —
+battles with a full rack. *(That was the battles suite, deprecated since
+v1.42. The same finding is now reached by opening a frozen turn in the
+lab, arming the seat and casting the fork — and it is a better test of
+this particular claim, because a constructed board can always be
+accused of manufacturing the opportunity. Vetus Lantern · day 6 is the
+board built for it: a late redsign race where the leader is discovered
+and cannot cover itself.)* Following the debugging order from the guide —
 *was the option offered, could the schema express it, did the packager
 survive it, only then blame the model* — the recorded bake said:
 
@@ -312,8 +346,35 @@ fix that.
 [ ] doctrine says when to reach for it, and when not to
 [ ] orbit actually buys the thing, early, with credits reserved
 [ ] prices imported from game/weapons.py, never copied
-[ ] soc suite --loadout empty,emp  — does the ORDNANCE line change?
+[ ] open a frozen turn in the lab, once unarmed and once with an EMP
+    — does the fork actually fire it?
+[ ] soc suite --loadout empty,emp  — LEGACY: does the ORDNANCE line change?
 ```
 
-The last line is the only one that matters. Everything above it is
-plumbing; that one is the question.
+The last two lines are the only ones that matter. Everything above them
+is plumbing; that is the question.
+
+The lab is the way to ask it now. Opening a board lets you hand the seat
+one of four racks — none, one chaff, one EMP, or one EMP and one chaff —
+and the rack is a property of *opening* the board rather than of the
+board, so two runs of the same night can differ by exactly that one
+thing. One of each at most is deliberate: a second charge only lets a
+fork look decisive by spending twice, and the question is whether it
+fires at all.
+
+Two things about the lab are worth knowing before you read a result as a
+verdict on your fork. The lab **states the rival's arsenal** rather than
+making it guessable — V12 infers a rack by watching a rival's blue band
+drop between nights, and a frozen turn has no previous night to
+difference against, so without this every agent read `emp: none
+observed` and planned a night that was not the night. And the frozen V12
+baseline you are diffed against was recorded **unarmed**, because stock
+V12 cannot emit a weapon order at all: `emp_launch` and `chaff_flare` are
+absent from its reply schema and its option menu. A rack changes what it
+sees and never what it does. That gap is exactly the exercise this
+document describes, and it is what a fork that has done the work gets
+shown against.
+
+`soc suite --loadout empty,emp` still runs and still answers, so the
+legacy line is kept — but it asks the question on a board built to
+provoke the answer, which is the weaker version of the test.

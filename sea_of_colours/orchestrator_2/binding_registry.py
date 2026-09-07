@@ -202,6 +202,17 @@ def _register_discovered() -> list[str]:
     return problems
 
 
+#: The roster as shipped, captured before discovery folds any forks in.
+#: v1.42 — there used to be no way to ask this, so the test guarding the
+#: roster had to hardcode four names and consequently went red the moment
+#: anyone ran ``scripts/new_agent.py``. On a day when every attendee mints
+#: a fork in the first ten minutes, a test that fails for doing the thing
+#: the guide told you to do is not a guard, it is noise — and it trained
+#: people to ignore a red suite, which is the one habit the day cannot
+#: afford. The guarantee worth keeping is narrower: nothing joins the
+#: *shipped* roster by accident. Forks are supposed to join.
+SHIPPED_AGENT_LABELS: frozenset[str] = frozenset(AGENT_LABEL_BINDINGS)
+
 # Recorded rather than printed: importing a module should not write to
 # anyone's console, and the one caller that genuinely wants to nag about
 # a broken fork (``soc doctor``) can read this.

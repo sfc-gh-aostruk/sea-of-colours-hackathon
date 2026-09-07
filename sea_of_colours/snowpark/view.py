@@ -75,12 +75,40 @@ def _active_rules(sess: Any = None) -> Dict[str, Any]:
     weapons-off game and has it eaten by the sanitiser has spent its whole
     move budget and looks broken (see ``GameSession.weapons_enabled``).
     """
+    from sea_of_colours.game.weapons import (
+        BLUE_COST_BY_KIND,
+        WEAPONISED_BLUE_CAP,
+    )
+
+    # v1.36 — prices and cap come off the SESSION when there is one,
+    # because they are stamped per game. Publishing the live module
+    # constants against an archived season is what makes its arsenal
+    # bar walk mid-night: the client prices fired weapons off this
+    # table, so a chaff bought at 255 and priced at 300 empties a rack
+    # that was never that full. The module values are the fallback for
+    # the callers that genuinely have no session in hand.
+    cap = WEAPONISED_BLUE_CAP
+    costs = BLUE_COST_BY_KIND
+    if sess is not None and hasattr(sess, "weapon_prices"):
+        cap = sess.arsenal_cap()
+        costs = sess.weapon_prices()
+
     return {
         "drop_mode": "live_only" if _live_only_drops() else "live_or_echo",
         "probe_radius": _probe_vision_radius(),
         "probe_lifetime_nights": _probe_lifetime_nights(),
         "weapons_enabled": bool(getattr(sess, "weapons_enabled", True)),
         "signs_enabled": bool(getattr(sess, "signs_enabled", True)),
+        # v1.34 — published for the same reason weapons_enabled is: an
+        # agent that proposes a fourth EMP and has it refused has spent
+        # move budget on a rule it was never told (§4.9.8).
+        "weapon_blue_cap": int(cap),
+        # v1.35 — the price list behind that cap. The client needs it to
+        # say what a rack is worth mid-night (a fired EMP moves the bar
+        # the instant it launches), and a mirrored table is the only way
+        # to do that without a second copy of the prices in JS drifting
+        # the day someone retunes one.
+        "weapon_blue_costs": dict(costs),
     }
 
 
@@ -728,6 +756,12 @@ def build_agent_view(
     structured_log = list(recent_log or [])
     last_night = _last_night_recap(sess, pid, structured_log)
     competitor = _competitor_intel(sess, pid, structured_log, visible, echoes)
+    # v1.38 (§3.15) — the store's log is one shared feed with no owner
+    # column, so ``structured_log`` holds every seat's rows. The two
+    # calls above are entitled to that: ``last_night`` filters it to this
+    # seat and ``competitor_intel`` lifts only ``probe_launch``, which is
+    # a public flare. What must NOT go out whole is the feed itself.
+    seat_log = _log_for_seat(sess, pid, structured_log)
     station_intel = _station_intel(sess, pid)
     my_assets_block = _my_assets(sess, pid)
     world_block = sess.agent_dense_view(pid)
@@ -830,37 +864,42 @@ def build_agent_view(
     # launch one — must build first"). Defensive ``.get`` chain so
     # a hand-edited or legacy session that's missing one of the
     # sub-keys still serialises as a clean ``{emp, chaff}``.
+    #
+    # v1.36 — keyed off the game's own price table rather than a literal
+    # pair, so a weapon added to (or withdrawn from) ``BLUE_COST_BY_KIND``
+    # appears here without an edit. A seat with no stock for a kind still
+    # gets an explicit zero: an absent key reads to an agent as "this
+    # weapon does not exist", which is a different claim.
     weapon_stock_seat = sess.weapon_stock.get(pid, {}) or {}
+    blue_prices = sess.weapon_prices()
     weapon_stock_block = {
-        "emp": int(weapon_stock_seat.get("emp", 0) or 0),
-        "chaff": int(weapon_stock_seat.get("chaff", 0) or 0),
+        kind: int(weapon_stock_seat.get(kind, 0) or 0)
+        for kind in blue_prices
     }
-    from sea_of_colours.game.weapons import (
-        EMP_COST_BLUE_PURITY,
-        EMP_COST_CREDITS,
-        EMP_RADIUS,
-        EMP_MISSILES_PER_LAUNCH,
-        EMP_CLOUD_HOURS,
-        CHAFF_COST_BLUE_PURITY,
-        CHAFF_COST_CREDITS,
-        CHAFF_DURATION_HOURS,
-    )
+    # v1.36 — both halves of the price come off ``weapons.py`` tables.
+    # The credit half used to be a literal here, and the literal is
+    # exactly how SNAP shipped published at 0 credits while the engine
+    # charged 250: a buy panel that reads this view quoted a price the
+    # orbit resolver then refused.
+    from sea_of_colours.game.weapons import CREDIT_COST_BY_KIND, SPEC_BY_KIND
+
     weapon_prices_block = {
-        "emp": {"blue": EMP_COST_BLUE_PURITY, "credits": EMP_COST_CREDITS},
-        "chaff": {"blue": CHAFF_COST_BLUE_PURITY, "credits": CHAFF_COST_CREDITS},
+        kind: {
+            "blue": int(blue),
+            "credits": int(CREDIT_COST_BY_KIND.get(kind, 0)),
+        }
+        for kind, blue in blue_prices.items()
     }
     # v0.9.x — live weapon mechanics so the frontend targeting UI and
     # tooltips read the real dials (EMP salvo size / radius, chaff
     # window) instead of hard-coding them. (v1.31 — the mine cluster
-    # shape went with the caltrop.)
+    # shape went with the caltrop.) Filtered against the game's own
+    # price list so a weapon this season does not sell cannot advertise
+    # its specs, which is what keeps a withdrawal a one-line change.
     weapon_specs_block = {
-        "emp": {
-            "radius": int(EMP_RADIUS),
-            "missiles_per_launch": int(EMP_MISSILES_PER_LAUNCH),
-            "cloud_hours": int(EMP_CLOUD_HOURS),
-            "destroys": ["probe"],
-        },
-        "chaff": {"duration_hours": int(CHAFF_DURATION_HOURS)},
+        kind: dict(SPEC_BY_KIND[kind])
+        for kind in blue_prices
+        if kind in SPEC_BY_KIND
     }
     # v0.9.6 — surface the seat's own hoard parcels so the orbit-phase
     # planner (heuristic or cortex) can reason about its top-N RED
@@ -1016,9 +1055,15 @@ def build_agent_view(
         "blue_sign": [dict(r) for r in (sess.blue_sign or [])],
         # v1.x — REDSIGN: discovery-triggered public beacons over pure-RED
         # seams (RULEBOOK §4.11). Minted the first time ANY house sees a
-        # pure-RED cell, then visible to EVERY house regardless of fog and
-        # persistent for the rest of the season. Anonymous, fuzzy smear —
-        # agents read it to race toward a jackpot seam someone else found.
+        # pure-RED cell, then visible to EVERY house regardless of fog
+        # until the seam is spent. Anonymous, fuzzy smear — agents read it
+        # to race toward a jackpot seam someone else found.
+        #
+        # The ``live`` filter is the retirement (§4.11, prose corrected in
+        # v1.33): a spent beacon leaves every seat view rather than going
+        # grey in it, so an agent cannot chase a jackpot that is gone. It
+        # also means ``spent_by`` — engine ground truth for who banked it —
+        # never reaches a seat, which is what keeps retirement anonymous.
         "redsign": [
             _redsign_for_seat(r, pid)
             for r in (sess.redsign or [])
@@ -1032,7 +1077,7 @@ def build_agent_view(
         "fog_clusters": clusters,
         "entities": {"mine": mine, "echoes": echo_entities},
         "entity_detail": entity_detail,
-        "recent_log": structured_log,
+        "recent_log": seat_log,
     }
 
 
@@ -1093,6 +1138,66 @@ def _redsign_for_seat(
     co = [str(o) for o in (region.get("co_discoverers") or [])]
     out["mine"] = bool(disc) and (disc == str(player) or str(player) in co)
     return out
+
+
+def _rival_words(sess: GameSession, player: PlayerId) -> List[str]:
+    """Every string in the log that would give a rival seat away.
+
+    The seat slug catches most of it, including entity ids, because the
+    engine names units after their owner (``probe_p2_10``). Display name
+    and tag are here because a seat can be renamed and a renamed seat
+    that stops being redacted is the worst kind of regression: silent,
+    and only on the games people care enough about to name.
+    """
+    words: List[str] = []
+    for seat in sess.players:
+        if str(seat) == str(player):
+            continue
+        words.append(str(seat))
+        profile = (sess.player_profiles or {}).get(str(seat)) or {}
+        for key in ("display_name", "tag"):
+            value = str(profile.get(key) or "").strip()
+            if len(value) >= 3:  # a 1-2 char tag would match everything
+                words.append(value)
+    return words
+
+
+def _log_for_seat(
+    sess: GameSession,
+    player: PlayerId,
+    rows: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """The shared engine log, minus anything naming another seat.
+
+    v1.38 (§3.15) — ``store.list_log`` takes no seat and log rows carry
+    no owner, so the raw feed is every seat's night in one list: exact
+    drop coordinates, and for a bot seat its whole rationale line. That
+    is a fog breach the moment anything reads it. Nothing shipped does —
+    no harness under ``orchestrator_2`` touches ``recent_log`` — but a
+    fork is a directory anyone can write, and "the percept handed it to
+    me" is not a cheat we want to have to adjudicate on the day.
+
+    Redaction is by *mention*, not by attribution: a row is dropped if a
+    rival's name appears anywhere in it. That is blunter than parsing the
+    subject, and deliberately so — a row like "expired probe_p1_3,
+    probe_p2_5" is partly this seat's news, but the half that is not is
+    the half worth hiding, and this seat learns its own probe expired
+    from ``my_assets`` anyway. Erring toward fog costs a line; erring the
+    other way costs the rule.
+
+    Rows naming nobody (settlement, phase changes) are kept — they are
+    the clock, and every seat is entitled to the clock.
+    """
+    rivals = _rival_words(sess, player)
+    if not rivals:
+        return [dict(r) for r in rows]
+    kept: List[Dict[str, Any]] = []
+    for row in rows:
+        text = str(row.get("text", row.get("TEXT", "")) or "")
+        if any(word in text for word in rivals):
+            continue
+        kept.append(dict(row))
+    return kept
 
 
 def _last_night_recap(
@@ -1194,9 +1299,9 @@ def _last_night_recap(
     )
     for ev in raw_events:
         etype = str(ev.get("type", ""))
-        if etype in ("emp", "chaff"):
+        if etype in ("emp", "snap", "chaff"):
             combat_events.append(dict(ev))
-        elif etype in ("emp_hit", "chaff_jam"):
+        elif etype in ("emp_hit", "snap_hit", "chaff_jam"):
             if str(ev.get("victim", "")) == str(player):
                 combat_events.append(dict(ev))
 

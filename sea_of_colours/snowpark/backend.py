@@ -309,10 +309,11 @@ def _get_snowflake_store() -> SocStore:
             # v1.43 — optional write-coalescing / read-caching wrapper. Every
             # store call on Snowflake costs ~300ms of request handling before
             # it does any work, so the turn cost is statements x 300ms and the
-            # engine issues 11-14 of them, several redundant. Off by default;
-            # export SOC_BUFFERED_STORE=1. See buffered_store.py for the
-            # durability model and docs/SNOWFLAKE_LATENCY_BRIEF.md §T1.1 for
-            # the measurement.
+            # engine issues 11-14 of them, several redundant. On since
+            # v1.43; export SOC_BUFFERED_STORE=0 to go back. See
+            # buffered_store.py for the durability model and what a crash
+            # costs, and docs/SNOWFLAKE_LATENCY_BRIEF.md §T1.1 for the
+            # measurement.
             from sea_of_colours.snowpark import buffered_store as _bufmod
 
             if _bufmod.buffering_enabled():

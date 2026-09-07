@@ -9,6 +9,48 @@ This is the design document for Phase 7.5 + Phase 8 in
 `docs/HACKATHON_BUILD_PLAN.md`. It supersedes the sketch there; that
 table should point here.
 
+> **Partly superseded (v1.42) — read this before acting on anything below.**
+> The verdict mechanism this document is built around — the battles
+> suite in `sea_of_colours/evals/battles/`, reached through `soc suite`,
+> `soc why` and `soc diff` — is **deprecated**. A fork is tested in the
+> **turn lab** (`turnlab/`) now. Start at `turnlab/README.md`.
+>
+> The difference is what a board *is*. Battles constructed its boards:
+> a `WorldBuilder` arranged a seam, a rival and a weapon rack into a
+> situation, then ran it across five difficulty rungs and four weapon
+> loadouts and returned a score from predicates. The lab uses **frozen
+> turns** — a real turn out of a real season, snapshotted the instant
+> before a seat planned. You cast any fork into any seat, watch the
+> night resolve in the ordinary game UI, and open the divergence view to
+> diff your take against stock V12's frozen baseline on the same board.
+>
+> ```bash
+> python run_web.py                # then open /lab, or the Turn Lab button on the landing page
+> python scripts/soc.py lab        # the frozen turns and the forks, without a server
+> ```
+>
+> Two consequences that matter for the reasoning below. **The lab adds
+> no scoring at all** — deliberately, because §1 of this document is
+> about time-to-verdict and §3 already suspects the score is the wrong
+> headline; the lab's question is "how is my fork different from V12",
+> not "what mark did it get". And **the lab writes only to
+> `turnlab/data/`**, never to `seasons/` and never to Snowflake, so a
+> lab run cannot touch a live game.
+>
+> Nothing has been deleted. Every battles command still runs and prints
+> a deprecation notice on stderr, because `soc suite` is quoted in the
+> attendee docs and in every fork's minting output. Two jobs have no lab
+> equivalent, and that is the only reason the battles code is still
+> here: `soc weapons` (a static source scan saying which firing rung a
+> fork is stuck on) and `soc league` (run every submitted fork and rank
+> them). Both currently print the notice along with the rest, which
+> overstates the case — there is nowhere else to send someone for either
+> of them yet.
+>
+> Everything below is kept as written. Where a section presents battles
+> as the current answer, read it as the reasoning that led here rather
+> than as instructions.
+
 ---
 
 ## What is built, as of 2026-08-31
@@ -19,20 +61,29 @@ reasoning behind it.
 
 | Piece | Where | State |
 |---|---|---|
-| One front door | `scripts/soc.py` | built — `new`, `list`, `suite`, `why`, `doctor`, `push`, `league` |
+| One front door | `scripts/soc.py` | built — `new`, `lab`, `season`, `doctor`, `push`, plus the deprecated battles commands |
 | Fork registration without conflicts | `orchestrator_2/agent_manifest.py` | built — directory discovery over `agent.json` |
-| The scenario suite | `evals/battles/` | built — 10 boards x 5 rungs x 4 loadouts, offline. Nine redsign nights plus `plain_night_armed`, the no-jackpot control |
-| The V12 baseline | `evals/battles/baseline/` | built — stock V12's frozen run, checked in, shown under `soc why` |
-| Verdict after an edit | `soc suite` | built — 45 turns in ~1s against the heuristic |
-| "Why did it do that" | `soc why <board> [agent]` | built — question, canonical, V12's baseline, then every move against every check |
-| Per-run cards | `soc suite --cards DIR` | built |
-| Submission | `soc push` | built — enforces agent-only diffs |
-| League | `soc league` | built — entrants are discovered, fallback runs flagged |
+| **Where a fork is tested** | **`turnlab/`** | **built (v1.42) — frozen turns, cast a fork into a seat, watch the night in the real UI, diff against V12. This is the current answer** |
+| The scenario suite | `evals/battles/` | **deprecated (v1.42)** — built, still runs. 10 constructed boards x 5 rungs x 4 loadouts, offline. Nine redsign nights plus `plain_night_armed`, the no-jackpot control |
+| The V12 baseline | `evals/battles/baseline/` | deprecated with the suite. The lab's equivalent is `turnlab/baseline/`, also frozen and checked in |
+| Verdict after an edit | `soc suite` | deprecated (v1.42) — built, 45 turns in ~1s against the heuristic. Use the lab |
+| "Why did it do that" | `soc why <board> [agent]` | deprecated (v1.42) — the lab's divergence view answers it against a turn that was actually played |
+| Per-run cards | `soc suite --cards DIR` | built, deprecated with the suite |
+| Submission | `soc push` | built — enforces agent-only diffs, and (v1.44) pushes to the attendee's own fork, refusing if `origin` is upstream |
+| Collation | `soc collect` | built (v1.44) — gathers each fork's agent into a separate staging checkout; needed once the day moved to forks, since the league stopped being a scan of one tree |
+| League | `soc league` | built — entrants are discovered, fallback runs flagged. **No lab equivalent yet**, so this and `soc weapons` are why battles survives |
 
 **Time-to-verdict, measured:** ~1s for the whole suite against the
 heuristic, so the target in §1 is met for the offline case. An LLM agent
 is bounded by its own latency, which is why `--board` and `--up-to`
 exist — the common inner-loop command is one board at one rung.
+
+The lab reaches the same target differently, and the difference is worth
+naming: it does not run a ladder at all. One frozen turn, one seat, one
+model call, and the answer you read is a diff rather than a rate — so
+the cost is bounded by the model rather than by how many boards you
+chose, and there is no temptation to run forty-five turns to move a
+number by two per cent.
 
 ### Three things the build changed about the plan
 
@@ -48,6 +99,20 @@ exist — the common inner-loop command is one board at one rung.
    difficulty anyway. They are rebuilt from their documented geometry
    via `WorldBuilder`, which is what makes the difficulty ladder
    possible at all. The trade: documented shape, not byte-exact state.
+
+   **Overturned in v1.42**, and this is the finding that produced the
+   lab. A finished season does not have to be *read back* — it can be
+   **re-walked**. The seed, both seats' night orders and the orbit
+   settlements are archived, and the engine has no nondeterminism, so
+   replaying them reproduces the season exactly. So real state is
+   reachable offline after all, either by freezing a season as it plays
+   (`turnlab/mint.py`, reproducible — same arguments, same boards, and
+   `test_mint_is_reproducible.py` keeps it that way) or by re-walking a
+   finished one to the day you want (`python -m turnlab grab <season>
+   <day>`). The ladder is what you give up: a frozen turn has one
+   difficulty, which is the difficulty it really had. The lab hands out
+   a rack when a board is opened instead, and asks whether the fork
+   fires it.
 3. **Scoring a fallback as a score is a real hazard.** A V12 fork with
    no credentials scored 86% on its internal safety net and outranked
    the heuristic. Runs now record whether the model was reached, and
@@ -62,6 +127,15 @@ exist — the common inner-loop command is one board at one rung.
   conditional policy. It also records three blockers found on
   2026-09-01, the worst being that a fork cannot edit its own buying
   policy because `plan_orbit_actions` is shared.
+
+  **v1.42 answered this by taking the headline away rather than fixing
+  it.** The lab does not score, at all. A run leaves you with the night
+  it played and a diff against V12 on the same turn, and the attendee
+  reads the difference instead of a rate. That is a bet worth stating
+  plainly: it trades the comfort of a single number for the thing the
+  number never gave anyone, which is a specific behaviour to argue
+  with. Ranking is a league job, and it belongs on wins over whole
+  seasons rather than on predicates over one night.
 - **No LLM verification.** Everything above was exercised against the
   offline heuristic. The V12 path needs one real run with a PAT before
   the day.
@@ -95,6 +169,16 @@ exist — the common inner-loop command is one board at one rung.
    and fallback counts, and per-turn scoring deltas give the divergence
    and the best/worst turns without new engine work.
 
+   **v1.42 settles what the league ranks on.** `soc league` as shipped
+   ranks by battles pass rate, which is now the last thing in the kit
+   still doing that; the intent is that it ranks by **actual wins in
+   headless seasons** (`soc season`) instead. That follows from the same
+   argument as dropping the lab's score: a pass rate over constructed
+   nights measures agreement with predicates somebody wrote, while a
+   season measures the game. Until that lands, `soc league` stays as it
+   is, because a league nobody can run is worse than one ranked on the
+   wrong thing.
+
 Closed since:
 
 - `two_seams_choose_one` is green (2026-09-01) — the scenario now clears
@@ -106,7 +190,11 @@ Closed since:
   beside its card — see the suite's README. This also subsumes the
   prompt-diff idea in §5, less precisely but more usefully: bakes
   accumulate, so the same board can be opened before and after a change
-  and compared by eye.
+  and compared by eye. **Superseded by the lab (v1.42)**, which closes
+  the same gap better by not building a viewer: a turn opens in the
+  ordinary command centre, with the real fog toggles, the real hour
+  transport and the real replay, so what you are watching is what the
+  engine did rather than a second rendering of it.
  - **Headless seasons are built** (2026-09-01). `soc season` puts any
    agent in any seat — forks, stock V12, the heuristics — plays the
    season to the end, and writes it through the same store the live
@@ -159,8 +247,10 @@ than a first read suggests:
 
 - **Minting works.** `scripts/new_agent.py --team redwatch --name reaper`
   copies the harness, rewrites `tabula_v12` → `redwatch_reaper` through
-  imports/identity/env-var namespaces, and inserts two entries into
-  `binding_registry.py`. It rolls back on failure. The fork appears in
+  imports/identity/env-var namespaces, and writes an `agent.json`
+  declaring it. (This inventory predates v1.39: it used to insert two
+  entries into `binding_registry.py`, and moving off that shared file is
+  the first of the three changes listed above.) It rolls back on failure. The fork appears in
   the New Game modal on the next server start with no frontend edit,
   because the modal reads `/api/meta/agents` off `selectable_agents()`.
 - **The card is excellent.** `SOC_CARD_DUMP_DIR=/tmp/cards` writes one
@@ -189,7 +279,11 @@ Six problems, roughly in order of how much they cost:
    A matchup season is 5–15 minutes of LLM calls. The scenario suite is
    faster but still tens of seconds per scenario with a real model, and
    it reports pass/fail against fixed assertions rather than
-   *better/worse than what I had*.
+   *better/worse than what I had*. **(v1.42: the lab answers a
+   deliberately different question — "how is my fork different from
+   V12 on a turn that was really played" — for one model call. Note
+   that this is not the same question, and the diagnosis in this list
+   assumed the answer had to be a comparison of scores.)**
 2. **Six scripts, no front door.** `new_agent.py`, `run_evals.py`,
    `run_battery.py`, `run_matchup_v12.py`, `turn_suite.py`,
    `advise_v12.py`, `dump_suite_cards.py`, `replay_turn.py`. Each has
@@ -215,6 +309,13 @@ orchestrator_2 eval CLI refuses to run Cortex configs unless
 inconsistency will cost somebody an hour.
 
 ## 4. The proposal: three loops at three speeds, behind one command
+
+> **Read §4 as history (v1.42).** The command names sketched here were
+> not all built as written, and the fast loop landed as the turn lab
+> rather than as `soc turn`. The instinct in §4 was right — pin a turn,
+> run one decision, compare it — and the lab is that instinct with real
+> state under it instead of constructed boards. `soc season` is the slow
+> confirmation loop this section calls `soc match`.
 
 The insight is that "is it better?" has three different answers with
 three different costs, and attendees should reach for the cheap one
@@ -268,6 +369,15 @@ times an hour.
 points, plus the config file. A day.
 
 ### 4.2 The card diff — the highest-leverage single thing
+
+**This is where it landed (v1.42): the lab's divergence view.** `[ vs
+V12 ]` on any take opens the fork against stock V12 on the same frozen
+turn — issued orders hour by hour, the directive behind them, the
+reasoning, and the prompts as sent, each one diffed. One difference from
+the sketch below is deliberate and worth keeping in mind: V12's side is
+**frozen on disk** rather than asked live, because it is an LLM and
+asking again would answer differently, which would leave you diffing
+against a moving target instead of against what you forked.
 
 Cards are ~30KB of text. Diffing them raw is useless: the board state,
 timestamps and the whole rules block move around. What an attendee wants
@@ -425,6 +535,14 @@ Items 5–8 make it pleasant. Item 9 makes it a competition.
 - **A new eval framework.** There are ~56 scenarios and a working runner.
   The problem is not the scenarios, it is that nothing tells you whether
   *your* run beat *your last* run.
+
+  **Honesty check (v1.42): the turn lab is arguably the thing this
+  bullet forbids.** The defence is that it is not an eval framework — it
+  scores nothing, asserts nothing and has no runner. It reuses the real
+  UI and the real night simulator rather than drawing its own, so the
+  only new code is the part that freezes a turn and clones it. But the
+  warning still applies to whatever comes next: the moment the lab grows
+  predicates, it has become the thing this bullet says not to build.
 - **Auto-tuning / a meta-agent that edits the agent.** Tempting, and
   exactly the sort of thing that eats the whole day and teaches nobody
   anything.
@@ -459,6 +577,35 @@ Items 5–8 make it pleasant. Item 9 makes it a competition.
    final night, a damaged hull, an EMP opportunity. Some exist in
    `reports/turn_suite/suite.json`; the set should be chosen so that a
    good change moves at least one and a bad change moves the wrong one.
+
+   **Answered (v1.42), and by a smaller set than this expected.** The
+   lab ships six named nights: *Vanilla Opener · day 1*, *Early Redsign
+   Battle · day 2 · dual discovery*, *Beaten to the Seam · day 3*,
+   *Second Wind · day 4*, *After the Gold Rush · day 4* and *Vetus
+   Lantern · day 6 · late redsign race*. They were chosen the way this
+   question asks for — each one isolates something (a cold open with no
+   history, a symmetric race, being behind with a second chance on the
+   table, an asymmetric fleet, a night with no jackpot at all, a late
+   race where the leader is discovered and weapons exist) — but they are
+   real turns, so what a fork is being asked is what a seat was actually
+   asked. `turnlab/boards.py` holds the editorial note for each, which
+   is the one hand-written part of a board; everything else is read off
+   the saved session.
+
+   **Four more in v1.40, for the same reason and by the same method.**
+   None of the six could hold a SNAP — they were frozen before the
+   weapon was priced, so the lab correctly refuses the rack on them, and
+   a doctrine nobody can test is a doctrine nobody should trust. Three
+   V12-vs-V12 seasons were played at the 1:2:3 ladder and four of their
+   twenty-one nights kept: *Sighted and Armed · day 6 · the blind
+   chase*, *Both Eyes on the Same Pure · day 3 · weapon poker*, *Two
+   Ghosts, One Seam · day 2 · nobody can see it now* and *The Late
+   Reversal · day 6 · sight against the scoreboard*. Each isolates a
+   different shape of the only question a one-square denial answers —
+   who can see the seam, and who knows what the other could fire: sight
+   and the weapon on one side, both on both sides, neither on either,
+   and the two split across the seats. The seventeen that were not kept
+   were deleted, because a library is a set of nights somebody chose.
 3. Do we score the leaderboard on one battery or best-of-N submissions?
    Best-of-N rewards resubmitting; one battery rewards being ready.
 4. `two_seams_choose_one` currently fails in CI (a known regression, see

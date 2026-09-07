@@ -72,6 +72,17 @@ class Option:
     # every named play was being offered as bare geometry, so the reasoning that
     # distinguishes (say) a tempo grab from a value grab lived only in our heads.
     rationale: str = ""
+    # v1.40 — which menu section this prints under, when that differs from
+    # what it IS. A SNAP cover is a probe launch in every way the packager
+    # cares about (same verb, same 1-probe cost), so it must stay kind
+    # "probe" or the compiler has to learn a word for it. But filed under
+    # PROBE PLACEMENTS it reads as an exploration option, which is the one
+    # thing it is not. Empty = group by kind, which is every other option.
+    menu_group: str = ""
+
+    @property
+    def group(self) -> str:
+        return self.menu_group or self.kind
 
     def menu_line(self) -> str:
         detail = f" — {self.detail}" if self.detail else ""
@@ -83,6 +94,15 @@ def _xy(v: Any) -> Optional[str]:
     if isinstance(v, (list, tuple)) and len(v) == 2:
         try:
             return f"({int(v[0])},{int(v[1])})"
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _xy_tuple(v: Any) -> Optional[Tuple[int, int]]:
+    if isinstance(v, (list, tuple)) and len(v) == 2:
+        try:
+            return (int(v[0]), int(v[1]))
         except (TypeError, ValueError):
             return None
     return None
@@ -326,6 +346,53 @@ def _probe_option(idx: int, h: Mapping[str, Any]) -> Option:
         title=f"probe {at or '?'}",
         detail=detail,
         execute_lines=[f"PR{idx}: launch a probe at {at}"],
+        payload=dict(h),
+    )
+
+
+def _snap_cover_option(
+    idx: int, h: Mapping[str, Any], backed: Sequence[str] = (),
+) -> Option:
+    """A second probe over a landing whose sight rests on one probe (v1.40).
+
+    Offered, never prescribed. Whether a rival actually bought the SNAP is
+    unknowable — the public total says only what it could be — so the honest
+    framing is a cost and a risk laid side by side, with the call left where
+    it belongs. The text names SNAP explicitly because the doctrine block
+    that explains the danger and this option that answers it are read pages
+    apart, and an option the agent cannot connect to the fear is an option
+    it will not reach for.
+    """
+    at = _xy(h.get("at")) or "?"
+    covers = _xy(h.get("covers")) or "?"
+    primary = _xy(h.get("primary")) or "?"
+    gain = int(h.get("area_gain") or 0)
+    ids = ", ".join(str(b) for b in backed if b)
+    fresh = f", opens {gain} fresh cell{'s' if gain != 1 else ''}" if gain else ""
+    return Option(
+        option_id=f"PRSNAP{idx}",
+        kind="probe",
+        menu_group="snap_cover",
+        title=f"probe {at} — SNAP cover for {covers}",
+        detail=(
+            f"second pair of eyes on {covers}{fresh}"
+            + (f"; backs {ids}" if ids else "")
+        ),
+        rationale=(
+            f"SNAP MITIGATION — take it only if you judge the probe at "
+            f"{primary} to be in real danger tonight. {covers} is currently "
+            f"seen by that one probe. A SNAP is the cheapest weapon on the "
+            f"ladder at 100 blue and lands on ONE cell before that cell's "
+            f"vision snapshot, so if it takes {primary} the sight never "
+            f"exists and the landing on {covers} is refused for want of it. "
+            f"A probe at {at} sees {covers} as well, from a cell the same "
+            f"round cannot reach. The cost is one probe and an hour spent on "
+            f"ground you can already see; against that, whether this landing "
+            f"is one you would be sorry to lose, and whether the rival's "
+            f"published blue is enough to be a SNAP at all. Your call — an "
+            f"unarmed rival makes this a wasted probe."
+        ),
+        execute_lines=[f"PRSNAP{idx}: launch a probe at {at}"],
         payload=dict(h),
     )
 
@@ -654,6 +721,7 @@ def build_registry(
     probe_hints: Sequence[Mapping[str, Any]] = (),
     chain_hints: Sequence[Mapping[str, Any]] = (),
     supersede_hints: Sequence[Mapping[str, Any]] = (),
+    snap_cover_hints: Sequence[Mapping[str, Any]] = (),
     blue_requested: bool = False,
     harvesters_alive: Optional[int] = None,
     hazard_cells: Collection[Any] = (),
@@ -762,6 +830,21 @@ def build_registry(
                 for opt in _chain_shape_options(i, h):
                     reg[opt.option_id] = opt
 
+    # SNAP COVER last, so it can name every landing option already registered
+    # — including the GRABs and restored chains added above. The hint knows
+    # the cell it insures; only the finished menu knows what the agent will
+    # call that landing when it picks one.
+    for i, h in enumerate(snap_cover_hints or [], start=1):
+        if not isinstance(h, Mapping):
+            continue
+        covers = _xy_tuple(h.get("covers"))
+        backed = (
+            [oid for oid, o in reg.items() if covers in _option_drop_cells(o)]
+            if covers is not None else []
+        )
+        opt = _snap_cover_option(i, h, backed)
+        reg[opt.option_id] = opt
+
     _apply_hazard(reg, hazard_cells)
     return reg
 
@@ -839,6 +922,7 @@ _KIND_HEADERS = [
     ("seam", "REDSIGN PATTERNS (multi-wave campaigns — pick & order by case)"),
     ("hotdrop", "HOT DROPS (probe+drop into fresh fog this night)"),
     ("probe", "PROBE PLACEMENTS (open fresh vision)"),
+    ("snap_cover", "SNAP COVER — ids PRSNAP* (a SECOND probe over a landing only one probe can see; optional insurance, not a required move)"),
     ("chain", "JUICE CHAINS (walk known red, no probe)"),
     ("blue_grab", "HIGH-YIELD BLUE GRABS — ids BL* (rich blue you can SEE and grab with no risk — use when you NEED blue, or you have a spare harvester that would otherwise be wasted on low-yield red; BL* is NOT a GRAB* and does not inherit its priority)"),
     ("supersede", "SUPERSEDES (spend a spare probe to BLIND a rival's probe — deny their next landing & vision; yours survives)"),
@@ -852,6 +936,7 @@ _KIND_BLURB = {
     "seam": "redsign campaigns — SMASH your own pure; ATTACK a rival's (blind the finder + blind-walk the fresh, mass-rich seam). CONTEST_DENY is the demoted ahead/certainty play (confirm now, smash tomorrow).",
     "hotdrop": "spend a probe to open fresh fog and harvest BLIND this night.",
     "probe": "pure vision — banks 0 tonight, buys tomorrow's targets.",
+    "snap_cover": "insurance against SNAP, offered because a landing worth having rests on a single probe and a rival's published blue could be a SNAP. Banks nothing itself. Worth a probe only if you think the primary is a target tonight — if the rival is unarmed, or the landing is one you could shrug off, spend the probe on fresh ground instead.",
     "chain": "walk RED you already see — zero probe, guaranteed legal, lowest risk.",
     "blue_grab": "rich blue you can SEE — zero risk, no probe; grab it when you need blue or a spare harvester would otherwise idle (RED always outranks it for a scarce harvester).",
     "supersede": "deny an enemy landing by blinding their probe — best when you hold >1 probe or your red chains already bank high (a spare probe is free denial); if you're TRAILING, blind the LEADER's freshest probe first. Skip probes about to expire — their vision is already spent.",
@@ -1211,7 +1296,7 @@ def format_menu_block(
         return ""
     by_kind: Dict[str, List[Option]] = {}
     for opt in registry.values():
-        by_kind.setdefault(opt.kind, []).append(opt)
+        by_kind.setdefault(opt.group, []).append(opt)
 
     header = (
         "OPTION MENU (SELECT by ID — put the IDs you choose, in execution "

@@ -1,95 +1,199 @@
-"""Opponent weapon inference — turns fuzzy station_intel readings into
-per-opponent uncertainty ranges over ``{emp, chaff}`` stocks.
+"""Opponent weapon stock — read off the public station observation.
 
-The engine hides opponents' exact weapon stocks from the fuzzy view we
-get (see :func:`sea_of_colours.game.session.GameSession._station_observation`).
-What IS public:
+Since v1.34 the engine broadcasts every seat's *weaponised blue*
+(``station_intel.opponents[X].arms.blue``): the build cost of the
+ordnance it is holding, exact, to everybody (RULEBOOK §4.9.8). This
+module turns that number back into ``{emp, chaff}`` counts.
 
-  * ``station_intel.opponents[X].blue.band`` — a 0-5 pip band where each
-    pip is ~150 blue-purity. Weapons are BUILT with blue-purity, so a
-    band drop between nights is evidence of a build.
-  * ``station_intel.opponents[X].activity.{emps, chaff}`` — count of
-    launches this seat performed on the last resolved night. Launches
-    consume stock but DO NOT move the blue band (blue was spent at build
-    time).
+**This used to be inference, and the shape of the answer is why the
+inference is gone rather than merely bypassed.** The old estimator
+watched a rival's blue-purity band drop between nights and reasoned
+about what could have been built with the difference. It was a good
+mechanic and it was wrong most of the time: a 150-purity pip is coarse
+enough that one drop admitted an EMP, a chaff, or neither, so the
+``max`` on both weapons crept upward all season and every opponent
+eventually read as armed with everything. Worse, the anchor was a
+*previous night*, so the first turn of any game — and every turn in the
+turn lab, which has no previous night at all — had no signal whatsoever.
 
-So the signal loop:
+What is kept, deliberately:
 
-  * A band drop with 0 launches → they built ≥1 weapon last orbit turn.
-    Which weapon? Unknown — the drop could be EMP (200), chaff (255), or
-    any combination that fits inside the band range. We widen the ``max``
-    on each weapon we can't rule out.
-  * A launch on any weapon → decrement its ``min`` and ``max`` by the
-    observed launch count (floor at 0). Launches are a hard signal.
+  * ``WeaponEstimate`` and its ``[min..max]`` fields, which ~47 call
+    sites read by name. They answer one question honestly — "could this
+    seat have any of X" — and that is all they are now for.
+  * The audit lines. An agent should be able to tell a stated fact from
+    a deduced one, and the line says which it is.
 
-Weapon cost reminders (from :mod:`sea_of_colours.game.weapons`):
+**v1.38 — the bounds are no longer the answer, ``racks`` is.** The 1-2-3
+retune made most totals ambiguous on purpose, and the module reported
+that ambiguity as one independent range per weapon. Those are marginals,
+and marginals read together describe racks that cannot exist: 600 blue
+rendered as ``emp=[0..3] chaff=[0..2]``, which a model reads as "up to
+three EMPs *and* up to two chaff" — 1200 blue under a 600 cap. Of the
+seven real racks at 600, exactly one holds both an EMP and a chaff.
 
-  * EMP   — 200 blue + 250 credits
-  * Chaff — 255 blue + 0 credits (spans 1-2 pips depending on start position)
+So the estimate now carries the decoded set itself, and everything
+written for a reader — :meth:`WeaponEstimate.summary`, the audit line,
+the prompt block — states it as "exactly ONE of these N". At the shipped
+prices N is never more than seven, so there is no reason to compress a
+short list of true answers into a wide box of mostly false ones.
 
-v1.31 — the caltrop mine track was REMOVED, not merely hidden. It had
-become actively wrong: at 100 blue it was the cheapest weapon, so every
-band drop widened ``mines_max`` further than either real weapon and the
-estimator's confidence was being spent inventing stock of something the
-engine will not sell.
+SNAP arrived in v1.36 and was missing here entirely, which was the same
+bug wearing a different hat: 100 blue decodes to a lone SNAP, leaving
+both old maxima at zero, so the seat read as unarmed and was dropped
+from the prompt. Bounds are now derived from whatever the game prices
+rather than from a hardcoded pair.
 
-Sharper heuristic: a 2-pip drop in a single night with 0 launches is
-strong evidence of chaff OR ≥2 weapons total. We don't try to disambiguate
-that here — the uncertainty ranges surface it naturally and the doctrine
-teaches the agent to fear whichever weapon has ``max > 0``.
+The one thing a reader here must not do is treat ``is_exact()`` as the
+normal case. It is the exception now.
 
-Persistence: piggybacks on the in-process ``_IN_MEMORY_STORE`` keyed by
-``(session_id, viewer_player, opponent_seat)``. First pass is memory-only;
-a Snowflake MERGE mirror can be added later without changing the API.
+What is gone:
+
+  * Band-drop inference, per above.
+  * The launch decrement. It would now double-count: firing a weapon
+    drains ``weapon_stock``, so a launch is already reflected in the
+    ``arms.blue`` we are reading. Launches survive as an audit note
+    because "they fired one last night" is still worth telling the
+    model, but they no longer move the arithmetic.
+  * The need for cross-turn memory. Stock is derived fresh from the
+    view every turn, so a missing prior is no longer a blind spot. The
+    store stays for the audit trail, and because callers expect it.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-
-# Blue purity spent at BUILD, per weapon.
-_EMP_BLUE_COST = 200
-_CHAFF_BLUE_COST = 255
-
-# Station-intel band step (see game.session STATION_BLUE_PIP_STEP = 150).
-_BAND_STEP = 150
+from sea_of_colours.game.weapons import decode_rack
 
 
 @dataclass
 class WeaponEstimate:
-    """Per-opponent inferred weapon stock (as (min, max) uncertainty range).
+    """Per-opponent weapon stock: the exact total, and the racks that fit it.
 
-    The engine tells us launch counts precisely and the blue-band step
-    coarsely. From these, we track a lower bound (``min``) and an upper
-    bound (``max``) on each of the two weapon types.
+    Since v1.34 this is read off the public arsenal figure rather than
+    inferred. Since v1.36 one total usually admits several racks, so the
+    honest answer is a *set* — and since v1.38 this class carries that
+    set in ``racks`` rather than only its shadow.
 
-    A value of ``max == 0`` means "we're confident this opponent has no
-    stock of this weapon." Any ``max > 0`` should raise a warning in
-    the wishlist / prompt.
+    **``racks`` is the answer; the ``[min..max]`` fields are a lossy
+    projection of it.** They are per-weapon marginals taken
+    independently, so reading two of them together invents a rack that
+    cannot exist: at 600 blue the bounds are ``emp=[0..3]`` and
+    ``chaff=[0..2]``, and "3 EMP and 2 chaff" is 1200 blue — twice the
+    cap. Exactly one of the seven real racks holds both an EMP and a
+    chaff. Anything rendering this for a human or a model must use
+    ``racks`` (or :meth:`summary`, which does); the bounds are kept
+    because ~47 call sites ask the one question they answer honestly,
+    which is "could this seat have any of X".
+
+    ``max == 0`` remains the one always-safe conclusion: no rack at that
+    total includes one. Any ``max > 0`` means "could have", never "has".
     """
     seat: str
     emps_min: int = 0
     emps_max: int = 0
     chaff_min: int = 0
     chaff_max: int = 0
-    #: Last observed blue-band for this opponent. ``None`` on the first
-    #: turn we see them. Used as the anchor for detecting band drops.
+    #: v1.38 — SNAP was missing entirely, so a seat holding one read as
+    #: unarmed everywhere downstream (100 blue decodes to a lone SNAP,
+    #: which left both fields above at zero and dropped the seat from
+    #: the prompt). Bounds for every kind live in ``bounds``; these three
+    #: pairs are the named shortcuts the existing call sites use.
+    snap_min: int = 0
+    snap_max: int = 0
+    #: ``{kind: (min, max)}`` over whatever the game prices — the
+    #: generic form, so a fourth weapon needs no new field here.
+    bounds: Dict[str, Tuple[int, int]] = field(default_factory=dict)
+    #: Every loadout that fits the public total, cheapest kind first.
+    #: This is the fact; everything above is derived from it.
+    racks: List[Dict[str, int]] = field(default_factory=list)
+    #: The public figure itself, and the ceiling it is measured against.
+    blue: int = 0
+    cap: int = 0
+    #: The blue price of each kind *on this board*. Kept alongside the
+    #: decode rather than re-read from the live constants, so a legacy
+    #: season is explained with the ladder it was played on.
+    prices: Dict[str, int] = field(default_factory=dict)
+    #: Retained for wire-compatibility with stored estimates written by
+    #: earlier versions. No longer read — the arsenal is stated now, so
+    #: there is nothing to anchor a band comparison against.
     last_blue_band: Optional[int] = None
-    #: Free-form one-line explanations, one per turn we updated the
-    #: estimate. Rendered into the prompt as a small audit trail so the
-    #: LLM can reason about WHY we think they have EMPs (not just that we
-    #: do). Bounded to the last few entries to keep prompt size sane.
+    #: Free-form one-line explanations rendered into the prompt as a
+    #: small audit trail. Bounded to the last few entries.
     inferences: List[str] = field(default_factory=list)
 
     def has_any(self) -> bool:
-        return (self.emps_max + self.chaff_max) > 0
+        """Is this seat holding ANY ordnance?
+
+        v1.38 — was ``emps_max + chaff_max``, which answered "any EMP or
+        chaff" and called a seat holding 100 blue of SNAP unarmed. The
+        public total is the whole point: if it is positive the seat has
+        bought something, whatever it is.
+        """
+        return int(self.blue) > 0 or any(
+            hi > 0 for _lo, hi in self.bounds.values()
+        )
+
+    def is_exact(self) -> bool:
+        """True when the public total admitted exactly one rack."""
+        return len(self.racks) == 1
+
+    def could_hold(self, kind: str) -> bool:
+        """Is a ``kind`` in ANY rack that fits this seat's public total?
+
+        v1.38 — the single gate for "should I warn about X against this
+        seat", so the three weapon warnings ask one question instead of
+        each inventing its own.
+
+        This is a spend threshold and it enforces itself: a rack
+        containing a chaff costs at least its 300 blue, so a seat that
+        has weaponised 100 cannot be in one and no chaff warning can
+        fire against it. Nothing here hardcodes 300 — the arithmetic
+        already happened in ``decode_rack``, and asking the bounds is
+        how a fourth weapon inherits the same guarantee for free.
+        """
+        return self.bounds.get(kind, (0, 0))[1] > 0
+
+    def min_spend_for(self, kind: str) -> int:
+        """Cheapest total at which ``kind`` becomes possible, or 0.
+
+        Read off ``prices`` — the table the game that owns this board
+        stamped, not today's dials. A season played before a retune
+        keeps its own ladder (§4.9.8), so quoting the live constant here
+        would explain a warning with a number that board never used.
+
+        Only for explaining a warning. The decision is
+        :meth:`could_hold`.
+        """
+        return int(self.prices.get(kind, 0))
+
+    def rack_text(self, sep: str = " | ") -> str:
+        """The candidate racks, spelled out. Empty when nothing is held."""
+        parts = []
+        for rack in self.racks:
+            held = [
+                f"{n} {kind}" for kind, n in sorted(rack.items()) if n
+            ]
+            if held:
+                parts.append(" + ".join(held))
+        return sep.join(parts)
 
     def summary(self) -> str:
-        """One-line render for prompts / logs."""
+        """One-line render for prompts / logs.
+
+        States the total and the racks that fit it. The old form printed
+        the marginals alone, which read as a joint range and overstated
+        what a seat could be carrying (see the class docstring).
+        """
+        if int(self.blue) <= 0:
+            return f"{self.seat}: nothing (0 blue of ordnance)"
+        held = self.rack_text()
+        if self.is_exact():
+            return f"{self.seat}: {self.blue} blue of ordnance — {held}"
         return (
-            f"{self.seat}: emp=[{self.emps_min}..{self.emps_max}] "
-            f"chaff=[{self.chaff_min}..{self.chaff_max}]"
+            f"{self.seat}: {self.blue} blue of ordnance — exactly ONE of "
+            f"these {len(self.racks)}: {held}"
         )
 
 
@@ -108,15 +212,13 @@ def load_estimates(session_id: str, viewer: str) -> Dict[str, WeaponEstimate]:
     """Return the CURRENT stored estimates (copy — safe to mutate the
     returned dict without corrupting the store). Empty on first call."""
     stored = _MEMORY_STORE.get(_key(session_id, viewer)) or {}
-    # Shallow copy the outer dict; WeaponEstimate itself is mutable but
-    # we replace slots atomically in ``update_estimates``.
     return {k: v for k, v in stored.items()}
 
 
 def store_estimates(
     session_id: str, viewer: str, estimates: Mapping[str, WeaponEstimate],
 ) -> None:
-    """Persist ``estimates`` for the next turn's inference step."""
+    """Persist ``estimates`` for the next turn's audit trail."""
     _MEMORY_STORE[_key(session_id, viewer)] = dict(estimates)
 
 
@@ -126,7 +228,7 @@ def clear_store() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Inference
+# Reading the public arsenal
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -137,20 +239,29 @@ def update_estimates(
     *,
     max_audit_lines: int = 4,
 ) -> Dict[str, WeaponEstimate]:
-    """Fold this turn's ``station_intel`` + ``activity`` into prior estimates.
+    """Read every opponent's arsenal off ``station_intel``.
 
-    Reads ``agent_view.station_intel.opponents`` — each entry has:
+    Each opponent entry carries:
 
       * ``seat`` — opponent's player id
-      * ``blue.band`` — current 0-5 pip band (~150 purity per pip)
-      * ``activity.emps`` / ``.chaff`` — launches observed on the
-        just-resolved night
+      * ``arms.blue`` — weaponised blue, exact and public (v1.34)
+      * ``activity.emps`` / ``.chaff`` — launches on the resolved night,
+        used for the audit trail only
 
-    Returns the UPDATED estimates dict (and stores it for next turn).
+    A view with no ``arms`` block is a weapons-disabled game, and every
+    seat correctly reads as holding nothing.
+
+    Returns the updated estimates dict (and stores it).
     """
     prior = load_estimates(session_id, viewer)
     station_intel = agent_view.get("station_intel") or {}
     opponents = station_intel.get("opponents") or []
+    # v1.36 — decode against the price table THIS game was stamped with,
+    # published on meta.rules. Decoding an archived season at today's
+    # prices does not merely mislabel a rack: 455 blue is a real 1+1
+    # loadout under the old table and impossible under the new one, so
+    # it would silently read as an unarmed seat.
+    prices = _published_prices(agent_view)
 
     updated: Dict[str, WeaponEstimate] = {}
     for opp in opponents:
@@ -160,87 +271,163 @@ def update_estimates(
         if not seat or seat == viewer:
             continue
 
-        # Start from prior (or fresh) estimate.
         est = prior.get(seat) or WeaponEstimate(seat=seat)
+        blue = _arsenal_blue(opp)
 
-        # 1) LAUNCH decrement — hard signal. If opponent fired K EMPs
-        #    last night, they used K units of EMP stock. Same for chaff.
-        activity = opp.get("activity") or {}
-        emps_launched = int(activity.get("emps") or 0)
-        chaff_launched = int(activity.get("chaff") or 0)
-        if emps_launched > 0:
-            est.emps_min = max(0, est.emps_min - emps_launched)
-            est.emps_max = max(0, est.emps_max - emps_launched)
+        if blue is None:
+            # Weapons are off in this game. Say nothing rather than
+            # carrying a stale range forward from a prior turn.
+            _set_bounds(est, {}, [], blue=0, cap=0)
+        else:
+            # Cap the search to the ceiling this game publishes, so a
+            # rack the engine could never sell is never proposed.
+            cap = _arsenal_cap(opp)
+            loadouts = [
+                rack for rack in (decode_rack(blue, prices) or [])
+                if cap <= 0 or _rack_cost(rack, prices) <= cap
+            ]
+            _set_bounds(est, prices, loadouts, blue=blue, cap=cap)
             est.inferences.append(
-                f"day-recap: {seat} launched {emps_launched} EMP(s) — stock decremented"
-            )
-        if chaff_launched > 0:
-            est.chaff_min = max(0, est.chaff_min - chaff_launched)
-            est.chaff_max = max(0, est.chaff_max - chaff_launched)
-            est.inferences.append(
-                f"day-recap: {seat} launched {chaff_launched} chaff — stock decremented"
+                _audit_line(seat, blue, est, opp, len(loadouts))
             )
 
-        # 2) BAND-DROP inference — soft signal. If blue.band dropped
-        #    since last turn AND no observed launches account for it,
-        #    they built weapon(s). Widen ``max`` on all weapons that
-        #    fit in the drop.
-        current_band = _extract_band(opp)
-        if est.last_blue_band is not None and current_band is not None:
-            delta_pips = est.last_blue_band - current_band
-            # Only care about drops (rises = they harvested more blue).
-            if delta_pips > 0:
-                total_launched = emps_launched + chaff_launched
-                # A launch does NOT consume blue at launch time — blue
-                # was spent at build. So the whole band drop is
-                # attributable to builds, regardless of launches.
-                # Estimate the blue-purity range that fits in delta pips:
-                #   at least delta_pips * BAND_STEP - (BAND_STEP - 1) since
-                #   the drop had to cross that many pip boundaries; at
-                #   most (delta_pips + 1) * BAND_STEP - 1 in the worst case.
-                min_blue_spent = max(1, (delta_pips - 1) * _BAND_STEP + 1)
-                max_blue_spent = (delta_pips + 1) * _BAND_STEP - 1
-                # For each weapon type, add to ``max`` the number of
-                # units of that type that could fit in the upper-bound
-                # blue spend. That's the WORST case ("could they have
-                # bought this many?"). ``min`` doesn't move — we can't
-                # PROVE any specific weapon was built without more info.
-                est.emps_max += max_blue_spent // _EMP_BLUE_COST
-                est.chaff_max += max_blue_spent // _CHAFF_BLUE_COST
-                est.inferences.append(
-                    f"band-drop: {seat} blue {est.last_blue_band}→{current_band} "
-                    f"({delta_pips} pip{'s' if delta_pips != 1 else ''}, "
-                    f"~{min_blue_spent}-{max_blue_spent} blue spent, "
-                    f"{total_launched} launch{'es' if total_launched != 1 else ''} observed) "
-                    f"→ opponent built weapon(s)"
-                )
-
-        est.last_blue_band = current_band
-
-        # Trim the audit trail so the prompt doesn't bloat over a
-        # long season. Keep the most recent entries.
         if len(est.inferences) > max_audit_lines:
             est.inferences = est.inferences[-max_audit_lines:]
 
         updated[seat] = est
 
-    # Carry forward any prior seats we didn't see this turn (shouldn't
-    # happen mid-season, but defensive if the opponent seat list changes).
-    for seat, est in prior.items():
-        updated.setdefault(seat, est)
-
     store_estimates(session_id, viewer, updated)
     return updated
 
 
-def _extract_band(opp: Mapping[str, Any]) -> Optional[int]:
-    blue = opp.get("blue")
-    if not isinstance(blue, Mapping):
+#: Kinds with a named ``*_min`` / ``*_max`` pair on the estimate. The
+#: generic answer is ``bounds``; these exist because the harness was
+#: written against them and a fork reads them by name.
+_NAMED = {"emp": "emps", "chaff": "chaff", "snap": "snap"}
+
+
+def _rack_cost(rack: Mapping[str, int], prices: Optional[Mapping[str, int]]) -> int:
+    table = prices or {}
+    return sum(int(n) * int(table.get(kind, 0)) for kind, n in rack.items())
+
+
+def _set_bounds(
+    est: WeaponEstimate,
+    prices: Optional[Mapping[str, int]],
+    loadouts: List[Dict[str, int]],
+    *,
+    blue: int,
+    cap: int,
+) -> None:
+    """Fold the rack set into the estimate, generically.
+
+    Derived from the price table rather than a hardcoded kind list, so a
+    weapon added tomorrow gets bounds here without an edit — the same
+    property that lets ``decode_rack`` and ``weaponised_blue`` iterate
+    the table. The three named pairs are written from the same source so
+    they can never disagree with ``bounds``.
+    """
+    est.blue = int(blue)
+    est.cap = int(cap)
+    est.prices = {str(k): int(v) for k, v in (prices or {}).items()}
+    est.racks = [dict(rack) for rack in loadouts]
+
+    kinds = sorted(set(prices or {}) | {k for r in loadouts for k in r})
+    est.bounds = {}
+    for kind in kinds:
+        counts = [int(r.get(kind, 0)) for r in loadouts] or [0]
+        est.bounds[kind] = (min(counts), max(counts))
+
+    for kind, stem in _NAMED.items():
+        lo, hi = est.bounds.get(kind, (0, 0))
+        setattr(est, f"{stem}_min", lo)
+        setattr(est, f"{stem}_max", hi)
+
+
+def _audit_line(
+    seat: str,
+    blue: int,
+    est: WeaponEstimate,
+    opp: Mapping[str, Any],
+    candidates: int = 1,
+) -> str:
+    """One line of provenance and recent activity.
+
+    v1.38 — this used to restate the rack, which made it a duplicate of
+    ``summary()`` sitting directly above it in the prompt, and in the
+    ambiguous case it restated the *marginals*, which is the one
+    rendering this file must not do (see the module docstring). The
+    inventory is the summary's job; this line's job is to say where the
+    number came from and what the seat has been doing with it.
+
+    ``candidates`` is how many racks the total admitted — reported as a
+    count, because knowing the reading is uncertain is useful even when
+    the list itself is elsewhere.
+    """
+    if blue <= 0:
+        body = "has weaponised nothing"
+    elif candidates == 1:
+        body = f"has weaponised {blue} blue, and only one rack fits it"
+    else:
+        body = (
+            f"has weaponised {blue} blue, which {candidates} different "
+            f"racks fit"
+        )
+
+    activity = opp.get("activity") or {}
+    # Every weapon the tally counts, not a hardcoded two — SNAP was
+    # already missing from this sum on the day it shipped.
+    fired = sum(
+        int(activity.get(key) or 0) for key in ("emps", "chaff", "snaps")
+    )
+    tail = f"; fired {fired} last night" if fired else ""
+    return f"public: {seat} {body}{tail} (stated by the board, not inferred)"
+
+
+def _published_prices(agent_view: Mapping[str, Any]) -> Optional[Dict[str, int]]:
+    """The game's own weapon price table off ``meta.rules``, or ``None``.
+
+    ``None`` lets :func:`decode_rack` fall back to the engine constants,
+    which is right for the callers that hand this function a hand-built
+    view with no meta block.
+    """
+    meta = agent_view.get("meta")
+    rules = meta.get("rules") if isinstance(meta, Mapping) else None
+    raw = rules.get("weapon_blue_costs") if isinstance(rules, Mapping) else None
+    if not isinstance(raw, Mapping) or not raw:
         return None
-    band = blue.get("band")
-    if band is None:
+    out: Dict[str, int] = {}
+    for kind, cost in raw.items():
+        try:
+            out[str(kind)] = int(cost)
+        except (TypeError, ValueError):
+            continue
+    return out or None
+
+
+def _arsenal_blue(opp: Mapping[str, Any]) -> Optional[int]:
+    """Weaponised blue for one opponent, or ``None`` when weapons are off."""
+    arms = opp.get("arms")
+    if not isinstance(arms, Mapping):
         return None
     try:
-        return int(band)
+        return max(0, int(arms.get("blue") or 0))
     except (TypeError, ValueError):
         return None
+
+
+def _arsenal_cap(opp: Mapping[str, Any]) -> int:
+    """The ceiling this game publishes alongside the total, or 0.
+
+    Used to drop racks the engine could never have sold. ``decode_rack``
+    enumerates against the prices alone and does not know the cap, so
+    without this a partial price table could propose a loadout worth
+    more than any seat may hold.
+    """
+    arms = opp.get("arms")
+    if not isinstance(arms, Mapping):
+        return 0
+    try:
+        return max(0, int(arms.get("cap") or 0))
+    except (TypeError, ValueError):
+        return 0

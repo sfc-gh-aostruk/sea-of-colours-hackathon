@@ -143,3 +143,83 @@ def test_frontend_no_longer_hardcodes_the_roster() -> None:
     src = (_REPO / "server" / "static" / "app.js").read_text(encoding="utf-8")
     assert "/api/meta/agents" in src
     assert "agentRoster()" in src
+
+
+def test_a_minted_fork_reaches_both_the_game_and_the_lab() -> None:
+    """Minting is the only step. There is no second one.
+
+    A fork that exists on disk has to turn up in two places without
+    anyone doing anything else: the New Game seat picker, and the lab's
+    cast list. They are separate code paths — ``selectable_agents`` for
+    the modal, ``turnlab.cast.roster`` for the lab — and the failure
+    they can each have is the same and is silent. The fork works, the
+    tests pass, and it simply is not in the menu, which reads to the
+    person who built it as "my agent is broken".
+
+    Checked against whatever this machine actually has rather than a
+    fixed name, so it holds in a room where every laptop has a
+    different fork on it.
+    """
+    from sea_of_colours.orchestrator_2 import agent_manifest
+    from turnlab import cast
+
+    manifests, problems = agent_manifest.discover()
+    assert not problems, f"a fork on disk failed to load: {problems}"
+
+    served = {a["value"] for a in client.get("/api/meta/agents").json()["agents"]}
+    castable = {a.label for a in cast.roster()[0]}
+
+    for man in manifests:
+        assert man.label in served, (
+            f"{man.label} is on disk but not in the New Game seat picker"
+        )
+        assert man.label in castable, (
+            f"{man.label} is on disk but cannot be cast in the lab"
+        )
+
+
+def test_a_forks_tests_stay_inside_the_fork() -> None:
+    """A fork may not put its tests in the shared suite (v1.43).
+
+    ``tests/test_emp_harvest_fork.py`` did, and the consequence showed
+    up the first time its author edited the fork's doctrine: the repo's
+    only red belonged to one team's work in progress. With a room of
+    them that is everybody's suite, all day.
+
+    The rule is the same one registration follows — a fork is one
+    directory, and everything it owns lives in it. Its tests still run,
+    on request: ``pytest <the fork's directory>``.
+    """
+    import configparser
+
+    from sea_of_colours.orchestrator_2 import binding_registry as br
+
+    cfg = configparser.ConfigParser()
+    cfg.read(_REPO / "pytest.ini")
+    shared = cfg["pytest"]["testpaths"].split()
+
+    # Shipped agents are exempt: V12 is the baseline the whole repo is
+    # about, and the shared suite is exactly where it should be tested.
+    harnesses = _REPO / "sea_of_colours" / "orchestrator_2" / "harnesses"
+    forks = {
+        d.name for d in harnesses.iterdir()
+        if d.is_dir() and (d / "agent.json").exists()
+        and d.name not in br.SHIPPED_AGENT_LABELS
+    }
+
+    # Reaching into a fork's *package* is the tell. Naming one in a
+    # parametrize list is the opposite — that is the shared suite
+    # checking a property every fork inherits, which is a thing we want
+    # more of, not less.
+    strays = sorted(
+        str(p.relative_to(_REPO))
+        for path in shared
+        for p in (_REPO / path).rglob("test_*.py")
+        if any(f"harnesses.{fork}" in p.read_text(encoding="utf-8",
+                                                  errors="ignore")
+               for fork in forks)
+    )
+    assert not strays, (
+        "these live in the shared suite but import a fork directly; move "
+        f"them into that fork's own directory: {strays}"
+    )

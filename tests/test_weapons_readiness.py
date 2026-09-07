@@ -75,6 +75,22 @@ def test_buying_code_alone_does_not_count(tmp_path):
     assert not _by_n(readiness.check(root))[1].passed
 
 
+def test_printing_the_rack_on_a_diagnostic_does_not_count(tmp_path):
+    """card.py renders the turn for a human, after the decision.
+
+    v1.38 gave the card an arsenal line so a lab card says who was armed
+    — which is a reporting change and must not move this rung. A fork
+    handed a green rung 1 by a debug render would be sent up the ladder
+    with the bottom rung missing, which is the exact misdiagnosis this
+    module exists to prevent.
+    """
+    root = _fork(
+        tmp_path,
+        **{"card.py": "stock = agent_view['orbit']['weapon_stock']"},
+    )
+    assert not _by_n(readiness.check(root))[1].passed
+
+
 def test_the_night_view_carrying_the_rack_passes(tmp_path):
     root = _fork(
         tmp_path,

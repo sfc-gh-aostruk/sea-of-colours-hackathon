@@ -40,6 +40,7 @@ from sea_of_colours.game.policy import (
     ChaffFlareMove,
     DropMove,
     EmpLaunchMove,
+    SnapLaunchMove,
     MAX_MOVES,
     Move,
     PickupMove,
@@ -98,6 +99,8 @@ def _describe_move(move: Move) -> str:
         return f"emp_launch @{cells}"
     if isinstance(move, ChaffFlareMove):
         return "chaff_flare"
+    if isinstance(move, SnapLaunchMove):
+        return f"snap_launch @({move.at[0]},{move.at[1]})"
     if isinstance(move, WasteMove):
         return "invalid policy entry"
     return type(move).__name__
@@ -439,6 +442,7 @@ class NightSimulator:
         # Evaporate any survivors at dawn so a 17-hour-launch cloud
         # doesn't bleed into tomorrow's planning phase.
         sess.emp_clouds = []
+        sess.snap_clouds = []
         # Per-night transient: clear the chaff pre-empt cache so the
         # next night starts fresh.
         if hasattr(sess, "_preempted_seats_this_hour"):
@@ -454,6 +458,11 @@ class NightSimulator:
         if hasattr(sess, "_live_snapshot_this_hour"):
             try:
                 delattr(sess, "_live_snapshot_this_hour")
+            except AttributeError:
+                pass
+        if hasattr(sess, "_snap_hot_cells_this_hour"):
+            try:
+                delattr(sess, "_snap_hot_cells_this_hour")
             except AttributeError:
                 pass
 
@@ -571,6 +580,10 @@ class NightSimulator:
         # spendable funds. Idempotent: the OrbitResolver backstop is a
         # no-op once this fires.
         sess.award_orbit_credits()
+        # v1.34 — and the teaching subsidy, if this is the day a lesson
+        # asks for more blue than the board can have supplied. No-op in
+        # every game that is not a tutorial.
+        sess.award_tutorial_blue_topup()
         sess.pending_policies = {p: None for p in seats}
         sess.pending_orbit_actions = {p: None for p in seats}
         for p in seats:
@@ -743,9 +756,11 @@ class NightSimulator:
 
         attempted = _describe_move(move)
         emp_blocked_cells = getattr(sess, "_emp_established_cells_this_hour", None)
+        snap_hot_cells = getattr(sess, "_snap_hot_cells_this_hour", None)
         caption, tag, side = self._apply_one(
             sess, owner, move, hour=hour, live_override=live_override,
             emp_blocked_cells=emp_blocked_cells,
+            snap_hot_cells=snap_hot_cells,
         )
         if tag == "waste":
             # v0.9.9 — illegal-at-runtime move (legal shape, but the
@@ -857,6 +872,13 @@ class NightSimulator:
         #    won't be ticked yet (they enter the list below with
         #    ``hours_remaining`` snapshotted from the constants).
         sess.tick_emp_clouds()
+        # v1.36 — SNAP clouds age on the same beat. They live one hour,
+        # so this is what clears last hour's scorch mark, and it must
+        # happen before this hour's own SNAPs land below.
+        sess.tick_snap_clouds()
+        # …and the hot-cell stamp is per-hour by definition: a square
+        # SNAPped at hour 3 is safe to walk onto at hour 4.
+        sess._snap_hot_cells_this_hour = {}  # type: ignore[attr-defined]
 
         # v1.10 — snapshot the "established" cloud footprint: clouds
         # that survived the decay above, i.e. were already active
@@ -869,29 +891,6 @@ class NightSimulator:
         # coincidence still harvests once before the unit goes empd
         # from the following hour on.
         established_cloud_cells = sess.cells_in_any_emp_cloud()
-
-        # v1.28 — the hour-start LIVE snapshot for live-only drops is taken
-        # HERE, at the same instant as the established-cloud snapshot above
-        # and for the same reason: this is the moment §4.9.3 already calls
-        # "going into the hour", after this hour's decay/sweep and before
-        # any of this hour's own weapons fly.
-        #
-        # It used to be taken in the main hour loop, AFTER this whole
-        # function returned. That reads like "hour start" and is not:
-        # step 2 below FIRES this hour's EMP salvos, and a salvo kills
-        # probes. So a rival's missile fried the beacon and only then did
-        # the engine record what that seat could "see at hour start",
-        # blanking a landing §3.9.7 explicitly protects — "a beacon a rival
-        # destroys, supersedes, or EMPs LATER in the same hour still
-        # validates that hour's landing". Supersede obeyed the rule and EMP
-        # did not, purely because supersede resolves in normal dispatch
-        # (after the old snapshot) while a launch is pre-empted (before it).
-        # Seen in the wild: Terra_Kestrel day 6 hour 1.
-        live_snapshot: Dict[str, set] = {}
-        if live_only_drops():
-            live_snapshot = {
-                p: sess.tiles_visible_now(cast_player(p)) for p in seat_list
-            }
 
         # 2. Peek + pre-empt chaff / EMP for each seat.
         #
@@ -953,13 +952,66 @@ class NightSimulator:
                 chaff=chaff_events or None,
             )
 
-        # 2b. Salvos — only on an hour no flare covers. A flare fired in
-        #     2a jams this same hour, so a queued salvo is cancelled by the
-        #     main dispatch with its charge intact. Note the asymmetry is
-        #     deliberate and is the point of the weapon: two flares on one
-        #     hour both fly (neither is inside a window yet, so one is
-        #     wasted), but a flare beats a salvo declared for the same hour.
+        # A flare fired in 2a jams this same hour, so everything below is
+        # cancelled by the main dispatch with its charge intact. Computed
+        # once here because both remaining launch stages need it.
         jammed_now = already_jammed or bool(chaff_triggerers_by_hour.get(hour))
+
+        # 2b. SNAP — the fast weapon, and the reason this function's
+        #     ordering is what it is (v1.36, §4.9.4). It resolves ABOVE the
+        #     hour-start vision snapshot below, which is the whole weapon:
+        #     killing a probe here means the drop that beacon was going to
+        #     validate never sees it, so a SNAP denies a smash-and-grab in
+        #     the same hour it flies. Every other effect in the engine is
+        #     judged against the snapshot and therefore cannot do that.
+        #
+        #     Below chaff, though. A flare still cancels it like any other
+        #     launch — being first on a square is not being first in the
+        #     hour.
+        self._snap_preempt_phase(
+            sess,
+            queue_for,
+            pointers,
+            applied,
+            replay,
+            hour=hour,
+            seat_list=seat_list,
+            preempted=preempted,
+            jammed_now=jammed_now,
+        )
+
+        # 2c. The hour-start LIVE snapshot for live-only drops (v1.28).
+        #
+        #     Position is load-bearing in BOTH directions and neither is
+        #     an accident.
+        #
+        #     ABOVE the salvos, which is what v1.28 fixed: a salvo kills
+        #     probes, so taking the snapshot after one let a rival's
+        #     missile fry a beacon and only then record what that seat
+        #     could "see at hour start". That blanks a landing §3.9.7
+        #     explicitly protects — "a beacon a rival destroys,
+        #     supersedes, or EMPs LATER in the same hour still validates
+        #     that hour's landing". Seen in the wild: Terra_Kestrel day 6
+        #     hour 1.
+        #
+        #     BELOW the SNAP stage, which is v1.36 and is the opposite
+        #     ruling for the opposite weapon: a SNAP is meant to take the
+        #     eye out before the landing is judged. Two weapons, one
+        #     snapshot, and which side of it you sit on IS the difference
+        #     between them.
+        #
+        #     Moving it below chaff cost nothing — a flare cancels
+        #     actions, it does not change what anybody can see.
+        live_snapshot: Dict[str, set] = {}
+        if live_only_drops():
+            live_snapshot = {
+                p: sess.tiles_visible_now(cast_player(p)) for p in seat_list
+            }
+
+        # 2d. Salvos — only on an hour no flare covers. Note the asymmetry
+        #     is deliberate and is the point of the weapon: two flares on
+        #     one hour both fly (neither is inside a window yet, so one is
+        #     wasted), but a flare beats a salvo declared for the same hour.
         for p in (() if jammed_now else seat_list):
             if applied[p] >= MAX_MOVES or p in preempted:
                 continue
@@ -1028,6 +1080,66 @@ class NightSimulator:
         sess._live_snapshot_this_hour = live_snapshot  # type: ignore[attr-defined]
 
         return disabled
+
+    def _snap_preempt_phase(
+        self,
+        sess: "GameSession",
+        queue_for: Dict[str, List[Move]],
+        pointers: Dict[str, int],
+        applied: Dict[str, int],
+        replay: List[dict],
+        *,
+        hour: int,
+        seat_list: Tuple[str, ...],
+        preempted: set[str],
+        jammed_now: bool,
+    ) -> None:
+        """Fire this hour's SNAPs, before anybody's vision is recorded.
+
+        v1.36, RULEBOOK §4.9.4. Split out of :meth:`_pre_hour_phase`
+        rather than inlined, and that is deliberate: SNAP is the newest
+        weapon and the one most likely to be withdrawn. Retiring it
+        should be deleting a call and a method, not unpicking a night
+        loop — see ``docs/ADDING_A_WEAPON.md``.
+
+        Returns nothing. The damage it does lands on the session (probes
+        destroyed, harvesters damaged, ``snap_clouds`` extended) and the
+        hot cells it stamps are read by ``_apply_one`` later in the hour.
+        """
+        from sea_of_colours.game.session import cast_player
+
+        for p in (() if jammed_now else seat_list):
+            if applied[p] >= MAX_MOVES or p in preempted:
+                continue
+            move, idx = _next_actionable(queue_for[p], pointers[p])
+            if not isinstance(move, SnapLaunchMove):
+                continue
+            owner_pid = cast_player(p, allowed=seat_list)
+            ok, msg = sess.apply_snap_launch(
+                owner_pid, move.at[0], move.at[1], hour=hour,
+            )
+            if not ok:
+                # Cost check failed → leave it for the main dispatch to
+                # surface as a runtime waste, exactly like a dry salvo.
+                continue
+            self._consume_preempt_slot(
+                sess, p, queue_for[p], pointers, idx, hour, replay,
+            )
+            applied[p] += 1
+            preempted.add(p)
+            snap_events = sess.pending_snap_events
+            sess.pending_snap_events = []
+            sess.log_info(self._stamp_hour(hour, msg))
+            sess.replay_push_scene(
+                replay,
+                msg,
+                owner=p,
+                tag="snap_launch",
+                attempted=_describe_move(move),
+                outcome="ok",
+                hour=hour,
+                snap=snap_events or None,
+            )
 
     def _consume_preempt_slot(
         self,
@@ -1400,6 +1512,7 @@ class NightSimulator:
         hour: int = 0,
         live_override: Optional[set] = None,
         emp_blocked_cells: Optional[set] = None,
+        snap_hot_cells: Optional[dict] = None,
     ) -> tuple[str, str, List[str]]:
         """Apply one move; return ``(caption, tag, side_messages)``.
 
@@ -1442,6 +1555,7 @@ class NightSimulator:
                 owner, move.unit, move.at[0], move.at[1],
                 live_override=live_override,
                 emp_blocked_cells=emp_blocked_cells,
+                snap_hot_cells=snap_hot_cells,
             )
             if not ok:
                 return msg, "waste", side
@@ -1457,6 +1571,7 @@ class NightSimulator:
             ok, msg, _harvested = sess.try_step_unit(
                 owner, move.unit, move.to[0], move.to[1],
                 emp_blocked_cells=emp_blocked_cells,
+                snap_hot_cells=snap_hot_cells,
             )
             if not ok:
                 return msg, "waste", side
@@ -1507,5 +1622,17 @@ class NightSimulator:
             if not ok:
                 return msg, "waste", side
             return msg, "chaff_flare", side
+
+        if isinstance(move, SnapLaunchMove):
+            # Same "pre-empt declined it" fallback the salvo has above:
+            # reached only when the stock check failed up in
+            # ``_snap_preempt_phase``, so this surfaces the refusal as a
+            # runtime waste rather than silently eating the slot.
+            ok, msg = sess.apply_snap_launch(
+                owner, move.at[0], move.at[1], hour=hour,
+            )
+            if not ok:
+                return msg, "waste", side
+            return msg, "snap_launch", side
 
         return f"unknown move type {type(move).__name__}", "waste", side

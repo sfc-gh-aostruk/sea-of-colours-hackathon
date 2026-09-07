@@ -47,6 +47,19 @@
       _watchParams.get("watch") === "1");
   const WATCH_SESSION_ID = _watchParams.get("session") || "";
   const WATCH_SEASON_SLUG = _watchParams.get("season") || "";
+  // v1.42 — TURN LAB. ``?lab=<board id>`` marks a session as a throwaway
+  // clone of a frozen night, opened from /lab.
+  //
+  // It unlocks exactly one thing: the per-seat INVOKE control in the
+  // AGENT tab. Live-play invocation was removed from this UI in v1.1 in
+  // favour of the CLI, which is right for a real game — nobody should be
+  // able to hand somebody else's seat to a model mid-season. A lab clone
+  // has no such stake: it exists to be played by agents and thrown away.
+  // The server enforces the same rule independently (it refuses to
+  // invoke into anything that is not a REPLAY: clone), so this flag is a
+  // UI affordance, not the security boundary.
+  const LAB_BOARD = String(_watchParams.get("lab") || "").trim();
+  const LAB_MODE = !!LAB_BOARD && _watchParams.has("session");
   // The local "this is me" seat. Solo play (no ?player=) keeps p1 so every
   // hardcoded-p1 call site below behaves exactly as it did pre-multiplayer.
   // A joiner binds to the seat from their link; the seat picker (join with no
@@ -57,6 +70,41 @@
   }
   if (JOIN_MODE) {
     document.body.classList.add("cc-mode--join");
+  }
+  if (LAB_MODE) {
+    document.body.classList.add("cc-mode--lab");
+  }
+  /** The racks this turn was opened with, as ``{seat: rack}``.
+   *
+   *  Carried in the address rather than looked up, so RESET can rebuild
+   *  the same turn. A reset that quietly disarmed the seats would be a
+   *  different night wearing the same name.
+   */
+  const LAB_ARMS = Object.fromEntries(
+    (_watchParams.get("arms") || "")
+      .split(",")
+      .filter(Boolean)
+      .map((pair) => pair.split(":"))
+      .filter((kv) => kv.length === 2),
+  );
+  /** The calendar day this board was frozen on, read off its id
+   *  (``LAB_<source>_d2_p1``). Lets a reloaded page tell a fresh turn
+   *  from a spent one without asking the server: the clone has moved
+   *  past this day if and only if the night already resolved. */
+  const LAB_DAY = Number((/_d(\d+)_p\d+$/.exec(LAB_BOARD || "") || [])[1] || 0);
+  /** True once the night has resolved: the turn is spent, RESET only. */
+  let labResolved = false;
+
+  /** Drop anything dated before the frozen night from a replay list.
+   *
+   *  v1.42 — takes frames or day-index rows; both carry ``day``. A
+   *  no-op outside the lab, and a no-op if the board id carried no day,
+   *  because cutting a real season's history to nothing would be a far
+   *  worse bug than the rewind this prevents.
+   */
+  function _labOnlyFrozenNight(rows) {
+    if (!LAB_MODE || !LAB_DAY || !Array.isArray(rows)) return rows;
+    return rows.filter((r) => Number(r?.day || 0) >= LAB_DAY);
   }
 
   const MAX_MOVES = 21; // policy-slot cap per player per night (v0.9.9: each queued row burns a slot whether the engine accepts it or strikes it out)
@@ -662,6 +710,9 @@
    *  status refresh while ``phase === "orbit"``. */
   /** @type {any} */
   let lastOrbitView = null;
+  /** Damaged-harvester tally from the last orbit-panel render, so a queue
+   *  change can redo the affordability pass without one. */
+  let _lastDamagedCount = 0;
   /** v0.9.x — latest static blue-sign overlay (list of fuzzy radiative
    *  regions), refreshed on every live /view poll. Orbit-wide and
    *  fog-independent: identical for every seat, painted over the
@@ -2388,6 +2439,133 @@
     } catch (_e) {
       /* non-fatal — a missing footprint must never break the board */
     }
+    try {
+      paintLabPlanOverlay();
+    } catch (_e) {
+      /* non-fatal — the lab overlay must never break a real board */
+    }
+  }
+
+  // ── TURN LAB: plan overlay (v1.42) ────────────────────────────────
+  //
+  // What a seat proposes to do, drawn over the board before the night
+  // runs — and drawn by the ORDINARY planned-orders renderer, not by a
+  // layer of its own.
+  //
+  // It had one of its own, briefly: coloured rings with an hour number
+  // in each cell. That was a mistake twice over. It looked nothing like
+  // what the same orders look like when a human queues them, so you
+  // could not compare an agent's plan with your own by eye; and it was
+  // a second overlay to keep in step with the engine, which it already
+  // was not — it drew a ring for an EMP and never its blast footprint.
+  // Feeding the proposal through `paintPlannedOrdersOverlay` instead
+  // means a proposed plan and a queued policy are the same picture:
+  // numbered path badges in the seat's colour, probe and weapon
+  // markers, area footprints underneath.
+  //
+  // One seat at a time, on hover — see `showLabPlan`. Empty, and free,
+  // in a normal game.
+  const labPlans = new Map();
+  /** Whose proposal is currently on the board, or null for none. */
+  let labShownSeat = null;
+
+  /** A proposed wire move as a queue row the order renderer understands.
+   *
+   *  The two shapes are close but not the same: the wire (see
+   *  `policy.move_to_wire`) puts the target in ``at``, or ``to`` for a
+   *  step, while the composer's rows carry ``x``/``y``. And an EMP
+   *  salvo overloads ``at`` — one ``[x, y]`` for a single missile, a
+   *  LIST of them for a salvo — where the composer always wants the
+   *  list, under ``ats``.
+   */
+  function _labQueueRows(moves) {
+    const pair = (v) => (
+      Array.isArray(v) && v.length >= 2
+      && Number.isFinite(Number(v[0])) && Number.isFinite(Number(v[1]))
+    );
+    const rows = [];
+    for (const m of moves || []) {
+      if (!m || typeof m !== "object") continue;
+      const at = Array.isArray(m.at) ? m.at
+        : Array.isArray(m.to) ? m.to : null;
+      const unit = String(m.u || m.unit || "");
+      if (m.a === "emp_launch") {
+        const ats = Array.isArray(m.cells) ? m.cells
+          : pair(at) ? [at]
+          : Array.isArray(at) ? at.filter(pair) : [];
+        rows.push({ a: "emp_launch", unit, ats });
+      } else if (m.a === "pickup") {
+        rows.push({ a: "pickup", unit });
+      } else if (pair(at)) {
+        rows.push({
+          a: String(m.a || ""), unit, x: Number(at[0]), y: Number(at[1]),
+        });
+      }
+    }
+    return rows;
+  }
+
+  /** The queue the planned-orders overlay should draw.
+   *
+   *  Your own queued rows normally; a seat's proposal while the lab is
+   *  showing one. Reading it through here rather than at one call site
+   *  is what makes the substitution survive a zoom, a resize or a board
+   *  repaint — all of which redraw the overlay from their own code.
+   */
+  function _plannedQueue() {
+    if (LAB_MODE && labShownSeat) {
+      const moves = labPlans.get(labShownSeat);
+      if (moves && moves.length) return _labQueueRows(moves);
+    }
+    return soloQueue;
+  }
+
+  /** Mark the seat whose plan is on the board — from the state, always.
+   *
+   *  Re-derived on every paint rather than toggled at the moment of the
+   *  hover, because a stationary pointer is not a stationary hover: the
+   *  night's playback and the RESET bar appearing both reflow the panel
+   *  under a parked cursor, and the browser re-fires `mouseenter` for
+   *  whatever is now beneath it. Toggling on those events left the badge
+   *  claiming a seat was ON BOARD over a board that had been cleared.
+   */
+  function _syncLabShown() {
+    for (const el of document.querySelectorAll(".cc-lab-seat")) {
+      el.classList.toggle(
+        "cc-lab-seat--shown", el.dataset.seat === labShownSeat,
+      );
+    }
+  }
+
+  function paintLabPlanOverlay() {
+    if (!LAB_MODE) return;
+    _syncLabShown();
+    try {
+      paintPlannedOrdersOverlay();
+    } catch (_e) {
+      /* non-fatal — a plan preview must never break the board */
+    }
+  }
+
+  function setLabPlan(seat, moves) {
+    labPlans.set(seat, Array.isArray(moves) ? moves : []);
+    if (labShownSeat === seat) paintLabPlanOverlay();
+  }
+
+  /** Put one seat's proposal on the board, or clear with ``null``.
+   *
+   *  Only ever one. Two plans at once was the old filter's ``BOTH``, and
+   *  on the real renderer it cannot work: both seats' paths are numbered
+   *  from hour one, so overlapping chains produce two badges reading "3"
+   *  in the same square with nothing to say which is which. Hovering one
+   *  seat then the other compares them just as well and always reads.
+   */
+  function showLabPlan(seat) {
+    // A seat with nothing to show resolves to nothing, so pointing at an
+    // uncast seat takes the board back rather than leaving the previous
+    // seat's plan up under the wrong heading.
+    labShownSeat = seat && labPlans.get(seat)?.length ? seat : null;
+    paintLabPlanOverlay();
   }
 
   /**
@@ -3667,7 +3845,8 @@
    *  up to three missiles) and therefore one unit of stock. */
   function _ordersQueuedCounts() {
     const c = {
-      probe: 0, emp_launch: 0, mine_lay: 0, chaff_flare: 0, wait: 0,
+      probe: 0, emp_launch: 0, snap_launch: 0, mine_lay: 0,
+      chaff_flare: 0, wait: 0,
     };
     for (const m of soloQueue) {
       if (m && m.a && Object.prototype.hasOwnProperty.call(c, m.a)) {
@@ -4034,6 +4213,16 @@
           + (Number.isFinite(empR) ? ` radius-${empR}` : "")
           + " cloud. Disables harvesters and destroys probes "
           + "caught in it \u2014 including yours.",
+      },
+      {
+        key: "snap", action: "snap_launch", label: "SNAP", icon: "snap",
+        weapon: true,
+        stock: Math.max(0, Number(ws.snap || 0)), queued: qc.snap_launch,
+        title: "One missile, one square, one hour \u2014 and it lands "
+          + "FIRST. Kills a probe there before the hour's vision is "
+          + "read, so a landing that square was lighting is refused "
+          + "tonight; maims any harvester standing there or arriving "
+          + "that hour. Yours too.",
       },
       {
         key: "chaff", action: "chaff_flare", label: "CHAFF", icon: "chaff",
@@ -4407,7 +4596,8 @@
       action === "probe" ||
       action === "drop" ||
       action === "step" ||
-      action === "emp_launch"
+      action === "emp_launch" ||
+      action === "snap_launch"
     );
   }
 
@@ -4422,6 +4612,7 @@
     if (action === "pickup") return "pickup";
     if (action === "wait") return "wait";
     if (action === "emp_launch") return "EMP @";
+    if (action === "snap_launch") return "SNAP @";
     if (action === "chaff_flare") return "CHAFF";
     return String(action || "?");
   }
@@ -5311,6 +5502,16 @@
           + "destroys probes caught in it \u2014 including yours.",
         weapon: true,
       },
+      {
+        action: "snap_launch", label: "SNAP here",
+        stock: Math.max(0, Number(ws.snap || 0)), queued: qc.snap_launch,
+        glyph: "\u271A", tint: "#ffd166",
+        title: "One missile at THIS square, resolving before anything "
+          + "else in the hour. Kills a probe here early enough to refuse "
+          + "the landing it was lighting, and maims a harvester standing "
+          + "here or walking in this hour \u2014 including yours.",
+        weapon: true,
+      },
     ].filter((b) => !b.weapon || _weaponsOn());
     items.push({ head: "deploy" });
     for (const b of bays) {
@@ -5551,7 +5752,7 @@
       pos = rowPosition(row);
       if (pos) waypoints.push({ x: pos[0], y: pos[1], kind: "anchor" });
     }
-    for (const m of soloQueue) {
+    for (const m of _plannedQueue()) {
       if (!m || String(m.unit) !== unitId) continue;
       if (m.a === "drop" && Number.isFinite(m.x) && Number.isFinite(m.y)) {
         pos = [Number(m.x), Number(m.y)];
@@ -5681,16 +5882,19 @@
     }
     // Only meaningful on the live player's own map (not replay scrubbing).
     if (mainMapSource !== "live") return;
+    // v1.42 — normally your own queue; a lab seat's proposal when one is
+    // being previewed, so a proposal and a policy draw identically.
+    const queue = _plannedQueue();
     const armedUnit =
       assetSelect && assetSelect.unit ? String(assetSelect.unit) : null;
-    if (!soloQueue.length && !armedUnit) return;
+    if (!queue.length && !armedUnit) return;
 
     const hostRect = collisionFxLayer.getBoundingClientRect();
 
     // 1) Harvester paths, grouped by unit. The armed unit (the one you're
     //    actively chaining) draws solid; the rest dim so it stands out.
     const units = [];
-    for (const m of soloQueue) {
+    for (const m of queue) {
       if (m && (m.a === "drop" || m.a === "step" || m.a === "pickup") && m.unit) {
         const u = String(m.unit);
         if (!units.includes(u)) units.push(u);
@@ -5708,7 +5912,7 @@
     );
 
     // 2) Probe deploys + weapon targets (standalone cell markers).
-    for (const m of soloQueue) {
+    for (const m of queue) {
       if (!m) continue;
       if (m.a === "probe") {
         _drawOrderMarker(Number(m.x), Number(m.y), "probe", "\u25CF", hostRect); // ● circle
@@ -5718,6 +5922,13 @@
             _drawOrderMarker(Number(t[0]), Number(t[1]), "emp", "\u25CF", hostRect); // ● cyan circle
           }
         });
+      } else if (m.a === "snap_launch") {
+        // v1.36 — a plain cross, and no footprint outline beside it:
+        // SNAP is radius 0, so the marker IS the blast and drawing a
+        // one-cell "area" would only repeat the hover ring. The first
+        // cut used a four-pointed star, which at cell size read as a
+        // sparkle sitting on the terrain rather than crosshairs on it.
+        _drawOrderMarker(Number(m.x), Number(m.y), "snap", "\u271A", hostRect);
       }
     }
   }
@@ -5752,6 +5963,8 @@
         return `EMP salvo · click up to ${max} target tiles · click chip to fire`;
       return `EMP salvo · ${n}/${max} targets · click more, re-click to remove, or chip to fire`;
     }
+    if (spec.action === "snap_launch")
+      return "SNAP · click the ONE square — it resolves before anything else that hour";
     if (spec.action === "mine_lay")
       return "mine_lay · click target tile (lays a hidden cluster)";
     return spec.action || "";
@@ -5894,6 +6107,15 @@
           return { a: "waste", reason: "emp_launch missing target" };
         return { a: "emp_launch", at: [Number(m.x), Number(m.y)] };
       }
+      // v1.36 — SNAP takes ONE cell and only one, which is the whole
+      // difference from the salvo above. Emitted as a bare [x,y] pair,
+      // never a list; the engine refuses a list by name rather than
+      // taking the first, so a spread here would be a silent misread.
+      if (m.a === "snap_launch") {
+        if (!Number.isFinite(m.x) || !Number.isFinite(m.y))
+          return { a: "waste", reason: "snap_launch missing target" };
+        return { a: "snap_launch", at: [Number(m.x), Number(m.y)] };
+      }
       if (m.a === "mine_lay") {
         if (!Number.isFinite(m.x) || !Number.isFinite(m.y))
           return { a: "waste", reason: "mine_lay missing target" };
@@ -5955,6 +6177,11 @@
           x: clean[0][0],
           y: clean[0][1],
         };
+      }
+      if (action === "snap_launch") {
+        const at = Array.isArray(entry.at) ? entry.at : [];
+        if (at.length !== 2) return { a: "wait" };
+        return { a: "snap_launch", x: Number(at[0]), y: Number(at[1]) };
       }
       if (action === "mine_lay") {
         const at = Array.isArray(entry.at) ? entry.at : [];
@@ -6023,6 +6250,23 @@
 
   /** @returns {Promise<Record<string, any>>} */
   async function postPolicy(pid, moves) {
+    // v1.42 — the lab takes no human turn at all. Every seat is cast
+    // from the AGENT pane, and the board's one claim is that what you
+    // watched resolve is what the agents asked for; a hand-typed order
+    // blends into the same policy and quietly breaks that. This used to
+    // refuse only a seat whose plan was already accepted, which left the
+    // composer open right up until the moment it mattered.
+    //
+    // ACCEPT does not come through here — it posts to /api/lab/commit —
+    // so this can be absolute. Guarded at this funnel because every
+    // order path shares it: board queue plus TRANSMIT, the mobile bar,
+    // the keyboard, the partner auto-lock.
+    if (LAB_MODE) {
+      throw new Error(
+        `${playerTag(pid)} is played by an agent here — invoke one from the `
+        + `AGENT tab. The lab does not take hand-typed orders.`,
+      );
+    }
     const res = await fetch(`/api/game/${sessionId}/policy`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -7402,8 +7646,97 @@
       build_probe: { cr: Number(sp.probe_build ?? 250), blue: 0 },
       repair: { cr: Number(sp.repair ?? 500), blue: 0 },
       build_emp: w("emp", 200, 250),
-      build_chaff: w("chaff", 255, 0),
+      build_chaff: w("chaff", 300, 0),
+      // v1.36 — SNAP. The fallbacks here only matter for a view that
+      // predates the weapon; a live server always publishes the pair.
+      build_snap: w("snap", 100, 250),
     };
+  }
+
+  /** v1.36 — the buy action that stocks each weapon kind.
+   *
+   *  One table, because "which actions are weapon buys", "what does this
+   *  kind cost" and "how much of the cap does the queue eat" were three
+   *  separate literals before SNAP, and the third one silently did not
+   *  know about it. Keyed by engine kind so it lines up with
+   *  ``weapon_prices`` / ``weapon_stock`` without a translation step. */
+  const WEAPON_BUY_ACTION = {
+    emp: "build_emp",
+    chaff: "build_chaff",
+    snap: "build_snap",
+  };
+
+  /** v1.34 — flatten ``station_intel`` into ``seat → {blue, cap}`` for
+   *  station.js. Both halves of the block carry ``arms`` and both are
+   *  exact, because the arsenal is public (RULEBOOK §4.9.8) — the self /
+   *  opponents split that governs every other field does not apply. */
+  function _publishLiveArms(stationIntel) {
+    if (!stationIntel || typeof stationIntel !== "object") return;
+    const out = {};
+    const take = (entry) => {
+      const seat = entry?.seat;
+      const arms = entry?.arms;
+      if (seat && arms && arms.blue != null) {
+        out[seat] = { blue: Number(arms.blue) || 0, cap: Number(arms.cap) || 0 };
+      }
+    };
+    take(stationIntel.self);
+    (stationIntel.opponents || []).forEach(take);
+    window.__SOC_ARMS__ = out;
+    // The viewing seat's own figure, kept separately for the buy panel.
+    // ``station_intel.self`` is always this seat, so this needs no seat
+    // lookup — and being the same number the engine will check the buy
+    // against, the panel cannot disagree with the refusal it will get.
+    const mine = stationIntel.self?.arms;
+    window.__SOC_ARMS_SELF__ = (mine && mine.blue != null)
+      ? Number(mine.blue) || 0
+      : null;
+    if (typeof window.osRefreshArms === "function") window.osRefreshArms();
+  }
+
+  /** v1.34 — the weapon buys, for the arsenal-cap arithmetic. */
+  function _isWeaponAction(action) {
+    return Object.values(WEAPON_BUY_ACTION).includes(action);
+  }
+
+  /** v1.34 — the arsenal ceiling (RULEBOOK §4.9.8), mirrored not
+   *  hard-coded: the engine publishes it on ``meta.rules`` so a retune
+   *  moves the UI without an edit here. */
+  function _weaponBlueCap() {
+    const n = Number(window.__SOC_WEAPON_BLUE_CAP__);
+    return Number.isFinite(n) && n > 0 ? n : 600;
+  }
+
+  /** Blue-worth of ordnance this seat already holds.
+   *
+   *  Prefers the figure the board itself publishes (§4.9.8), which is the
+   *  very number the engine will measure a buy against; the local pricing
+   *  of ``weapon_stock`` is the fallback for a view that predates it. */
+  function _weaponisedBlueHeld(orbitView) {
+    const published = window.__SOC_ARMS_SELF__;
+    if (published != null) return Number(published) || 0;
+    const stock = (orbitView && orbitView.weapon_stock) || {};
+    const p = _orbitPrices();
+    let blue = 0;
+    for (const [kind, action] of Object.entries(WEAPON_BUY_ACTION)) {
+      blue += (Number(stock[kind]) || 0) * (p[action]?.blue || 0);
+    }
+    return blue;
+  }
+
+  /** Blue-worth of weapons already sitting in the pending orbit queue.
+   *  Counted separately from the wallet projection because the cap and
+   *  the wallet run out at different times. */
+  function _queuedWeaponBlue() {
+    const p = _orbitPrices();
+    let blue = 0;
+    for (const a of orbitQueue) {
+      const action = a?.a || "";
+      if (!_isWeaponAction(action)) continue;
+      const each = p[action];
+      if (each) blue += each.blue * Math.max(1, Number(a?.count) || 1);
+    }
+    return blue;
   }
 
   /** v1.25 — price as the panel writes it: ``(200b/250c)``, ``(250c)``,
@@ -7438,6 +7771,8 @@
         return `build EMP \u00D7${n} ${batch}`;
       case "build_chaff":
         return `build CHAFF \u00D7${n} ${batch}`;
+      case "build_snap":
+        return `build SNAP \u00D7${n} ${batch}`;
       default:
         return JSON.stringify(a);
     }
@@ -7480,6 +7815,7 @@
       build_probe: "solo-orbit-probe-count",
       build_emp: "solo-orbit-emp-count",
       build_chaff: "solo-orbit-chaff-count",
+      build_snap: "solo-orbit-snap-count",
     }[action];
     if (!id) return 1;
     const el = /** @type {HTMLInputElement|null} */ (
@@ -7519,6 +7855,11 @@
     const cap = Number(orbitView?.harvester_cap_max ?? 3);
     const queuedHarv = orbitQueue.filter((a) => a?.a === "build_harvester")
       .length;
+    // v1.34 — the arsenal ceiling (RULEBOOK §4.9.8). Projected the same
+    // way the wallet is, so queuing two EMPs dims the third rather than
+    // letting the player declare an order the engine will refuse.
+    const armsCap = _weaponBlueCap();
+    const armsHeld = _weaponisedBlueHeld(orbitView) + _queuedWeaponBlue();
 
     /** @returns {string} empty when the action is fine */
     const reasonFor = (action) => {
@@ -7529,6 +7870,12 @@
       }
       if (action === "build_harvester" && used + queuedHarv >= cap) {
         return `fleet at ${cap}/${cap}`;
+      }
+      // The ceiling reads before the wallet: a seat at the cap with
+      // money in hand is not short of anything, and saying "short 200b"
+      // would send them mining for blue they cannot spend.
+      if (_isWeaponAction(action) && armsHeld + each.blue > armsCap) {
+        return `rack full ${armsHeld}/${armsCap}b`;
       }
       // One unit is the bar, not the whole batch: a batch that only
       // partly fits still buys something, and the queue row says how
@@ -7790,6 +8137,14 @@
         }
       } catch (_e) { /* non-fatal */ }
     }
+    // v1.34 — redo the affordability pass on every queue change. It used
+    // to run only when the panel re-rendered off a poll, so the dimming
+    // described the opening wallet rather than what the queue had left
+    // of it — and the arsenal ceiling, which a queue can reach on its
+    // own, would never have dimmed anything at all.
+    if (lastOrbitView) {
+      _updateOrbitAffordability(lastOrbitView, _lastDamagedCount);
+    }
   }
 
   function clearOrbitQueue() {
@@ -7834,7 +8189,8 @@
       // older parsers happy.
       case "build_emp":
       case "build_mine":
-      case "build_chaff": {
+      case "build_chaff":
+      case "build_snap": {
         const slot = kind.replace("build_", "");
         const input = document.getElementById(`solo-orbit-${slot}-count`);
         let n = 1;
@@ -8009,6 +8365,7 @@
     updateOrbitBudgetProjection();
     // v1.25 — must run AFTER the projection: what you can afford is a
     // question about the remainder, not the opening balance.
+    _lastDamagedCount = damagedCount;
     _updateOrbitAffordability(orbitView, damagedCount);
   }
 
@@ -10409,6 +10766,253 @@
     }
   }
 
+  /** v1.36 — SNAP choreography. One missile, one cell, one hour.
+   *
+   *  Deliberately its own function rather than a branch inside
+   *  ``playEmpFx``, and for the same reason ``snap_clouds`` is its own
+   *  frame key: SNAP is the newest weapon and the one most likely to be
+   *  withdrawn, so retiring it should be deleting this function and its
+   *  one call site. See ``docs/ADDING_A_WEAPON.md``.
+   *
+   *  What the camera should read, in order: a single fast dart (the
+   *  engine publishes ``missile_speed`` and it flies that much quicker
+   *  than a probe or an EMP, which is the only cue the watcher gets that
+   *  this thing lands FIRST), a hard one-cell flash, then the scorch
+   *  mark that dies at the next hour. No ring expansion — there are no
+   *  rings to expand at radius 0, and staging one would draw an area
+   *  the weapon does not have.
+   */
+  function playSnapFx(frame, prevFrame) {
+    if (!mapPlayer) return;
+    if (reduceMotionMq.matches) return;
+    const events = Array.isArray(frame?.snap) ? frame.snap : [];
+    if (!events.length) return;
+
+    const shots = [];
+    for (const ev of events) {
+      if (ev?.kind !== "snap_launch") continue;
+      if (typeof osOnEntityArrival === "function")
+        osOnEntityArrival({ kind: "snap_launch", owner: ev.owner }, null);
+      const at = Array.isArray(ev?.at) ? ev.at : null;
+      if (!at) continue;
+      const cellEl = mapPlayer.querySelector(
+        `[data-x="${at[0]}"][data-y="${at[1]}"]`,
+      );
+      if (cellEl) shots.push({ el: cellEl, owner: ev.owner, ev });
+    }
+    if (!shots.length) return;
+
+    _snapImpactActive = true;
+    _snapImpactLatestFrame = frame;
+    // The gate is released by the landing callback, which rides on
+    // requestAnimationFrame — and rAF stops in a backgrounded tab. A
+    // round that never lands would latch the gate shut and silently
+    // suppress every scorch mark for the rest of the session, so the
+    // flight gets a deadline as well as a callback.
+    window.clearTimeout(_snapImpactWatchdog);
+    _snapImpactWatchdog = window.setTimeout(() => {
+      if (!_snapImpactActive) return;
+      _snapImpactActive = false;
+      paintSnapCloudOverlay(_snapImpactLatestFrame || frame);
+    }, 2500);
+
+    let pending = shots.length;
+    const onLanded = () => {
+      pending -= 1;
+      if (pending > 0) return;
+      window.clearTimeout(_snapImpactWatchdog);
+      _snapImpactActive = false;
+      paintSnapCloudOverlay(_snapImpactLatestFrame || frame);
+      const refFrame = prevFrame || frame;
+      for (const ev of events) {
+        // A probe killed by a SNAP gets the same thin X an EMP kill
+        // gets, gated by the same live-vision rule — you do not learn
+        // about a kill in the dark just because it was fast.
+        for (const dp of (Array.isArray(ev?.destroyed_probes) ? ev.destroyed_probes : [])) {
+          const at = Array.isArray(dp?.at) ? dp.at : null;
+          if (!at) continue;
+          const seen = dp.owner === replayViewSeat
+            || _replayCellVisibleToViewer(refFrame, at)
+            || _viewerHasProbeEchoAt(refFrame, at);
+          if (!seen) continue;
+          const cellEl = mapPlayer.querySelector(
+            `[data-x="${at[0]}"][data-y="${at[1]}"]`,
+          );
+          if (cellEl) spawnXOverlay(cellEl, SNAP_FX_COLOR, 200, { thin: true });
+        }
+        for (const dh of (Array.isArray(ev?.damaged_harvesters) ? ev.damaged_harvesters : [])) {
+          const at = Array.isArray(dh?.at) ? dh.at : null;
+          if (!at) continue;
+          const seen = dh.owner === replayViewSeat
+            || _replayCellVisibleToViewer(refFrame, at);
+          if (!seen) continue;
+          const cellEl = mapPlayer.querySelector(
+            `[data-x="${at[0]}"][data-y="${at[1]}"]`,
+          );
+          if (cellEl) spawnXOverlay(cellEl, SNAP_FX_COLOR, 260);
+        }
+      }
+    };
+
+    for (const shot of shots) {
+      spawnProbeTrail(
+        shot.el, SNAP_FX_COLOR, SNAP_FX_COLOR,
+        () => { _playSnapImpact(shot.el); onLanded(); },
+        Math.round(540 / _snapMissileSpeed()), shot.owner,
+        { weight: 3, headSize: 7 },
+      );
+    }
+  }
+
+  /** The hit — one square burning down the density ramp (v1.40).
+   *
+   *  This replaced a canvas cross that threw glowing bars out past the
+   *  cell. It was legible, and it was wrong twice over: it was drawn
+   *  with ``shadowBlur``, and almost nothing else on this board glows,
+   *  so a SNAP was the one lit object on a flat map. And bars reaching
+   *  two cells out claimed ground the weapon never touches — SNAP takes
+   *  exactly one square, and the picture should not say otherwise.
+   *
+   *  So it strikes in the EMP's own alphabet instead: the same block
+   *  ramp, on the one cell, walked from ``██`` down to the scorch the
+   *  hour will sit on. Same family, different colour, different verb —
+   *  the EMP's field rolls sideways over thirteen cells, this one lands
+   *  hard on a single square and cools. Nothing here escapes the cell,
+   *  which is the honest shape of the weapon.
+   *
+   *  The tile is the same ``.snap-cloud-cell`` the scorch uses, so the
+   *  strike does not hand over to a different-looking mark: it IS the
+   *  mark, arriving hot. */
+  function _playSnapImpact(cellEl) {
+    if (!cellEl || !collisionFxLayer || reduceMotionMq.matches) return;
+    const hostRect = collisionFxLayer.getBoundingClientRect();
+    const r = cellEl.getBoundingClientRect();
+    const tile = document.createElement("div");
+    tile.className = "snap-cloud-cell snap-cloud-cell--strike";
+    tile.style.left = `${r.left - hostRect.left}px`;
+    tile.style.top = `${r.top - hostRect.top}px`;
+    tile.style.width = `${Math.ceil(r.width)}px`;
+    tile.style.height = `${Math.ceil(r.height)}px`;
+    collisionFxLayer.appendChild(tile);
+
+    // Down the ramp from the top: full block, then thinning. Held on
+    // ``██`` for the first step so the arrival reads as an impact
+    // rather than the start of a fade.
+    const STEP = 70;
+    const top = _ORDNANCE_CHARS.length - 1;
+    let i = top;
+    tile.textContent = _ORDNANCE_CHARS[i];
+    const timer = window.setInterval(() => {
+      i -= 1;
+      // Stop two rungs up from the sparsest glyph: what is left is the
+      // scorch, and ``paintSnapCloudOverlay`` takes it from here.
+      if (i <= 1) {
+        window.clearInterval(timer);
+        tile.remove();
+        return;
+      }
+      tile.textContent = _ORDNANCE_CHARS[i];
+    }, STEP);
+  }
+
+  /** Amber, so a SNAP never reads as a small EMP. Cyan is the EMP's and
+   *  the arsenal bar's; sharing it would make the two weapons look like
+   *  one weapon at two sizes, which is exactly wrong. */
+  const SNAP_FX_COLOR = "#ffd166";
+
+  /** True from the moment a SNAP leaves the rail to the moment it lands,
+   *  so the scorch mark cannot paint ahead of its own missile. Mirrors
+   *  ``_empExpansionActive``; the stashed frame is the newest one seen
+   *  while the round was in flight, so a scrub during the shot still
+   *  settles on the right state. */
+  let _snapImpactActive = false;
+  let _snapImpactLatestFrame = null;
+  let _snapImpactWatchdog = 0;
+
+  /** Flight-time multiplier, mirrored off ``weapon_specs.snap`` rather
+   *  than hard-coded — same rule as the EMP radius above. */
+  function _snapMissileSpeed() {
+    const s = Number(window.__SOC_SNAP_SPEED__);
+    return Number.isFinite(s) && s > 0 ? s : 1.5;
+  }
+
+  /** The one-hour scorch mark. Same alphabet and the same tile geometry
+   *  as the EMP cloud overlay but a separate layer class, so clearing
+   *  one never clears the other and a SNAP mark cannot be mistaken for
+   *  smothered ground.
+   *
+   *  v1.40 — it holds a glyph now rather than a tinted box with a glow
+   *  around it. A flat 30% wash was the one thing on the board that had
+   *  no texture, and a lone struck square is exactly where the eye needs
+   *  something to catch. It breathes between the two sparse rungs of the
+   *  ramp: enough to say "still burning", far short of the EMP's rolling
+   *  field, which is the difference between one square for one hour and
+   *  a neighbourhood for eight. */
+  function paintSnapCloudOverlay(frame) {
+    if (!collisionFxLayer || !mapPlayer) return;
+    // v1.36 — hold the mark back while a round is still in the air.
+    // The tick paints this overlay synchronously, but the missile takes
+    // a third of a second to arrive, so without the gate the scorch
+    // appeared on the square first and the round then flew into a cell
+    // that had visibly already been hit. Same defence ``_empExpansionActive``
+    // gives the EMP cloud, and the same reason: see the replay note in
+    // AGENTS.md about the board moving before the sprite lands.
+    if (_snapImpactActive) {
+      _snapImpactLatestFrame = frame;
+      return;
+    }
+    _stopSnapScorchTicker();
+    collisionFxLayer
+      .querySelectorAll(".snap-cloud-cell")
+      .forEach((n) => n.remove());
+    const clouds = Array.isArray(frame?.snap_clouds) ? frame.snap_clouds : [];
+    if (!clouds.length) return;
+    const hostRect = collisionFxLayer.getBoundingClientRect();
+    const tiles = [];
+    for (const cloud of clouds) {
+      const cx = Number(cloud.cx);
+      const cy = Number(cloud.cy);
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+      const cellEl = mapPlayer.querySelector(`[data-x="${cx}"][data-y="${cy}"]`);
+      if (!cellEl) continue;
+      const r = cellEl.getBoundingClientRect();
+      const el = document.createElement("div");
+      el.className = "snap-cloud-cell";
+      el.style.left = `${r.left - hostRect.left}px`;
+      el.style.top = `${r.top - hostRect.top}px`;
+      // Ceil, same as the EMP tiles: a fractional cell width leaves an
+      // anti-aliased seam, and on a one-cell mark that reads as a
+      // rendering fault rather than as a shape.
+      el.style.width = `${Math.ceil(r.width)}px`;
+      el.style.height = `${Math.ceil(r.height)}px`;
+      // Offset per cell so two marks in one hour do not pulse in step.
+      el.dataset.phase = String(((cx * 1237 + cy * 2749) % 4 + 4) % 4);
+      el.textContent = _ORDNANCE_CHARS[1];
+      collisionFxLayer.appendChild(el);
+      tiles.push(el);
+    }
+    if (!tiles.length || reduceMotionMq.matches) return;
+    // Between the two sparse rungs only. Walking the whole ramp would
+    // make a spent square look like it was being hit again every second.
+    _snapScorchTimer = window.setInterval(() => {
+      _snapScorchT += 1;
+      for (const el of tiles) {
+        const n = (_snapScorchT + Number(el.dataset.phase || 0)) % 4;
+        el.textContent = _ORDNANCE_CHARS[n === 0 || n === 3 ? 1 : 2];
+      }
+    }, 260);
+  }
+
+  let _snapScorchTimer = 0;
+  let _snapScorchT = 0;
+
+  function _stopSnapScorchTicker() {
+    if (_snapScorchTimer) {
+      window.clearInterval(_snapScorchTimer);
+      _snapScorchTimer = 0;
+    }
+  }
+
   /** v0.9.4 (rev2) — Mine-lay choreography:
    *
    *  1. **Minelayer flies in like the orblift.** A rhombus glyph
@@ -10566,11 +11170,21 @@
 
   function spawnProbeTrail(
     toLandingCell, trailColor, probeColor, onLand, durationMs = 540, owner = null,
+    opts = null,
   ) {
     if (reduceMotionMq.matches) {
       if (typeof onLand === "function") window.setTimeout(onLand, 0);
       return;
     }
+    // v1.36 — ``weight`` fattens the streak and ``headSize`` the round at
+    // its tip. Both default to what probes and EMPs have always drawn, so
+    // this is opt-in: only SNAP passes them. SNAP needs them because it
+    // flies 1.5x faster over the same distance, which leaves a one-pixel
+    // line on screen for about a third of the time an EMP's is — measured
+    // against the EMP it came out roughly two orders of magnitude fainter,
+    // which is why the first cut read as "no missile at all".
+    const trailWeight = Math.max(1, Math.round(Number(opts?.weight) || 1));
+    const headSize = Math.max(2, Math.round(Number(opts?.headSize) || 4));
 
     const cellRect = toLandingCell.getBoundingClientRect();
     const mapHost = toLandingCell.closest(".map-host");
@@ -10696,13 +11310,19 @@
         if (alpha <= 0) continue;
         anyAlive = true;
         const px = tp.x | 0, py = tp.y | 0;
-        if (px < clipL || px >= clipR || py < clipT || py >= clipB) continue;
-        if (px < 0 || px >= cW || py < 0 || py >= cH) continue;
-        const i = (py * cW + px) * 4;
-        d[i]     = Math.min(255, d[i]     + ((tr * alpha) | 0));
-        d[i + 1] = Math.min(255, d[i + 1] + ((tg * alpha) | 0));
-        d[i + 2] = Math.min(255, d[i + 2] + ((tb * alpha) | 0));
-        d[i + 3] = 255;
+        for (let oy = 0; oy < trailWeight; oy += 1) {
+          for (let ox = 0; ox < trailWeight; ox += 1) {
+            const qx = px + ox - (trailWeight >> 1);
+            const qy = py + oy - (trailWeight >> 1);
+            if (qx < clipL || qx >= clipR || qy < clipT || qy >= clipB) continue;
+            if (qx < 0 || qx >= cW || qy < 0 || qy >= cH) continue;
+            const i = (qy * cW + qx) * 4;
+            d[i]     = Math.min(255, d[i]     + ((tr * alpha) | 0));
+            d[i + 1] = Math.min(255, d[i + 1] + ((tg * alpha) | 0));
+            d[i + 2] = Math.min(255, d[i + 2] + ((tb * alpha) | 0));
+            d[i + 3] = 255;
+          }
+        }
       }
       ctx2.putImageData(img, 0, 0);
 
@@ -10732,7 +11352,8 @@
         ctx2.rect(clipL, clipT, clipR - clipL, clipB - clipT);
         ctx2.clip();
         ctx2.fillStyle = `rgb(${pr},${pg},${pb})`;
-        ctx2.fillRect(cx - 2, cy - 2, 4, 4);
+        const hs = headSize;
+        ctx2.fillRect(cx - hs / 2, cy - hs / 2, hs, hs);
         ctx2.restore();
       }
 
@@ -12145,7 +12766,15 @@
   // ASCII density ramp — sparse to dense. The wave function maps
   // a 0..1 value onto this array; the result flows across the grid
   // over time, producing rolling cloud bands.
-  const _EMP_CHARS = ["░░", "░▒", "▒▒", "▒▓", "▓▓", "██"];
+  //
+  // v1.40 — shared with SNAP, which is why it is no longer called
+  // ``_EMP_CHARS``. Two weapons drawn from one alphabet read as one
+  // game's ordnance; the colour is what tells them apart. They use it
+  // differently, and that difference is the whole point: the EMP walks
+  // the ramp ACROSS a 13-cell rhombus, so the field rolls, while SNAP
+  // walks it DOWN a single square over time, so one cell burns and
+  // cools. A rolling wave on one tile would say nothing.
+  const _ORDNANCE_CHARS = ["░░", "░▒", "▒▒", "▒▓", "▓▓", "██"];
 
   // Paint one cloud tile for time ``t``: stamp the density glyph.
   function _applyEmpTile(tile, t) {
@@ -12161,7 +12790,7 @@
     // sparse "░░" block shows more often and the full cyan "██" square is
     // comparatively rare; the cloud reads lighter / patchier overall.
     const biased = Math.pow(norm, 2.0);
-    return _EMP_CHARS[Math.min(_EMP_CHARS.length - 1, Math.floor(biased * _EMP_CHARS.length))];
+    return _ORDNANCE_CHARS[Math.min(_ORDNANCE_CHARS.length - 1, Math.floor(biased * _ORDNANCE_CHARS.length))];
   }
 
   let _empCloudT = 0;
@@ -12193,7 +12822,7 @@
     function dissipeTile(tile, idx) {
       if (!_empDissipating || !tile.isConnected) return;
       if (idx > 0) {
-        tile.textContent = _EMP_CHARS[idx - 1];
+        tile.textContent = _ORDNANCE_CHARS[idx - 1];
         const jitter = (Math.random() - 0.5) * 18; // ±9 ms per step
         setTimeout(() => dissipeTile(tile, idx - 1), STEP_MS + jitter);
       } else {
@@ -12205,8 +12834,8 @@
 
     for (const tile of cells) {
       const cur = tile.textContent;
-      const idx = _EMP_CHARS.indexOf(cur);
-      const startIdx = idx >= 0 ? idx : _EMP_CHARS.length - 1;
+      const idx = _ORDNANCE_CHARS.indexOf(cur);
+      const startIdx = idx >= 0 ? idx : _ORDNANCE_CHARS.length - 1;
       // 0–50 ms stagger derived from tile position — nearby tiles feel continuous
       const gx = Number(tile.dataset.gx) || 0;
       const gy = Number(tile.dataset.gy) || 0;
@@ -12873,6 +13502,74 @@
    */
   let _lastTutorialKey = "";
 
+  /* v1.35 — "is the board in the middle of showing the player something?"
+   *
+   * The tutorial modal is the only thing that covers the board, and it
+   * was landing on top of the very animations the films talk about: an
+   * orbit resolving, the arsenal filling, the whole night cinematic. A
+   * player in a normal game watches their weapon get built; a player in
+   * the tutorial got a popup where the animation should have been.
+   *
+   * Two of the three states already existed for exactly this reason —
+   * ``applyPhaseDaylight`` and the opening night card both refuse to
+   * touch the board while FX own it. The orbit beat is the third and
+   * had no flag, because until now nothing except the tutorial needed
+   * to know it was running. */
+  let _boardHeldUntilMs = 0;
+
+  /** Mark the board as owning the screen for ``ms`` from now. */
+  function _holdBoardFor(ms) {
+    const n = Number(ms) || 0;
+    if (n > 0) _boardHeldUntilMs = Math.max(_boardHeldUntilMs, Date.now() + n);
+  }
+
+  /** How long the modal will wait on a cinematic that has been PROMISED
+   *  but has not started. Long enough to cover the frame wait
+   *  (``_FRAME_WAIT_MS``) plus the kickoff; short enough that a night
+   *  whose frames never arrive costs the player a pause, not the film. */
+  const _TUTORIAL_DEFER_CAP_MS = 15000;
+  let _softDeferSince = 0;
+
+  function _boardMidAnimation() {
+    if (_resolvingActive || _liveFxPlaying || Date.now() < _boardHeldUntilMs) {
+      _softDeferSince = 0;
+      return true;
+    }
+    // A night that has RESOLVED but whose cinematic has not started yet.
+    // Needed because the view poll that flips the phase and the pull
+    // that starts the cinematic are separate, and without this the
+    // modal wins that race and opens into a board about to animate.
+    //
+    // The only branch that can time out, because it is a prediction
+    // rather than something observed to be running.
+    if (_nightAwaitingCinematic()) {
+      if (!_softDeferSince) _softDeferSince = Date.now();
+      // Note the clock is NOT cleared on the way out of this branch.
+      // Clearing it re-armed the wait on the very next call, so "give
+      // up after fifteen seconds" became "be busy forever, fifteen
+      // seconds at a time" and the modal never opened at all.
+      return (Date.now() - _softDeferSince) < _TUTORIAL_DEFER_CAP_MS;
+    }
+    _softDeferSince = 0;
+    return false;
+  }
+
+  /** Poll for the board going quiet. Nothing else runs on a cadence
+   *  fine enough: the status poll is seconds apart, and a film that
+   *  opens four seconds late reads as broken rather than polite. */
+  let _tutorialIdleTimer = null;
+  let _lastTutorialMeta = null;
+
+  function _watchForBoardIdle() {
+    if (_tutorialIdleTimer) return;
+    _tutorialIdleTimer = setInterval(() => {
+      if (_boardMidAnimation()) return;
+      clearInterval(_tutorialIdleTimer);
+      _tutorialIdleTimer = null;
+      _syncTutorialState(_lastTutorialMeta);
+    }, 200);
+  }
+
   function _syncTutorialState(meta) {
     const tut = String(window.__SOC_TUTORIAL__ || "");
     const body = document.body;
@@ -12887,12 +13584,19 @@
     // has shown PER GAME. Remembering it per reel meant a second
     // tutorial never opened a single film.
     const game = String(sessionId || "");
-    const key = `${tut}|${game}|${Number.isFinite(day) ? day : "?"}|${phase}`;
+    // v1.35 — ``busy`` rides in the key as well as the payload, so the
+    // board going quiet is itself an event. Without that the modal
+    // would be told to wait and then never told it could stop.
+    const busy = _boardMidAnimation();
+    if (meta) _lastTutorialMeta = meta;
+    const key = `${tut}|${game}|${Number.isFinite(day) ? day : "?"}|${phase}`
+      + `|${busy ? "busy" : "idle"}`;
     if (key === _lastTutorialKey) return;
     _lastTutorialKey = key;
     document.dispatchEvent(new CustomEvent("soc:tutorial-state", {
-      detail: { tutorial: tut, day, phase, game },
+      detail: { tutorial: tut, day, phase, game, busy },
     }));
+    if (busy) _watchForBoardIdle();
   }
 
   /**
@@ -12941,9 +13645,13 @@
    * under the pointer while a target is being aimed.
    * @returns {{action:string, cells:number[][], live:boolean}[]}
    */
+  // v1.42 — reads `_plannedQueue()` rather than `soloQueue` directly, so
+  // a previewed lab plan gets its blast footprints too. An EMP drawn as
+  // three bare markers with no 35-cell no-drop zone under them is the
+  // single most misleading thing this overlay could show.
   function _aoeShapes(w, h) {
     const out = [];
-    for (const m of soloQueue) {
+    for (const m of _plannedQueue()) {
       if (!m) continue;
       if (m.a === "emp_launch" && Array.isArray(m.ats)) {
         // A salvo is up to three independent missiles; each gets its own
@@ -13382,6 +14090,13 @@
   function opponentSeatVisible() {
     if (WATCH_MODE) return true;
     if (livePhase === "season_complete") return true;
+    // v1.42 — a lab clone is a throwaway copy of a frozen turn where BOTH
+    // seats are yours to drive, so there is no rival and no fog to leak.
+    // Withholding the other seat's view here would withhold it from the
+    // person who just cast both agents into it. Unlocks the per-seat fog
+    // views and OBS on the transport row, and the per-seat thinking feeds
+    // in the AGENT tab.
+    if (LAB_MODE) return true;
     return false;
   }
 
@@ -13950,6 +14665,886 @@
     });
     // A lone self-tab in live play is noise — hide the strip entirely.
     agentSeatTabsEl.hidden = seats.length <= 1;
+    // v1.42 — the lab's invoke rows live above these tabs and need the
+    // same seat list. No-ops outside the lab, and builds only once.
+    if (LAB_MODE) renderLabInvoke();
+  }
+
+  // ── TURN LAB: invoke, look, accept (v1.42) ────────────────────────
+  //
+  // Live-play invocation was removed from this UI in v1.1 — games moved
+  // to the CLI and the season runner, and the AGENT tab became a
+  // read-only thinking feed. That is the right call for a real game: an
+  // agent playing a seat mid-season has consequences for somebody else's
+  // night. A lab clone is a throwaway copy of a frozen turn made to be
+  // played by agents and discarded, so the control comes back here and
+  // only here. The server checks the same condition for itself.
+  //
+  // It comes back with the V12 advisor's manners rather than the old
+  // autoplay's: INVOKE asks, the answer is painted on the board and
+  // listed in full, and nothing reaches the engine until ACCEPT. That
+  // matters more in the lab than it does for the advisor — the whole
+  // point is to look at what an agent decided and compare it with what
+  // the other one decided, which you cannot do if asking is the same
+  // act as committing.
+  let _labAgents = null;
+  // The seat list the rows were built for, joined. Claimed
+  // synchronously, because the DOM check cannot serve as the guard: the
+  // roster fetch is awaited before anything is appended, so two callers
+  // both find no panel and both build one.
+  //
+  // v1.42 — this was a boolean, which meant the boot call locked in
+  // whatever ``_activeSeatsForView()`` returned before the first status
+  // poll had landed. That is its ``["p1", "p2"]`` default, so a 3-seat
+  // board lost p3 permanently: the later, correct call found the flag
+  // already set and returned. Keyed on the seats instead, so learning
+  // the real roster rebuilds.
+  let _labInvokeSeats = "";
+  /** ``seat -> plan payload`` for plans asked for but not yet accepted. */
+  const labTakes = new Map();
+
+  async function _labRoster() {
+    if (_labAgents) return _labAgents;
+    try {
+      const res = await fetch("/api/lab/agents");
+      _labAgents = res.ok ? (await res.json()).agents || [] : [];
+    } catch (_e) {
+      _labAgents = [];
+    }
+    return _labAgents;
+  }
+
+  async function renderLabInvoke() {
+    if (!LAB_MODE || !agentSeatTabsEl) return;
+    const parent = agentSeatTabsEl.parentElement;
+    if (!parent) return;
+
+    const seats = _activeSeatsForView();
+    const key = seats.join(",");
+    if (key === _labInvokeSeats) return;
+    // A rebuild throws away the rows, and with them any plan already on
+    // screen. The roster only ever changes at boot, as the first poll
+    // replaces the default guess, so refusing once someone has asked for
+    // a plan cannot strand a seat.
+    if (_labInvokeSeats && labTakes.size) return;
+    _labInvokeSeats = key;
+    document.getElementById("lab-invoke")?.remove();
+
+    const roster = await _labRoster();
+
+    // The pane's own strapline still advertised the season feed that the
+    // lab hides. What is left here is one turn, asked for on purpose.
+    const sub = document.querySelector("#cc-panel-log .cc-panel-sub");
+    if (sub) sub.textContent = "this turn only · ask a seat, read it, accept it";
+
+    const box = document.createElement("div");
+    box.id = "lab-invoke";
+    box.className = "cc-lab";
+
+    const head = document.createElement("p");
+    head.className = "cc-block-head dim";
+    head.textContent = "# TURN LAB · cast a seat · hover it to see its plan";
+    // Leaving over the header is how you put the board back — there is
+    // no OFF button because there is nothing to turn off, only a seat to
+    // stop pointing at.
+    head.addEventListener("mouseenter", () => showLabPlan(null));
+    box.appendChild(head);
+
+    // v1.42 — RESET is built here, at the TOP, because once the night has
+    // resolved it is the only control on this panel that still does
+    // anything. It used to be appended last, under two seats' worth of
+    // agent output in a drawer that scrolls, so the answer to "how do I
+    // run this again" was "scroll past everything that no longer works".
+    box.appendChild(_labResetBar());
+
+    for (const seat of seats) {
+      const block = document.createElement("div");
+      block.className = "cc-lab-seat";
+      block.dataset.seat = seat;
+      // Seat colour is the through-line: the same cyan or magenta marks
+      // the button, the plan on the board and the order list, so two
+      // plans on one board stay tellable apart at a glance.
+      block.style.setProperty(
+        "--lab-ink", playerColor(seat) || ownerColor(seat) || "#9fa6ad",
+      );
+      // Hover to show, and it STAYS shown — deliberately not cleared on
+      // leave. The board is on the other side of the window, so a plan
+      // that vanished when the pointer left the panel could be seen and
+      // never looked at.
+      block.addEventListener("mouseenter", () => showLabPlan(seat));
+
+      const row = document.createElement("div");
+      row.className = "cc-lab-row";
+
+      const tag = document.createElement("span");
+      tag.className = "cc-lab-tag";
+      tag.textContent = `[ ${playerTag(seat)} ]`;
+      row.appendChild(tag);
+
+      const pick = document.createElement("select");
+      pick.className = "cc-lab-pick";
+      for (const a of roster) {
+        const o = document.createElement("option");
+        o.value = a.value;
+        o.textContent = a.label || a.value;
+        pick.appendChild(o);
+      }
+      row.appendChild(pick);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cli-btn cc-lab-invoke-btn";
+      btn.textContent = "[ INVOKE ]";
+      btn.addEventListener("click", () => labPlan(seat, pick.value));
+      row.appendChild(btn);
+
+      block.appendChild(row);
+
+      const out = document.createElement("div");
+      out.className = "cc-lab-out";
+      out.hidden = true;
+      block.appendChild(out);
+
+      box.appendChild(block);
+    }
+
+    // Both seats' plans as one document. The per-seat [ .TXT ] is the
+    // full exchange for one agent, prompts and all; this is the sheet you
+    // read when the question is how two agents differ on the same night.
+    const exp = document.createElement("div");
+    exp.id = "lab-export";
+    exp.className = "cc-lab-filter";
+    const expLabel = document.createElement("span");
+    expLabel.className = "dim";
+    expLabel.textContent = "plans as ";
+    exp.appendChild(expLabel);
+    for (const [text, fmt, hint] of [
+      ["[ READ ]", "html", "Open both seats' proposed plans in a new tab"],
+      ["[ .MD ]", "md", "Download both seats' proposed plans as Markdown"],
+    ]) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cli-btn";
+      b.dataset.fmt = fmt;
+      b.textContent = text;
+      b.title = hint;
+      b.addEventListener("click", () => labExportPlans(fmt));
+      exp.appendChild(b);
+    }
+    box.appendChild(exp);
+
+    parent.insertBefore(box, agentSeatTabsEl);
+    _labSyncTurnState();
+  }
+
+  /** The "start again" bar. Hidden until the night has resolved.
+   *
+   *  A fresh copy of the same board is the only way back: the turn that
+   *  just resolved cannot be un-resolved, and clearing the plans in
+   *  place would leave the engine still holding the old night.
+   */
+  function _labResetBar() {
+    const reset = document.createElement("div");
+    reset.id = "lab-reset";
+    reset.hidden = true;
+    const why = document.createElement("span");
+    why.className = "why";
+    why.textContent = "night resolved — the board is a record now.";
+    const rbtn = document.createElement("button");
+    rbtn.type = "button";
+    rbtn.className = "cli-btn cc-lab-reset-btn";
+    rbtn.textContent = "[ RESET TURN ]";
+    rbtn.title =
+      "Open a fresh copy of the same board, with the same ordnance, and "
+      + "no orders in";
+    rbtn.addEventListener("click", () => labResetTurn(rbtn));
+    reset.append(why, rbtn);
+    return reset;
+  }
+
+  /** Play this turn again from the top.
+   *
+   *  Deliberately a brand-new clone rather than a rewind. The engine has
+   *  resolved the night; there is no un-resolve, and the board it came
+   *  from is still frozen and untouched — so the honest reset is to open
+   *  it again. Same board, same seat, same racks, nobody's orders in.
+   */
+  async function labResetTurn(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "[ resetting… ]"; }
+    try {
+      const res = await fetch("/api/lab/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          board: LAB_BOARD, seat: MY_SEAT, arms: LAB_ARMS,
+        }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.detail || res.statusText);
+      window.location.href = out.url;
+    } catch (err) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "[ RESET TURN ]";
+      }
+      const why = document.querySelector("#lab-reset .why");
+      if (why) why.textContent = `reset failed: ${err.message || err}`;
+    }
+  }
+
+  function _labBlock(seat) {
+    return document.querySelector(`.cc-lab-seat[data-seat="${seat}"]`);
+  }
+
+  /** Grey out order entry once your own seat is sealed.
+   *
+   *  Cosmetic — ``postPolicy`` is what actually refuses. This exists so
+   *  the refusal is not a surprise at TRANSMIT, after the queue is
+   *  already built.
+   */
+  function _labSyncSealed() {
+    if (!LAB_MODE) return;
+    document.body.classList.toggle(
+      "cc-lab-sealed", !!labTakes.get(MY_SEAT)?.committed,
+    );
+    _labSyncTurnState();
+  }
+
+  /** The lab is one night, and it has three states.
+   *
+   *  Open, part-played, and spent. A seat that has committed cannot be
+   *  invoked again — its orders are with the engine, so asking a second
+   *  agent would either be ignored or overwrite a resolved night, and
+   *  both are worse than a disabled button. Once every seat has played
+   *  and the night has resolved the board is a record rather than a
+   *  position, and the only honest control left is RESET.
+   */
+  function _labSyncTurnState() {
+    if (!LAB_MODE) return;
+    const spent = !!labResolved;
+
+    for (const block of document.querySelectorAll(".cc-lab-seat")) {
+      const seat = block.dataset.seat;
+      const done = !!labTakes.get(seat)?.committed;
+      const pick = block.querySelector(".cc-lab-pick");
+      const btn = block.querySelector(".cc-lab-invoke-btn");
+      if (pick) pick.disabled = done || spent;
+      if (btn && !btn.dataset.busy) {
+        btn.disabled = done || spent;
+        btn.textContent = done ? "[ SELECTED ]" : "[ INVOKE ]";
+      }
+    }
+
+    document.body.classList.toggle("cc-lab-spent", spent);
+    const bar = document.getElementById("lab-reset");
+    if (bar) bar.hidden = !spent;
+
+    // The proposals have stopped being proposals: the board below is now
+    // a record of what happened, and a plan drawn over it would be read
+    // as part of it.
+    if (spent && labPlans.size) {
+      labPlans.clear();
+      showLabPlan(null);
+    }
+
+    if (spent) _labSettleDay();
+  }
+
+  /** Whether the day's orbit has been run (or is being run) already. */
+  let _labSettling = false;
+
+  /** Close the day the frozen night opened, once the night has played.
+   *
+   *  v1.42 — a night stops one beat short of the number people argue
+   *  about. RED is still in the vault when the last hour resolves; it
+   *  turns into score, and GREEN into a penalty, at the orbit
+   *  settlement. So the turn runs on through the orbit to the next
+   *  vespera and stops there.
+   *
+   *  Deliberately waits for the cinematic. Settling mid-animation would
+   *  flip the board to the morning's numbers while the player is still
+   *  watching the night that produced them, which is the same class of
+   *  bug as the hard cut this file fights elsewhere. If a cinematic owns
+   *  the board we simply return: the status poll calls this again.
+   *
+   *  ``_liveFxPlaying`` is the whole test — it is what the pull's own
+   *  ``_cinematicOwnsBoard`` is read from, and unlike that one it is
+   *  module-scoped, so it can be asked from here.
+   */
+  async function _labSettleDay() {
+    if (!LAB_MODE || _labSettling) return;
+    if (_liveFxPlaying || replayTicker) return;
+    _labSettling = true;
+    try {
+      const res = await fetch("/api/lab/settle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.detail || res.statusText);
+      // Only worth a repaint if something actually settled — otherwise
+      // this was the "already in planning" no-op and the board is right.
+      if (out.settled) await pullAllMaps({ playFx: false });
+    } catch (err) {
+      console.warn("[soc] lab: could not settle the day —", err);
+      // Left un-settled rather than retried in a loop: the board is
+      // still a truthful record of the night, just without the morning.
+    }
+  }
+
+  /** Ask an agent what it would do. Commits nothing. */
+  async function labPlan(seat, agent) {
+    const block = _labBlock(seat);
+    if (!block) return;
+    const btn = block.querySelector(".cc-lab-invoke-btn");
+    const out = block.querySelector(".cc-lab-out");
+    btn.dataset.busy = "1";
+    btn.disabled = true;
+    out.hidden = false;
+    out.textContent = "";
+    // A model seat takes the better part of half a minute, and a button
+    // that has said "thinking…" for twenty seconds is indistinguishable
+    // from one that has hung. Count out loud instead — it is also the
+    // number you want when the question is whether your fork got slower.
+    const began = Date.now();
+    const tick = () => {
+      btn.textContent =
+        `[ thinking… ${((Date.now() - began) / 1000).toFixed(1)}s ]`;
+    };
+    tick();
+    const ticking = window.setInterval(tick, 100);
+    try {
+      const res = await fetch("/api/lab/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId, seat, agent }),
+      });
+      const plan = await res.json();
+      if (!res.ok) throw new Error(plan.detail || res.statusText);
+      labTakes.set(seat, plan);
+      setLabPlan(seat, plan.moves || []);
+      // Show what you just asked for. Hovering the other seat swaps to
+      // its plan, which is the comparison this panel exists to make.
+      showLabPlan(seat);
+      renderLabTake(seat);
+    } catch (err) {
+      out.textContent = "";
+      const e = document.createElement("div");
+      e.className = "cc-lab-err";
+      e.textContent = String(err.message || err);
+      out.appendChild(e);
+    } finally {
+      window.clearInterval(ticking);
+      delete btn.dataset.busy;
+      // Not a plain re-enable: the turn may have been spent while this
+      // one was thinking, and the button's state belongs to the turn.
+      _labSyncTurnState();
+    }
+  }
+
+  /** The plan as a readable block: what it will do, then why. */
+  function renderLabTake(seat) {
+    const block = _labBlock(seat);
+    const take = labTakes.get(seat);
+    if (!block || !take) return;
+    const out = block.querySelector(".cc-lab-out");
+    out.textContent = "";
+    out.hidden = false;
+
+    // v1.42 — a fallback take is the harness's deterministic safety net,
+    // not the agent. It is identical on every invoke and never fires a
+    // weapon, so read as an ordinary plan it looks like a dull fork
+    // rather than an unreachable model. The meta tag below was the only
+    // tell and it was missed; an unreachable Cortex (no PAT, no route)
+    // costs an afternoon before anyone thinks to read the rationale.
+    if (take.plan?.fallback_used) {
+      const warn = document.createElement("div");
+      warn.className = "cc-lab-fallback";
+      const why = /\[fallback=True:([^\]]*)\]/.exec(take.rationale || "");
+      warn.textContent =
+        "FALLBACK — the model never answered, so this is the harness's "
+        + `built-in heuristic chain, not ${take.agent || "the agent"}. `
+        + "It is the same every invoke and never fires a weapon."
+        + (why ? ` Reason: ${why[1].trim()}.` : "");
+      out.appendChild(warn);
+    }
+
+    // An agent handed no journal plans a visibly different turn — it has
+    // no INTENT to carry forward and nothing to reflect on, so on night
+    // six it reasons like it is night one. That is a different test from
+    // the one the board claims to be, and it is invisible in the orders,
+    // so it is said out loud rather than left to be inferred.
+    const recalled = take.memory;
+    if (recalled && recalled.error) {
+      const warn = document.createElement("div");
+      warn.className = "cc-lab-fallback";
+      warn.textContent = `NO MEMORY — ${recalled.error}.`;
+      out.appendChild(warn);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "cc-lab-meta";
+    const secs = ((Number(take.elapsed_ms) || 0) / 1000).toFixed(1);
+    let journal = "";
+    if (recalled && recalled.entries > 0) {
+      journal = ` · journal ${recalled.entries} night(s)`;
+    } else if (recalled && recalled.note) {
+      journal = " · no journal";
+    }
+    meta.textContent =
+      `${(take.moves || []).length} order(s) · ${secs}s`
+      + journal
+      + (take.plan?.fallback_used ? " · FALLBACK (no live think)" : "")
+      + (take.committed ? " · ACCEPTED" : "");
+    if (recalled && recalled.note) meta.title = recalled.note;
+    out.appendChild(meta);
+
+    // Reuse the advisor's formatting rather than growing a second
+    // dialect for the same wire moves.
+    const ul = document.createElement("ul");
+    ul.className = "cc-lab-moves";
+    for (const line of advisorMoveLines(take.moves)) {
+      const li = document.createElement("li");
+      const h = document.createElement("span");
+      h.className = "h";
+      h.textContent = line.hour;
+      const t = document.createElement("span");
+      t.textContent = line.text;
+      li.append(h, t);
+      ul.appendChild(li);
+    }
+    out.appendChild(ul);
+
+    const rows = advisorDecisionRows(take.plan, take.thinking);
+    if (rows.length) {
+      out.appendChild(advisorDecisionList(take.plan, take.thinking));
+    } else if (take.rationale) {
+      // A heuristic has no directive to unpack, but it does say why.
+      const why = document.createElement("div");
+      why.className = "cc-lab-why";
+      why.textContent = take.rationale;
+      out.appendChild(why);
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "cc-lab-bar";
+
+    if (!take.committed) {
+      const accept = document.createElement("button");
+      accept.type = "button";
+      accept.className = "cli-btn cc-lab-accept";
+      accept.textContent = "[ ACCEPT ]";
+      accept.addEventListener("click", () => labAccept(seat));
+      bar.appendChild(accept);
+
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "cli-btn";
+      drop.textContent = "[ discard ]";
+      drop.addEventListener("click", () => {
+        labTakes.delete(seat);
+        setLabPlan(seat, []);
+        if (labShownSeat === seat) showLabPlan(null);
+        out.hidden = true;
+        out.textContent = "";
+      });
+      bar.appendChild(drop);
+    }
+
+    const vs = document.createElement("button");
+    vs.type = "button";
+    vs.className = "cli-btn cc-lab-vs";
+    vs.textContent = "[ vs V12 ]";
+    vs.title =
+      "Open the divergence view — this take against stock V12's frozen "
+      + "answer to the same board, prompts included";
+    vs.addEventListener("click", () => labOpenDiff(seat, vs));
+    bar.appendChild(vs);
+
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "cli-btn";
+    card.textContent = "[ .TXT ]";
+    card.title = "Download the full reasoning and the untruncated prompts";
+    card.addEventListener("click", () => labDownloadCard(seat));
+    bar.appendChild(card);
+
+    // The agent card proper — the same artefact a season turn produces,
+    // rendered by the same code. A lab turn is a turn, so what you hand
+    // to a teammate or paste into a coding agent should not be a
+    // different document just because of where it was taken.
+    for (const [label, fmt, tip] of [
+      ["[ CARD ]", "html",
+        "Open this turn as an agent card — the same card a season turn "
+        + "produces, in a new tab"],
+      ["[ CARD .MD ]", "md",
+        "Download this turn as an agent card in Markdown, to paste into "
+        + "a coding agent"],
+    ]) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cli-btn";
+      b.textContent = label;
+      b.title = tip;
+      b.addEventListener("click", () => labAgentCard(seat, fmt, b));
+      bar.appendChild(b);
+    }
+
+    out.appendChild(bar);
+  }
+
+  /** Submit the plan exactly as shown. */
+  async function labAccept(seat) {
+    const take = labTakes.get(seat);
+    if (!take || take.committed) return;
+    const block = _labBlock(seat);
+    const accept = block?.querySelector(".cc-lab-accept");
+    if (accept) {
+      accept.disabled = true;
+      accept.textContent = "[ sending… ]";
+    }
+    try {
+      const res = await fetch("/api/lab/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId, seat, moves: take.moves }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.detail || res.statusText);
+      take.committed = true;
+      // Set before the pull, not after: the night plays out inside
+      // ``pullAllMaps``, and a seat that is already with the engine must
+      // not look invokeable for the length of that animation.
+      labResolved = labResolved || !!out.resolved;
+      renderLabTake(seat);
+      _labSyncSealed();
+      // The last outstanding seat resolves the night, exactly as a live
+      // game does — so hand off to the ordinary pull rather than
+      // special-casing it. It already knows how to hold the reveal back,
+      // wait for the frames and play the night out.
+      await pullAllMaps({
+        playFx: !!out.resolved, expectNightFrames: !!out.resolved,
+      });
+      // Nothing here clears the plans off the board. `out.resolved` is
+      // the commit route comparing the day either side of its own call,
+      // and the engine has not turned it yet at that instant — so it is
+      // false even on the accept that ends the night. The turn being
+      // spent is decided in one place, by the status poll, and the
+      // cleanup lives with it in `_labSyncTurnState`.
+    } catch (err) {
+      const meta = block?.querySelector(".cc-lab-meta");
+      if (meta) meta.textContent = String(err.message || err);
+    }
+  }
+
+  /** This seat's take against stock V12's frozen answer, in a new tab.
+   *
+   *  The baseline is fetched rather than computed: V12 is an LLM, so
+   *  asking it again would compare against a different answer each time
+   *  and the diff would never settle. See turnlab/baseline.py.
+   *
+   *  The page is opened first and written into, rather than handed a
+   *  URL with the data on it — the two takes together run to a couple of
+   *  hundred kilobytes of prompt, which no query string will carry.
+   */
+  async function labOpenDiff(seat, btn) {
+    const take = labTakes.get(seat);
+    if (!take) return;
+    const label = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "[ loading… ]"; }
+    try {
+      const res = await fetch(
+        `/api/lab/baseline?board=${encodeURIComponent(LAB_BOARD)}`
+        + `&seat=${encodeURIComponent(seat)}`,
+      );
+      const base = await res.json();
+      if (!res.ok) throw new Error(base.detail || res.statusText);
+
+      const tab = window.open("", "_blank");
+      if (!tab) throw new Error("the browser blocked the new tab");
+      const shell = await (await fetch("/lab/diff")).text();
+      tab.document.open();
+      tab.document.write(shell);
+      tab.document.close();
+      // Written after the shell so the script, which runs on load, finds
+      // its data already there.
+      tab.__LAB_DIFF__ = { mine: take, base, board: LAB_BOARD, seat };
+      const s = tab.document.createElement("script");
+      s.src = "/lab/diff.js";
+      tab.document.body.appendChild(s);
+    } catch (err) {
+      const meta = _labBlock(seat)?.querySelector(".cc-lab-meta");
+      if (meta) meta.textContent = `no baseline: ${err.message || err}`;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+  }
+
+  function _labSave(text, mime, filename) {
+    const url = URL.createObjectURL(new Blob([text], { type: mime }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
+  /** Every seat that has a take, oldest hour first. */
+  function _labProposed() {
+    return [...labTakes.entries()].filter(([, t]) => t && Array.isArray(t.moves));
+  }
+
+  function _labDocHead(takes) {
+    const day = takes.length ? takes[0][1].day : "";
+    return {
+      day,
+      line: `board ${LAB_BOARD}  ·  day ${day}  ·  session ${sessionId}`,
+      when: new Date().toISOString().replace("T", " ").slice(0, 19) + "Z",
+    };
+  }
+
+  function _labStatus(t) {
+    return `${(t.moves || []).length} order(s)  ·  `
+      + `${((Number(t.elapsed_ms) || 0) / 1000).toFixed(1)}s  ·  `
+      + (t.committed ? "accepted" : "proposed, not accepted")
+      + (t.plan?.fallback_used ? "  ·  FALLBACK (no live think)" : "");
+  }
+
+  /** The proposed plans as Markdown — the comparison sheet.
+   *
+   *  Deliberately not the same document as ``.TXT`` beside each seat.
+   *  That one is the whole exchange for one agent, prompts included, for
+   *  when you are debugging a harness. This is what the seats intend to
+   *  do, side by side, for when you are comparing them.
+   */
+  function labPlansMarkdown() {
+    const takes = _labProposed();
+    const h = _labDocHead(takes);
+    const out = [
+      "# Sea of Colours — Turn Lab", "", "## Proposed plans", "",
+      h.line, "", `generated ${h.when}`, "",
+    ];
+    for (const [seat, t] of takes) {
+      out.push("---", "", `### ${playerTag(seat)} — ${t.agent}`, "", _labStatus(t), "");
+      const lines = advisorMoveLines(t.moves);
+      if (lines.length) {
+        out.push("| hour | order |", "| :--- | :--- |");
+        for (const l of lines) out.push(`| ${l.hour} | ${l.text} |`);
+      } else {
+        out.push("_no orders_");
+      }
+      out.push("");
+      for (const [k, v] of advisorDecisionRows(t.plan, t.thinking)) {
+        out.push(`**${k}**`, "", String(v).trim(), "");
+      }
+      if (t.rationale) {
+        out.push("> " + String(t.rationale).trim().replace(/\n/g, "\n> "), "");
+      }
+      for (const c of t.plan?.sanitizer_changes || []) {
+        out.push(`- corrected by the sanitiser: ${c}`);
+      }
+      out.push("");
+    }
+    return out.join("\n");
+  }
+
+  /** The same document as a standalone page, styled like the game. */
+  function labPlansHTML() {
+    const takes = _labProposed();
+    const h = _labDocHead(takes);
+    const seats = takes
+      .map(([seat, t]) => {
+        const ink = playerColor(seat) || ownerColor(seat) || "#9fa6ad";
+        const orders = advisorMoveLines(t.moves)
+          .map(
+            (l) =>
+              `<tr><td class="h">${esc(l.hour)}</td><td>${esc(l.text)}</td></tr>`,
+          )
+          .join("")
+          || '<tr><td colspan="2" class="dim">no orders</td></tr>';
+        const rows = advisorDecisionRows(t.plan, t.thinking)
+          .map(
+            ([k, v]) =>
+              `<dt>${esc(k)}</dt><dd>${esc(String(v).trim())}</dd>`,
+          )
+          .join("");
+        const fixes = (t.plan?.sanitizer_changes || [])
+          .map((c) => `<li>${esc(c)}</li>`)
+          .join("");
+        return `
+  <section class="seat" style="--ink:${esc(ink)}">
+    <h2><span class="tag">[ ${esc(playerTag(seat))} ]</span> ${esc(t.agent)}</h2>
+    <p class="status">${esc(_labStatus(t))}</p>
+    <table>${orders}</table>
+    ${rows ? `<dl>${rows}</dl>` : ""}
+    ${t.rationale ? `<blockquote>${esc(String(t.rationale).trim())}</blockquote>` : ""}
+    ${fixes ? `<p class="dim">corrected by the sanitiser:</p><ul>${fixes}</ul>` : ""}
+  </section>`;
+      })
+      .join("");
+
+    return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<title>Turn Lab — proposed plans</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 38px 22px 60px; background: #07090b; color: #dfe4e8;
+    font: 14px/1.6 ui-monospace, "JetBrains Mono", Consolas, monospace;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 17px; letter-spacing: .12em; margin: 0 0 3px; font-weight: 600; }
+  .head { opacity: .55; font-size: 12px; margin-bottom: 30px; }
+  .seat {
+    border-left: 3px solid var(--ink); padding: 2px 0 2px 15px; margin: 0 0 34px;
+  }
+  h2 { font-size: 14.5px; margin: 0 0 3px; font-weight: 600; }
+  .tag { color: var(--ink); }
+  .status { opacity: .55; font-size: 12px; margin: 0 0 14px; }
+  table { border-collapse: collapse; margin: 0 0 16px; width: 100%; }
+  td { padding: 3px 10px 3px 0; vertical-align: top; border-bottom: 1px solid rgba(255,255,255,.06); }
+  td.h { color: var(--ink); width: 34px; white-space: nowrap; opacity: .8; }
+  dl { display: grid; grid-template-columns: 84px 1fr; gap: 5px 14px; margin: 0 0 16px; font-size: 13px; }
+  dt { opacity: .45; }
+  dd { margin: 0; white-space: pre-wrap; }
+  blockquote {
+    margin: 0 0 14px; padding-left: 13px; border-left: 2px solid rgba(255,255,255,.16);
+    opacity: .85; white-space: pre-wrap;
+  }
+  ul { margin: 0 0 14px; padding-left: 18px; }
+  .dim { opacity: .45; font-size: 12px; }
+  @media print { body { background: #fff; color: #000; } }
+</style></head>
+<body><div class="wrap">
+  <h1>SEA OF COLOURS — TURN LAB</h1>
+  <div class="head">proposed plans<br />${esc(h.line)}<br />generated ${esc(h.when)}</div>
+  ${seats}
+</div></body></html>`;
+  }
+
+  function labExportPlans(fmt) {
+    if (!_labProposed().length) return;
+    if (fmt === "md") {
+      _labSave(
+        labPlansMarkdown(), "text/markdown",
+        `turnlab-plans-${LAB_BOARD || "board"}.md`,
+      );
+      return;
+    }
+    const url = URL.createObjectURL(
+      new Blob([labPlansHTML()], { type: "text/html" }),
+    );
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
+  /** This take as a proper agent card, rendered server-side.
+   *
+   *  The take is posted back up rather than fetched by id because a
+   *  proposed plan is never stored — it is offered, and most are thrown
+   *  away. The server owns the format so a lab card and a season card
+   *  cannot drift into being two different documents.
+   */
+  async function labAgentCard(seat, fmt, btn) {
+    const take = labTakes.get(seat);
+    if (!take) return;
+    const was = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "[ … ]"; }
+    try {
+      const r = await fetch("/api/lab/card", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          take, format: fmt, board: LAB_BOARD, session: sessionId,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+      if (fmt === "md") {
+        _labSave(j.body, "text/markdown", j.filename);
+      } else {
+        const url = URL.createObjectURL(
+          new Blob([j.body], { type: "text/html" }),
+        );
+        window.open(url, "_blank", "noopener");
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+    } catch (e) {
+      if (btn) { btn.textContent = "[ failed ]"; btn.title = String(e); }
+      setTimeout(() => { if (btn) btn.textContent = was; }, 2500);
+      return;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+    if (btn) btn.textContent = was;
+  }
+
+  /** The whole exchange as text — what the agent saw, then said. */
+  function labDownloadCard(seat) {
+    const take = labTakes.get(seat);
+    if (!take) return;
+    const plan = take.plan || {};
+    const think = take.thinking || {};
+    const prompts = take.prompts || {};
+    const rule = "=".repeat(72);
+    const out = [rule, "SEA OF COLOURS — TURN LAB CARD"];
+    out.push(`agent ${take.agent}   seat ${take.seat}   day ${take.day}`);
+    out.push(`board ${LAB_BOARD}   session ${sessionId}`);
+    out.push(`answered in ${((Number(take.elapsed_ms) || 0) / 1000).toFixed(1)}s`
+      + (plan.fallback_used ? "   FALLBACK (no live think)" : "")
+      + (take.committed ? "   ACCEPTED" : "   NOT ACCEPTED"));
+    out.push(`generated ${new Date().toISOString()}`, rule);
+
+    out.push("", "## ORDERS", "");
+    const lines = advisorMoveLines(take.moves);
+    if (!lines.length) out.push("  (none)");
+    for (const l of lines) out.push(`  ${l.hour.padEnd(4)} ${l.text}`);
+
+    const rows = advisorDecisionRows(plan, think);
+    if (rows.length) {
+      out.push("", "## DECISION", "");
+      for (const [k, v] of rows) out.push(`  ${String(k).padEnd(11)}${v}`);
+    }
+    if ((plan.sanitizer_changes || []).length) {
+      out.push("", "  corrected by the sanitiser:");
+      for (const c of plan.sanitizer_changes) out.push(`    - ${c}`);
+    }
+    if (take.rationale) {
+      out.push("", rule, "## RATIONALE", rule, "", take.rationale.trim());
+    }
+    if (think.reasoning) {
+      out.push("", rule, "## REASONING (think pass, verbatim)", rule, "");
+      out.push(String(think.reasoning).trim());
+    }
+    if (think.option_menu) {
+      out.push("", rule, "## OPTION MENU (what was on the table)", rule, "");
+      out.push(String(think.option_menu).trim());
+    }
+    for (const [label, key] of [
+      ["THINK", "think"], ["PLAN", "plan"], ["MOVER", "mover"],
+    ]) {
+      const text = String(prompts[key] || "").trim();
+      if (!text) continue;
+      out.push("", rule, `## ${label} PROMPT (untruncated, as sent)`, rule, "");
+      out.push(text);
+    }
+
+    const text = out.join("\n");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const name = `lab_${take.agent}_${take.seat}_d${take.day}_${stamp}.txt`;
+    const url = URL.createObjectURL(
+      new Blob([text], { type: "text/plain;charset=utf-8" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoke on a later tick — Safari cancels the download if the URL
+    // dies in the same frame as the click.
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
   /** Sync the active class on whatever agent seat buttons currently
@@ -14082,6 +15677,43 @@
    *  DESTROYED — which is precisely how a crushed/expired probe or a
    *  dawn-stranded harvester leaves the live HUD. Captions are no
    *  longer parsed; this fixes destroyed probes never leaving orbit. */
+  /** v1.35 — blue-worth of the ordnance ``seat`` has LAUNCHED so far in
+   *  the night the cursor is sitting in.
+   *
+   *  The station's arsenal bar is anchored on the post-orbital snapshot,
+   *  which is authoritative and survives every store; the only thing
+   *  that can move it before the next dawn is a launch. So the bar reads
+   *  ``post − fired`` and this is the ``fired`` half — counted off the
+   *  launch FRAMES rather than ``frame.weapons`` for the same reason
+   *  ``derivedUsed`` below is: the weapons snapshot does not survive the
+   *  Snowflake round-trip, and the launch frames always do.
+   *
+   *  Returns 0 when the prices have not been published yet, which parks
+   *  the bar on its post-orbital reading rather than guessing at a
+   *  price list and moving it to the wrong place.
+   */
+  function armsFiredAtTick(tickIdx, seat) {
+    const costs = window.__SOC_WEAPON_BLUE_COSTS__;
+    if (!costs || !replayTicks.length) return 0;
+    const i = Math.max(0, Math.min(tickIdx, replayTicks.length - 1));
+    const cap = replayTicks[i]?.lastFrameIdx ?? -1;
+    if (cap < 0) return 0;
+    let fired = 0;
+    let prevDay = null;
+    for (let f = 0; f <= cap; f += 1) {
+      const frame = nightReplayFrames[f];
+      if (!frame) continue;
+      const fday = frame.day != null ? Number(frame.day) : prevDay;
+      // Each night starts from whatever the orbit left in the rack.
+      if (fday !== prevDay) { fired = 0; prevDay = fday; }
+      if (frame.owner !== seat) continue;
+      if (frame.tag === "emp_launch") fired += Number(costs.emp) || 0;
+      else if (frame.tag === "chaff_flare") fired += Number(costs.chaff) || 0;
+      else if (frame.tag === "snap_launch") fired += Number(costs.snap) || 0;
+    }
+    return fired;
+  }
+
   function reconstructVaultAtTick(tickIdx, seat) {
     if (!replayTicks.length) return _emptyInventory();
     const i = Math.max(0, Math.min(tickIdx, replayTicks.length - 1));
@@ -14102,7 +15734,7 @@
     // seasons minted before it existed), but the launch frames
     // themselves (tag + owner) always persist. One launch frame drains
     // exactly one weapon, so the count equals ``weapons_used``.
-    const derivedUsed = { emp: 0, mine: 0, chaff: 0 };
+    const derivedUsed = { emp: 0, mine: 0, chaff: 0, snap: 0 };
     const everSeen = new Map();   // id -> { type, owner }
     const gone = new Map();       // id -> { day, by }
     let prevPresent = new Set();
@@ -14123,6 +15755,7 @@
         if (frame.tag === "emp_launch") derivedUsed.emp += 1;
         else if (frame.tag === "mine_lay") derivedUsed.mine += 1;
         else if (frame.tag === "chaff_flare") derivedUsed.chaff += 1;
+        else if (frame.tag === "snap_launch") derivedUsed.snap += 1;
       }
       if (!Array.isArray(frame.entities)) continue;
       const fday = frame.day != null ? Number(frame.day) : prevDay;
@@ -14265,7 +15898,8 @@
     const snapUsed = (wSnap && wSnap.used) || null;
     const snapHasUsed =
       snapUsed &&
-      ((snapUsed.emp || 0) + (snapUsed.mine || 0) + (snapUsed.chaff || 0)) > 0;
+      ((snapUsed.emp || 0) + (snapUsed.mine || 0) + (snapUsed.chaff || 0)
+        + (snapUsed.snap || 0)) > 0;
     const weaponsUsed = snapHasUsed ? snapUsed : derivedUsed;
 
     // Per-tick credits: the snapshot (file store) wins; on Snowflake the
@@ -14791,14 +16425,20 @@
       if (animate) runHorizonSweep(mapPlayer, "sunset", null, null);
       else setMapDaylight("night");
       if (animate && titleCardsEnabled) {
+        // v1.42 — the lab borrows this beat for the morning after its one
+        // night, which is a settlement with no night frames of its own —
+        // the same shape, and nothing like the end of a season. Saying
+        // "SEASON RESOLVES" over a day-3 turn would be a plain lie.
         const seasonLabel = _currentSeasonLabel();
         void showMapTitleCard(
-          "SEASON RESOLVES",
-          seasonLabel ? `— ${seasonLabel} —` : "",
+          tick.labMorning ? `VESPERA · DAY ${day}` : "SEASON RESOLVES",
+          tick.labMorning
+            ? "— the orbit has settled —"
+            : (seasonLabel ? `— ${seasonLabel} —` : ""),
           { holdMs: 1600 },
         );
       }
-      setClock(day, "RESOLVE");
+      setClock(day, tick.labMorning ? "VESPERA" : "RESOLVE");
       try { paintRedsignOverlay(); } catch (_e) { /* non-fatal */ }
       syncReplayScrubUi();
       lastPaintedReplayTickIdx = replayTickIdx;
@@ -14899,6 +16539,9 @@
         if (f && Array.isArray(f.emp) && f.emp.length) {
           playEmpFx(f, i > 0 ? nightReplayFrames[i - 1] : null);
         }
+        if (f && Array.isArray(f.snap) && f.snap.length) {
+          playSnapFx(f, i > 0 ? nightReplayFrames[i - 1] : null);
+        }
         if (f && Array.isArray(f.mine) && f.mine.length) {
           playMineFx(f);
         }
@@ -14916,6 +16559,10 @@
     // disk-of-cells overlay for any clouds still alive.
     const lastFrame = nightReplayFrames[tick.lastFrameIdx];
     paintEmpCloudOverlay(lastFrame);
+    // v1.36 — the SNAP scorch mark repaints on the same beat, so a
+    // scrub onto the hour a SNAP landed shows it and a scrub past it
+    // does not. One hour of life means this is usually a no-op.
+    paintSnapCloudOverlay(lastFrame);
     // v0.9.4 — mines are also persistent. Stamp the static
     // pixel-field marker on every cell currently in
     // ``mines_active``; the per-tick re-paint mirrors the EMP
@@ -15004,7 +16651,17 @@
       const res = await fetch(`/api/game/${sessionId}/replay`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json();
-      const incoming = Array.isArray(payload.frames) ? payload.frames : [];
+      // v1.42 — a frozen turn is ONE night, and the scrubber must not
+      // offer any other. The clone inherits the previous night's frames
+      // on purpose (they are what "YOU ORDERED" and the execution log
+      // are built from, so the agent can see what it just did), but the
+      // transport row read them as another day to visit and let you
+      // rewind out of the turn you came to study. The frames stay; only
+      // the timeline is cut, and it is cut here so the ticks, the day
+      // buttons, the scrub bar and their disabled states all agree.
+      const incoming = _labOnlyFrozenNight(
+        Array.isArray(payload.frames) ? payload.frames : [],
+      );
       const prevLastDay =
         nightReplayFrames.length > 0
           ? Number(nightReplayFrames[nightReplayFrames.length - 1]?.day || 0)
@@ -15018,9 +16675,9 @@
       // Fresh replay data → re-arm the per-night dawn-wipe dedupe.
       _sweptReplayNights = new Set();
       _prevPaintedReplayDay = null;
-      replayDayIndex = Array.isArray(payload.day_index)
-        ? payload.day_index
-        : [];
+      replayDayIndex = _labOnlyFrozenNight(
+        Array.isArray(payload.day_index) ? payload.day_index : [],
+      );
       // v0.9.10 — stash the seat list from the replay response so
       // the replay-view buttons show all active seats (p3/p4 too).
       if (Array.isArray(payload.players) && payload.players.length) {
@@ -15094,8 +16751,20 @@
       // cursor). DUSK uses ``idx-1`` to show the PRE-orbital vault (end of the
       // previous night) so the orbital depletion can animate down to post[N].
       window._socReconstructVaultAt = (tickIdx, seat) => reconstructVaultAtTick(tickIdx, seat);
+      // v1.35 — read-only, for the browser probes. "Is the board still
+      // showing the player something?" is the condition the tutorial
+      // modal defers on, and a probe cannot infer it from the DOM.
+      window._socBoardMidAnimation = () => _boardMidAnimation();
+      // v1.35 — lets the arsenal bar fall on the hour a weapon flies
+      // rather than at the next dawn.
+      window._osArmsFiredAtTick = (tickIdx, seat) => armsFiredAtTick(tickIdx, seat);
       window._osOpenReport           = (kind, day) => openReport(kind, day);
       window._osRenderStationObs     = (day, phase, lbl, seat) => renderStationObsPanel(day, phase, lbl, seat);
+      // Newest day we hold "end of Nox" readings for. The station hover
+      // cards need this in live play: their own day counter is parked on
+      // the replay's first tick until a night runs, so a page opened
+      // mid-season would otherwise caption day 1 as the latest news.
+      window._osLatestObsDay         = () => contextDayForReport("recap");
       window._osRenderOrbitalObs     = (day, seat) => renderOrbitalObservations(day, seat);
       window._osRenderCatGrid        = (slots) => _orbitFlashRenderCatGrid(slots);
       window._osRenderCatLegend      = (slots, seats) => _orbitFlashRenderLegend(slots, seats);
@@ -15251,13 +16920,20 @@
           // DAWN of the night that just ended → bind to its last frame.
           pushSlot("dawn", lastDayBeforePush, i - 1, { dawnFrameIdx: i - 1 });
         }
-        if (currentDay > 0) {
+        if (currentDay > 0 && !LAB_MODE) {
           // DUSK opening the new night → bind to (and OWN) its hour-0 frame.
           // The ORBIT phase already resolved before this frame exists (ships
           // launched, blue burned, post[N] stamped), so hour 0 IS the
           // pre-praxis DUSK beat: post-orbital board + briefing. We no longer
           // emit a separate hour-0 "praxis begins" tick — see the open-skip
           // branch below.
+          //
+          // v1.42 — not in the lab. DUSK(N) is the settlement of the orbit
+          // that led INTO this night, and the lab is testing the night: it
+          // opened every frozen turn on a review of somebody else's
+          // shopping. Dropping the slot lets the hour-0 frame take an
+          // ordinary tick (see the open branch), so playback starts where
+          // the turn does — at PRAXIS BEGINS.
           pushSlot("dusk", currentDay, i, { duskFrameIdx: i });
         }
       }
@@ -15294,11 +16970,14 @@
           lastFrameIdx: j - 1,
         });
         i = j;
-      } else if (f && f.tag === "open") {
+      } else if (f && f.tag === "open" && !LAB_MODE) {
         // v1.3 — the hour-0 ``open`` frame gets NO standalone scrubber
         // position; the DUSK slot inserted at the day boundary owns it (it's
         // the pre-praxis orbital-resolve beat). This "combines" the redundant
         // synthetic-DUSK + hour-0 pair into one beat.
+        //
+        // v1.42 — in the lab there is no DUSK slot to own it, so the frame
+        // keeps its own position and becomes the opening board of the night.
         i += 1;
       } else if (f && f.tag === "dawn") {
         // v1.2 — the hour-22 ``dawn`` frame gets NO standalone scrubber
@@ -15334,6 +17013,25 @@
       const finalBlob = catapultByDay[String(finalDay)];
       if (finalBlob && orbitBlobHasActivity(finalBlob)) {
         pushSlot("resolve", finalDay, frames.length - 1, { resolveDay: finalDay });
+      }
+    }
+    // v1.42 — the lab's closing beat: the morning after.
+    //
+    // A frozen turn now runs on through its orbit so the RED in the vault
+    // becomes score and the GREEN becomes a penalty, and that settlement
+    // had nowhere to live on the timeline — the last position was the
+    // night's DAWN, so the numbers appeared on the board with no tick to
+    // scrub back to. It reuses the endgame's ``resolve`` slot, which is
+    // exactly this shape already: a settlement with no night frames of
+    // its own, bound to the last frame so it paints over the resolved
+    // board.
+    if (LAB_MODE && LAB_DAY && frames.length > 0) {
+      const morning = LAB_DAY + 1;
+      const blob = catapultByDay[String(morning)];
+      if (blob && orbitBlobHasActivity(blob)) {
+        pushSlot("resolve", morning, frames.length - 1, {
+          resolveDay: morning, labMorning: true,
+        });
       }
     }
   }
@@ -16914,10 +18612,33 @@
       const reading = obs[seat];
       if (!reading) continue;
       const exact = exactSeats.has(seat);
-      cards.appendChild(buildStationObsCard(seat, reading, exact));
+      cards.appendChild(
+        buildStationObsCard(seat, _withLiveArms(seat, reading), exact));
     }
     panel.appendChild(cards);
     return panel;
+  }
+
+  /** v1.35 — the arsenal is the one row on this card that is not a
+   *  historical reading, and it was being drawn as if it were.
+   *
+   *  The hover card asks for the ``pre`` snapshot — honestly "end of
+   *  Nox" for every other row, because a fuzzed vault and a blue grade
+   *  are last night's by nature. The arsenal is not: it is public and
+   *  current by rule (§4.9.8), and the station bar an inch to the left
+   *  already draws it live. A card reading `0/600b` beside a bar
+   *  showing two lit cyan pips is not two timeframes to a player, it
+   *  just reads as broken — which is exactly how it was reported.
+   *
+   *  Live only. A replay frame or an orbital report is a record of a
+   *  moment, and splicing today's rack into one would be a lie about
+   *  the past. */
+  function _withLiveArms(seat, reading) {
+    if (mainMapSource !== "live") return reading;
+    if (!_weaponsOn()) return reading;
+    const live = window.__SOC_ARMS__?.[seat];
+    if (!live || live.blue == null) return reading;
+    return { ...reading, arms: live };
   }
 
   function buildStationObsCard(seat, reading, exact) {
@@ -16991,20 +18712,27 @@
     return 4;
   }
 
-  /** Turn a station-obs reading dict into three meter rows: hold
-   *  (material in vault), fissile (blue purity), and green squares
-   *  (count). The toxic-green PURITY row is intentionally dropped —
-   *  every green square is canonically 255 purity, so its purity grade
-   *  carries no signal; only the square COUNT matters. ``exact`` appends
-   *  the raw numbers the engine only reveals to self. */
+  /** Turn a station-obs reading dict into meter rows: hold (material in
+   *  vault), fissile (blue purity), green squares (count), and — since
+   *  v1.34 — the arsenal. The toxic-green PURITY row is intentionally
+   *  dropped: every green square is canonically 255 purity, so its
+   *  purity grade carries no signal; only the square COUNT matters.
+   *  ``exact`` appends the raw numbers the engine only reveals to self.
+   *
+   *  The arsenal row does NOT consult ``exact``, and that is the whole
+   *  point of it (RULEBOOK §4.9.8). Every other row here is a silhouette
+   *  for a rival and a number for you; ordnance is a number for
+   *  everybody. It is omitted entirely when the reading carries no
+   *  ``arms`` block, which is how a weapons-off game arrives. */
   function formatStationObsRows(reading, exact) {
     const f = reading.fullness || {};
     const b = reading.blue || {};
     const g = reading.green || {};
+    const arms = reading.arms;
     const fGrade = f.grade ?? "\u2014";
     const bGrade = b.grade ?? "\u2014";
     const gEst = g.estimate ?? "\u2014";
-    return [
+    const rows = [
       {
         key: "hold",
         glyph: "\u25A6",            // ▦ — the vault hold
@@ -17038,6 +18766,26 @@
           : `~ ${gEst}`,
       },
     ];
+    if (arms && arms.blue != null) {
+      const cap = Number(arms.cap) || _weaponBlueCap();
+      const held = Math.max(0, Number(arms.blue) || 0);
+      const segments = 6;
+      rows.push({
+        key: "arsenal",
+        glyph: "\u25B2",            // ▲ — ordnance, not cargo
+        color: "#39d3d3",
+        segments,
+        // The bar is the silhouette and the value is the precision, the
+        // same division of labour as the rows above. Rounding up means a
+        // seat holding anything at all lights at least one segment —
+        // "some" and "none" is the read that matters at a glance.
+        level: held > 0
+          ? Math.max(1, Math.ceil((held / cap) * segments))
+          : 0,
+        val: `${held}/${cap}b`,
+      });
+    }
+    return rows;
   }
 
   /** Per-player orbit action log for ``day`` — money spent, builds,
@@ -18277,6 +20025,14 @@
       // (cursor day instead of live day) without re-fetching.
       lastLogTail = Array.isArray(st.log_tail) ? st.log_tail : [];
       lastLiveDay = Number(st.day) || null;
+      // A reloaded lab page has no memory of the plans it accepted, but
+      // the calendar does: past the board's own day means the night has
+      // already been played, so come back locked rather than offering a
+      // second turn on a board that has had one.
+      if (LAB_MODE && LAB_DAY && lastLiveDay > LAB_DAY && !labResolved) {
+        labResolved = true;
+        _labSyncTurnState();
+      }
       const focusDay = mainMapSource === "replay" && replayTicks.length
         ? currentVisibleDay()
         : lastLiveDay;
@@ -18434,6 +20190,53 @@
     }
   }
 
+  /** The seat whose percept the live board should be showing.
+   *
+   *  v1.42 — outside the lab this is always you, because a live season
+   *  must never hand a player a rival's fog. On a frozen turn both seats
+   *  are yours to drive, so the transport row's seat buttons steer the
+   *  live board exactly as they steer a replay.
+   */
+  function _liveViewSeat() {
+    if (!LAB_MODE) return MY_SEAT;
+    if (!replayViewSeat || replayViewSeat === "obs") return MY_SEAT;
+    return replayViewSeat;
+  }
+
+  /** Fetch the live percept for whichever seat the camera is on.
+   *
+   *  v1.42 — OBS has no endpoint of its own in this shape: ``/observer``
+   *  returns the GRAPHICS drawer's mosaic, not a ``/view`` payload. So
+   *  OBS is assembled the same way the replay path assembles it — every
+   *  seat's percept, folded cell-by-cell with the existing merger — and
+   *  laid over the viewing seat's payload so the vault, hoard and orbit
+   *  blocks still belong to one seat rather than an incoherent blend.
+   */
+  async function _fetchLiveView() {
+    const get = async (seat) => {
+      const res = await fetch(
+        `/api/game/${sessionId}/view?player=${encodeURIComponent(seat)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    };
+
+    const base = await get(_liveViewSeat());
+    if (!LAB_MODE || replayViewSeat !== "obs") return base;
+
+    const seats = _activeSeatsForView();
+    if (seats.length < 2) return base;
+    const others = await Promise.all(
+      seats.filter((s) => s !== _liveViewSeat()).map(
+        (s) => get(s).catch(() => null),
+      ),
+    );
+    const grids = [base.cells, ...others.map((o) => o && o.cells)];
+    const merged = mergeAllPlayerCells(grids, (base.cells || []).length);
+    return merged.length ? { ...base, cells: merged } : base;
+  }
+
   async function refreshSoloPlayerMap() {
     const unitsEl = document.getElementById("units-player");
     const inventEl = document.getElementById("inventory-player");
@@ -18448,11 +20251,7 @@
       return;
     }
     try {
-      const res = await fetch(`/api/game/${sessionId}/view?player=${MY_SEAT}`, {
-        cache: "no-store",
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const j = await res.json();
+      const j = await _fetchLiveView();
       // v0.9.6 — stash the seat list + agent map + visibility mode
       // from the /view response on a window-scoped global so
       // ``activeSeats()`` and friends can drive N-seat rendering
@@ -18518,7 +20317,23 @@
       if (rulesBlock && typeof rulesBlock === "object") {
         window.__SOC_WEAPONS_ON__ = rulesBlock.weapons_enabled !== false;
         window.__SOC_SIGNS_ON__ = rulesBlock.signs_enabled !== false;
+        // v1.34 — mirrored, never hard-coded (RULEBOOK §4.9.8).
+        window.__SOC_WEAPON_BLUE_CAP__ = Number(
+          rulesBlock.weapon_blue_cap ?? 600,
+        );
+        // v1.35 — and the prices behind it, which the station bars need
+        // to price a rack between hours of a night.
+        if (rulesBlock.weapon_blue_costs
+            && typeof rulesBlock.weapon_blue_costs === "object") {
+          window.__SOC_WEAPON_BLUE_COSTS__ = rulesBlock.weapon_blue_costs;
+        }
       }
+      // v1.34 — the live arsenal, for the station bars. station.js reads
+      // its readings out of the per-day snapshots, which is right for a
+      // replay and wrong the moment the state was not produced by one:
+      // a turn-lab board is a frozen season whose snapshots predate the
+      // rack the lab stamped on it. This is the fallback that covers it.
+      _publishLiveArms(j?.agent_view?.station_intel);
       window.__SOC_TUTORIAL__ = String(j?.agent_view?.meta?.tutorial || "");
       _syncTutorialState(j?.agent_view?.meta);
       // v0.9.x — live EMP salvo size for the targeting picker.
@@ -18534,6 +20349,15 @@
       // the night will not deliver.
       if (empSpec && Number.isFinite(Number(empSpec.radius))) {
         window.__SOC_EMP_RADIUS__ = Number(empSpec.radius);
+      }
+      // v1.36 — SNAP publishes how much faster its missile flies, for
+      // the same reason: the speed IS the tell that it lands first, and
+      // a second copy of the number in JS would drift off a retune.
+      const snapSpec =
+        j?.agent_view?.orbit?.weapon_specs?.snap
+        ?? j?.orbit?.weapon_specs?.snap;
+      if (snapSpec && Number.isFinite(Number(snapSpec.missile_speed))) {
+        window.__SOC_SNAP_SPEED__ = Number(snapSpec.missile_speed);
       }
       // v0.9.x — stash the static blue-sign overlay (orbit-wide,
       // fog-independent radiative signatures) for the map painter.
@@ -18656,7 +20480,7 @@
       const _blob = window._socOrbitalData?.catapultByDay?.[String(_day)];
       if (!_blob || !orbitBlobHasActivity(_blob)) return;
       if (typeof window.osOnLiveDusk !== "function") return;
-      window.osOnLiveDusk(_day);
+      _holdBoardFor(window.osOnLiveDusk(_day));
       setClock(_day, "VESPERA");
     } catch (_e) { /* non-fatal cosmetic drive */ }
   }
@@ -19920,7 +21744,11 @@
   function applySeatIdentity() {
     agentSeat = MY_SEAT;
     vaultSeat = MY_SEAT;
-    if (mainMapSource !== "replay") replayViewSeat = MY_SEAT;
+    // v1.42 — the lab drives the live board from this seat too, so
+    // snapping it back to MY_SEAT here undid every camera switch made
+    // before the night resolved. Live play still needs the reset: there
+    // the viewer may only ever be themselves.
+    if (mainMapSource !== "replay" && !LAB_MODE) replayViewSeat = MY_SEAT;
     updateSeatIdentityBadge();
   }
 
@@ -21596,7 +23424,11 @@
     // composer can take input (a finished MP game or replay is
     // view-only), and snap off either command tab.
     const locked = WATCH_MODE || livePhase === "season_complete";
-    const isOrbit = !locked && livePhase === "orbit";
+    // The lab is one night and buys nothing for the next one, so ORBIT
+    // never opens here — without this the phase flip after the night
+    // resolves would snap the panel onto a builder for a tomorrow the
+    // board does not have.
+    const isOrbit = !locked && livePhase === "orbit" && !LAB_MODE;
     // v1.26 — AN ARMED AIM DOES NOT SURVIVE LOSING ITS COMPOSER.
     //
     // `enterAssetSelect` / `enterPickMode` raise the pick banner and put
@@ -21642,8 +23474,17 @@
     }
   }
 
+  /** Tabs the lab has no use for, and ORDERS is the one that matters:
+   *  no human turn is taken here, so the composer must be unreachable —
+   *  not by click, not by the ``[1]``..``[8]`` captions, not by a phase
+   *  snap. Hiding the button alone left all three ways in (v1.42). */
+  const LAB_SHUT_TABS = new Set(["orbit", "intel", "orders"]);
+
   /** @param {string} tabId */
   function activateCcTab(tabId) {
+    // Redirected rather than refused: something has to be on screen, and
+    // the AGENT pane is where a frozen turn is actually played.
+    if (LAB_MODE && LAB_SHUT_TABS.has(tabId)) tabId = "log";
     ccTabs.forEach((btn) => {
       const on = btn.getAttribute("data-cc-tab") === tabId;
       btn.classList.toggle("cc-tab--active", on);
@@ -21897,6 +23738,11 @@
   }
 
   function renderReplayViewButtons() {
+    // v1.42 — every site that stashes the canonical seat list calls this,
+    // which makes it the one place that reliably hears "the roster is
+    // now known". The lab's invoke rows need the same news, and hanging
+    // them here beats repeating the call at all three stash sites.
+    if (LAB_MODE) { try { renderLabInvoke(); } catch (_e) {} }
     if (!replayViewRowEl) return;
     if (!replayViewObsBtn) return;
     if (replayViewSeat === "both") replayViewSeat = "obs";
@@ -21954,6 +23800,7 @@
         replayViewSeat = seat;
         syncReplayViewBtns();
         if (mainMapSource === "replay") paintReplayFrameOntoMain("jump");
+        else if (LAB_MODE) refreshSoloPlayerMap();
         if (typeof osOnViewerChange === "function") osOnViewerChange(replayViewSeat);
       });
       replayViewRowEl.insertBefore(btn, replayViewObsBtn);
@@ -21983,6 +23830,7 @@
     replayViewSeat = "obs";
     syncReplayViewBtns();
     if (mainMapSource === "replay") paintReplayFrameOntoMain("jump");
+    else if (LAB_MODE) refreshSoloPlayerMap();
     if (typeof osOnViewerChange === "function") osOnViewerChange("obs");
   });
 
@@ -21996,6 +23844,17 @@
   // ``newGame`` directly (eval harness, console).
   newGameBtn.addEventListener("click", openNewGameModal);
   bindNewGameModal();
+
+  // v1.42 — build the lab's invoke rows at boot. They also get built
+  // from renderAgentSeatTabs(), but that only runs via
+  // updateSeatTabVisibility(), which live play has no reason to call —
+  // so relying on it alone left the control missing exactly where it is
+  // wanted. Building here is the belt; the tab path is the braces.
+  if (LAB_MODE) renderLabInvoke();
+  // ORDERS is the markup's default active tab, and in the lab it is not
+  // there — leaving it selected opened the page on a composer that has
+  // no tab to go back to. The AGENT pane is the lab's home screen.
+  if (LAB_MODE) activateCcTab("log");
 
   soloExpert?.addEventListener("change", () => syncExpertPanel());
 

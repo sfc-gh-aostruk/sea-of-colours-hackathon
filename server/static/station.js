@@ -110,6 +110,7 @@
     // the archive. Same for OS_EVENT_GLYPH below and `mine_emit`.
     mine_lay:    "mine laid",
     emp_launch:  "EMP launched",
+    snap_launch: "SNAP fired",
     chaff_flare: "chaff flare",
     abandoned:   "abandoned",
     damaged:     "damaged",
@@ -117,7 +118,7 @@
 
   const OS_EVENT_GLYPH = {
     probe: "·", drop: "▼", drop_bounce: "▼", pickup: "▲",
-    mine_lay: "◆", emp_launch: "◯", chaff_flare: "✶",
+    mine_lay: "◆", emp_launch: "◯", snap_launch: "✚", chaff_flare: "✶",
     abandoned: "✖", damaged: "⚠",
   };
 
@@ -133,6 +134,17 @@
   // Blue (fissile) burn.
   const OS_BLUE_BURN_COLOR = "#4aa3ff";
   const _OS_BLUE_LVL = { none: 0, low: 1, medium: 2, high: 3 };
+
+  // v1.34 — the arsenal (RULEBOOK §4.9.8). Blue that has become ordnance
+  // stops being blue and starts being cyan: same pips, same glyph, a
+  // colour that says "this is pointed at somebody now".
+  const OS_ARMS_COLOR   = "#39d3d3";
+  const OS_ARMS_SEGMENTS = 6;          // 600 cap at 100 blue a segment
+  const OS_ARMS_PER_PIP  = 100;
+  const OS_ARMS_CAP_FALLBACK = 600;
+  const OS_ARMS_FADE_MS  = 420;        // pip fade up / down (v1.35)
+  const OS_ARMS_LIFT_MS  = 460;        // held ◆ turning cyan before it flies
+  const OS_ARMS_FLY_MS   = 620;        // ...and the flight into the bar
 
   // Replay dwell timing (ms). DUSK holds long enough for the load animation to
   // read; PRAXIS holds for the launch + count-up. Consumed by app.js via
@@ -163,11 +175,32 @@
   let _lastTickIdx   = -1;    // replay tick index of the last tick (forward detect)
   let _vaultCells    = {};    // seat → current {type,density}[] shown in the vault
   let _blueHeld      = {};    // seat → { count, burn, exact } staged blue burn
+  // v1.35 — blue-worth of ordnance each seat has LAUNCHED so far in the
+  // night under the cursor, and the pip count each arsenal bar was last
+  // painted at. The first lets the bar fall at the hour the weapon
+  // flies instead of at the next dawn; the second is what tells a
+  // repaint which pips are new, so they can fade rather than blink.
+  let _armsFired     = {};    // seat → blue fired so far tonight
+  let _armsLit       = {};    // seat → whole pips lit at last paint
+  // The rack the dusk arming beat has just filled, held until the
+  // post-orbital snapshot catches up. The fill lands DURING the dusk
+  // dwell, while _stationObs is still parked on the pre-orbital reading
+  // so the vault can drain into it; without this the bar would light and
+  // then drop straight back to yesterday's rack.
+  let _armsPinned    = {};    // seat → arms reading the beat is asserting
   let _liveProfiles  = null;  // live player_profiles fallback (turn-1, no replay yet)
   let _praxisPending = null;  // day whose staged launch resolves on the next
                              // forward night frame (dusk staged → praxis fires)
   let _liveMode      = false; // true when showing the LIVE board (prefer live
-                             // inventory over replay reconstruction for vaults)
+                              // inventory over replay reconstruction for vaults)
+  // v1.34 — "is the panel showing a PAST moment?", which is not the same
+  // question as _liveMode and differs from it exactly at boot. _liveMode
+  // starts false meaning "nobody has told us yet"; this starts false
+  // meaning "we are at the present until a replay tick says otherwise",
+  // which is the correct default for a page that has just opened on a
+  // live game. Using _liveMode here made a freshly loaded board draw
+  // day one's empty arsenal all season.
+  let _showingPast   = false;
   let _loadedDay     = null;  // day whose catapult LOAD animation already played
   let _catFired      = false; // RED catapult launched → render slots as ghost
   let _greenFired    = false; // GREEN catapult launched → ghost likewise
@@ -237,10 +270,17 @@
   // Stages the DUSK beat directly so the shipment + blue/consumption is
   // reviewable while planning the night. Mirrors the ``slot === "dusk"``
   // forward branch of osOnReplayTick, but sourced from freshly-pulled data.
+  //
+  // Returns how long the beat it just started runs for (v1.35). The
+  // caller needs it because this animation has no dwell of its own to
+  // hide behind: it plays over the live board, and anything that covers
+  // the board meanwhile — the tutorial modal, most of all — has to know
+  // to wait rather than land on top of the thing it is teaching.
   window.osOnLiveDusk = function (day) {
     const d = window._socOrbitalData;
-    if (!d || !day) return;
+    if (!d || !day) return 0;
     _liveMode = false;  // this beat animates from pre-orbital reconstruction
+    _showingPast = true;
 
     for (const t of _catLaunchTimers) clearTimeout(t);
     _catLaunchTimers = [];
@@ -274,13 +314,14 @@
     _osGreenCatLoadAnim();
     _scheduleDepart(_catData, "red");
     _scheduleDepart(_greenData, "green");
-    _osBlueStageForDay(day, true);
+    const _armsEndMs = _osBlueStageForDay(day, true);
     // v1.9 (bug #10) — once the shed animation has played, snap the observed
     // vault to the server's TRUE post-orbital inventory. At a LIVE dusk there
     // are no night frames yet to reconstruct from, so ``preferLive`` reads
     // ``lastLiveInventory`` (which already reflects the resolved orbit). Without
     // this the diamond keeps whatever the red/green shed left behind — it never
     // sheds burned blue or an overflow eviction — and drifts from the tab.
+    let _beatMs = 0;
     {
       const _redN   = (_catData   || []).filter(e => e && e.seat).length;
       const _greenN = (_greenData || []).filter(e => e && e.flushed).length;
@@ -289,6 +330,7 @@
       _vaultSettleTimers.push(
         setTimeout(() => _osReconcileObservedVaults(true), _loadEndMs),
       );
+      _beatMs = Math.max(_loadEndMs, _armsEndMs);
     }
     // Mark this day's load as already PLAYED so the night cinematic's DUSK beat
     // doesn't re-run the load animation (fixes "catapult loads twice").
@@ -297,6 +339,7 @@
     // night actually plays (or when LIVE re-stages this DUSK). Previously null,
     // which is part of why the "+X" sometimes never got added to the total.
     _praxisPending = day;
+    return _beatMs;
   };
 
   // LIVE final settlement (#4): the season-closing orbit resolved live with
@@ -309,6 +352,7 @@
     const _fin = () => { if (typeof onDone === "function") { try { onDone(); } catch (e) {} } };
     if (!d || !day) { _fin(); return; }
     _liveMode = false;
+    _showingPast = true;
 
     for (const t of _catLaunchTimers) clearTimeout(t);
     _catLaunchTimers = [];
@@ -338,14 +382,19 @@
     _osGreenCatLoadAnim();
     _scheduleDepart(_catData, "red");
     _scheduleDepart(_greenData, "green");
-    _osBlueStageForDay(day, true);
+    const _armsEndMs = _osBlueStageForDay(day, true);
     _loadedDay = day;
     _praxisPending = null;
 
     const _redN   = (_catData   || []).filter(e => e && e.seat).length;
     const _greenN = (_greenData || []).filter(e => e && e.flushed).length;
     const _loadN  = Math.max(_redN, _greenN);
-    const _loadEndMs = OS_DWELL_DUSK_BASE + Math.max(0, _loadN - 1) * OS_LOAD_STAGGER;
+    // v1.35 — don't fire on top of an arming beat that is still running.
+    // Consuming the held row mid-conversion strands the glyphs it was
+    // about to fly into the bar.
+    const _loadEndMs = Math.max(
+      OS_DWELL_DUSK_BASE + Math.max(0, _loadN - 1) * OS_LOAD_STAGGER,
+      _armsEndMs - 500);
 
     const _fireT = setTimeout(() => {
       _osCatLaunchAnim();
@@ -384,6 +433,7 @@
     _praxisPending = null;
 
     _liveMode = true;
+    _showingPast = false;
 
     let latest = Number(day) || 0;
     const keys = Object.keys(d?.catapultByDay || {});
@@ -435,6 +485,7 @@
     const d = window._socOrbitalData;
     if (!d) return;
     _liveMode = false;  // replay/scrub is reconstruction-driven, not live truth
+    _showingPast = true;
 
     // Forward auto-play advances the tick index by exactly one; a scrub jumps.
     // Only forward steps get the resolve ANIMATIONS; scrubbing snaps to state.
@@ -442,6 +493,8 @@
     if (typeof idx === "number") _lastTickIdx = idx;
 
     window._osPendingDwellMs = 0;
+
+    _osSyncArmsFired(idx, slot, forward);
 
     for (const t of _catLaunchTimers) clearTimeout(t);
     _catLaunchTimers = [];
@@ -491,13 +544,16 @@
         _osGreenCatLoadAnim();
         _scheduleDepart(_catData, "red");
         _scheduleDepart(_greenData, "green");
-        _osBlueStageForDay(day, true);
+        const _armsEndMs = _osBlueStageForDay(day, true);
         _loadedDay = day;
         const _redN   = (_catData   || []).filter(e => e && e.seat).length;
         const _greenN = (_greenData || []).filter(e => e && e.flushed).length;
         const _loadN  = Math.max(_redN, _greenN);
-        const _loadEndMs =
-          OS_DWELL_DUSK_BASE + Math.max(0, _loadN - 1) * OS_LOAD_STAGGER;
+        // As at the live resolve: never fire on top of a running arming
+        // beat, or the held glyphs are stranded mid-conversion (v1.35).
+        const _loadEndMs = Math.max(
+          OS_DWELL_DUSK_BASE + Math.max(0, _loadN - 1) * OS_LOAD_STAGGER,
+          _armsEndMs - 500);
         _osClearSettleStacks();
         // No night frame will trigger praxis, so FIRE after the load dwell.
         const _fireAt = _loadEndMs + 500;
@@ -605,14 +661,15 @@
         }
         _scheduleDepart(_catData, "red");
         _scheduleDepart(_greenData, "green");
-        _osBlueStageForDay(day, true);
+        const _armsEndMs = _osBlueStageForDay(day, true);
         _loadedDay = day;
         _praxisPending = day;
         const _redN   = (_catData   || []).filter(e => e && e.seat).length;
         const _greenN = (_greenData || []).filter(e => e && e.flushed).length;
         const _loadN  = Math.max(_redN, _greenN);
         const _loadEndMs = OS_DWELL_DUSK_BASE + Math.max(0, _loadN - 1) * OS_LOAD_STAGGER;
-        window._osPendingDwellMs = Math.min(OS_DWELL_DUSK_MAX, _loadEndMs + 400);
+        window._osPendingDwellMs = Math.min(
+          OS_DWELL_DUSK_MAX, Math.max(_loadEndMs + 400, _armsEndMs));
         // Advance the RIVAL bars to their post-orbital reading so their
         // occupancy/blue visibly drops within the DUSK dwell (observed vault
         // is handled by the cell-removal animation above).
@@ -731,6 +788,11 @@
   // enemy → coarse grade estimate).
   function _osRefreshAllVaults() {
     for (const s of _activeSeats) _osRenderVault(s);
+    // The arsenal rides along with every vault repaint. It is driven by
+    // the same _stationObs snapshots, so anywhere those move the bar has
+    // to move with them — including every scrub target, which is what
+    // stops a backwards scrub leaving a stale rack on screen.
+    _osRefreshAllArms();
   }
 
   // v1.9 (bug #10) — Snap the OBSERVED vaults back to the authoritative
@@ -808,6 +870,16 @@
     } else if (delta.kind === "emp_launch") {
       const yOff = (Math.random() - 0.5) * 90;
       _osQueueAnim(seat, "■", "#00ffff", side, "out", { dur: 2200, ease: "in", size: 8, yOff, label: "emp" });
+    } else if (delta.kind === "snap_launch") {
+      // v1.36 — SNAP had no branch here at all, so a seat could fire one
+      // and its platform would sit there doing nothing. Amber and ✚ to
+      // match the board's order marker and scorch mark; smaller than the
+      // EMP's ■ because it is one missile, not a salvo of three. The
+      // 1470ms is the EMP's 2200 over SNAP's 1.5× speed — the whole
+      // point of the weapon is that it gets there first, so the station
+      // must not be the one place it looks slow.
+      const yOff = (Math.random() - 0.5) * 90;
+      _osQueueAnim(seat, "✚", "#ffd166", side, "out", { dur: 1470, ease: "in", size: 9, yOff, label: "snap" });
     } else if (delta.kind === "mine_emit") {
       // v1.28 — the minelayer had no station glyph, so a seat could lay
       // mines all night with its platform showing nothing. Carries the
@@ -917,6 +989,32 @@
     }
 
     _osRefreshAllVaults();
+
+    // v1.45 — settle the score readouts to the present. Every OTHER thing
+    // that writes a score is a *beat* — a replay tick, the DUSK stage, the
+    // LIVE button — and a page that has just opened has run none of them,
+    // so without this the readouts keep the "—" they were born with. What
+    // hid it for so long is that a seat shipping RED resolves an orbit,
+    // which stages a DUSK beat, which paints them: play a normal game and
+    // the placeholder is gone before you look at it. Ship nothing (or
+    // reload mid-season) and there is no beat, so the station sits blank
+    // next to a live board. Latest day, no tween — this is the cold open,
+    // not a scoring moment.
+    let latestScored = 0;
+    for (const k of Object.keys(d?.catapultByDay || {})) {
+      const n = Number(k);
+      if (Number.isFinite(n) && n > latestScored) latestScored = n;
+    }
+    if (latestScored > 0 && typeof window._osGetCumulativeScore === "function") {
+      _osUpdateScoresForDay(latestScored, false);
+    } else {
+      // Day one, or the skeleton built from the live player list before the
+      // replay payload landed. Nobody has shipped anything, so zero is the
+      // true reading and "—" is just us not having looked yet.
+      for (const seat of _activeSeats) _osSetScoreImmediate(seat, 0);
+      _osUpdateLeader();
+    }
+
     _osBindHover();
   }
 
@@ -957,8 +1055,10 @@
     ? `<span class="os-diamond-kind" data-os-kind="${kind}"` +
       ` title="${_OS_KIND_TITLE[kind]}">${kind}</span>`
     : ""}
-  <div class="os-blue-flash" data-os-blue-flash="${seat}"></div>
-</div>
+      <div class="os-blue-flash" data-os-blue-flash="${seat}"></div>
+      <pre class="os-arms os-arms--${side === "left" ? "right" : "left"}"
+           data-os-arms="${seat}"></pre>
+    </div>
 <div class="os-score" data-os-score="${seat}">—</div>
 <div class="os-score-delta" data-os-score-delta="${seat}"></div>
 <div class="os-settle" data-os-settle="${seat}"></div>
@@ -1064,10 +1164,11 @@
     return _osBlueBand(b);
   }
 
-  // A 5-pip bar for a lit amount (0..5): full pips █, the boundary pip a
-  // mid-fill block (▓/▒) for the fractional part, empties a dim dot.
-  function _osBar(lit, color) {
-    const max = OS_VAULT_COLS;
+  // A pip bar for a lit amount: full pips █, the boundary pip a mid-fill
+  // block (▓/▒) for the fractional part, empties a dim dot. Defaults to
+  // the 5-wide vault bars; the arsenal passes 6 (v1.34).
+  function _osBar(lit, color, max) {
+    max = Number(max) || OS_VAULT_COLS;
     lit = Math.max(0, Math.min(max, Number(lit) || 0));
     const pips = [];
     for (let i = 0; i < max; i++) {
@@ -1078,6 +1179,137 @@
     }
     return pips;
   }
+
+  /* ── the arsenal bar (v1.34, RULEBOOK §4.9.8) ─────────────────────── */
+  //
+  // Weaponised blue is public and exact for every seat, so unlike the
+  // vault bars beside it this one reads the same whoever is looking.
+  //
+  // TWO SOURCES, and which one wins depends on what the panel is FOR.
+  //
+  // Replaying, the honest answer is what the seat held on the day being
+  // watched, so the per-day snapshot wins. Playing live, the honest
+  // answer is what they are holding right now, so the freshly polled
+  // view wins — and it has to, because ``_stationObs`` in live mode
+  // lags: it is seeded from the first day in the replay payload and
+  // only advances on replay ticks, so a live board would sit showing
+  // day one's empty rack all season.
+  //
+  // The live figure also covers two cases the snapshots cannot. A
+  // session recorded before v1.34 has no ``arms`` key at all, and — the
+  // one that actually bites — a turn-lab board is a frozen season whose
+  // snapshots predate the rack the lab stamped on it at open time.
+  function _osArms(seat) {
+    const live = window.__SOC_ARMS__?.[seat];
+    const liveOk = live && live.blue != null;
+    if (!_showingPast && liveOk) return live;
+    if (_armsPinned[seat]) return _armsPinned[seat];
+    const snap = _stationObs[seat]?.arms;
+    if (snap && snap.blue != null) return _osArmsLessFired(seat, snap);
+    return liveOk ? live : null;
+  }
+
+  // v1.35 — a night's snapshot is pinned to the POST-ORBITAL rack for
+  // the whole night, so on its own the bar would sit still while an EMP
+  // flies and only drop at the next dawn. The launches are known per
+  // hour, so subtract them and the bar falls on the hour it should.
+  //
+  // Deliberately applied to the SNAPSHOT branch only. The live poll
+  // already reports what the seat is holding now, so subtracting there
+  // would count the same launch twice.
+  function _osArmsLessFired(seat, snap) {
+    const fired = Number(_armsFired[seat]) || 0;
+    if (fired <= 0) return snap;
+    return { ...snap, blue: Math.max(0, (Number(snap.blue) || 0) - fired) };
+  }
+
+  // Re-read how much of each rack has been fired by the tick we are
+  // about to draw, and repaint any bar that moved. Playing forward the
+  // repaint fades; a scrub snaps, because arriving somewhere is not the
+  // same as watching it happen.
+  //
+  // Zeroed on the day boundaries. At DUSK the cursor still points into
+  // the tail of LAST night, so its launches would otherwise be
+  // subtracted from a rack that has since been rebuilt — and the whole
+  // beat that follows is about that rebuild.
+  function _osSyncArmsFired(idx, slot, forward) {
+    const atTick = window._osArmsFiredAtTick;
+    const boundary = (slot === "dusk" || slot === "dawn" || slot === "resolve");
+    const usable = !boundary
+      && typeof atTick === "function" && typeof idx === "number";
+    for (const seat of _activeSeats) {
+      // The pinned reading belongs to the beat that set it, and that
+      // beat is over the moment the cursor moves.
+      const wasPinned = _armsPinned[seat] != null;
+      delete _armsPinned[seat];
+      const was = Number(_armsFired[seat]) || 0;
+      const now = usable ? (Number(atTick(idx, seat)) || 0) : 0;
+      _armsFired[seat] = now;
+      if (now !== was || wasPinned) _osRenderArms(seat, forward === true);
+    }
+  }
+
+  function _osArmsOn() {
+    return window.__SOC_WEAPONS_ON__ !== false;
+  }
+
+  // Paint a seat's 6-pip arsenal bar. Mirrored to the opposite side of
+  // the hull from the vault, which is the point: cargo one corner,
+  // ordnance the other.
+  // v1.35 — pips fade rather than blink. A pip that has just lit rises
+  // into view; one that has just gone dark holds its old glyph for a
+  // beat and fades. Without it, a fired EMP is a single frame of change
+  // in a corner of the screen, and the whole reason the bar exists is
+  // that a rival's ordnance is meant to be noticed.
+  //
+  // ``animate`` is off for a snap: a scrub or a wholesale refresh is not
+  // a thing happening, it is the panel being told where it already is.
+  function _osRenderArms(seat, animate) {
+    const el = document.querySelector(`[data-os-arms="${seat}"]`);
+    if (!el) return;
+    const arms = _osArmsOn() ? _osArms(seat) : null;
+    if (!arms) { el.innerHTML = ""; delete _armsLit[seat]; return; }
+    const cap = Number(arms.cap) || OS_ARMS_CAP_FALLBACK;
+    const held = Math.max(0, Number(arms.blue) || 0);
+    const lit = held / OS_ARMS_PER_PIP;
+    const prev = _armsLit[seat];
+    const fade = animate !== false && prev != null && prev !== lit;
+    let spent = 0;
+    el.innerHTML = _osBar(lit, OS_ARMS_COLOR, OS_ARMS_SEGMENTS)
+      .map((p, i) => {
+        const wasOn = fade && (prev - i) > 0;
+        const nowOn = (lit - i) > 0;
+        if (fade && wasOn && !nowOn) {
+          // Still drawn as ordnance while it fades — going straight to
+          // the empty dot is the blink we are trying to avoid.
+          spent += 1;
+          return `<span class="os-arms-pip os-arms-pip--out"`
+            + ` style="color:${OS_ARMS_COLOR}">\u2588</span>`;
+        }
+        const cls = (fade && nowOn && !wasOn) ? " os-arms-pip--in" : "";
+        return `<span class="os-arms-pip${cls}" style="color:${p.color}">${p.ch}</span>`;
+      })
+      .join("");
+    _armsLit[seat] = lit;
+    el.title = `arsenal ${held}/${cap} blue — public to every seat`;
+    // Those pips are showing a rack that is already gone; once the fade
+    // is done the bar has to settle onto the dim dots underneath.
+    if (spent) setTimeout(() => _osRenderArms(seat, false), OS_ARMS_FADE_MS);
+  }
+
+  function _osRefreshAllArms(animate) {
+    for (const seat of _activeSeats) _osRenderArms(seat, animate);
+  }
+
+  // app.js calls this after each poll publishes ``__SOC_ARMS__``. The
+  // vault repaints ride on replay ticks and orbit-queue edits, neither
+  // of which fires when a rival arms mid-turn — and "everyone can see
+  // it immediately" is the entire rule (RULEBOOK §4.9.8), so the bar
+  // cannot wait for the next tick to say so.
+  window.osRefreshArms = function () {
+    if (!_initialized) return;
+    _osRefreshAllArms();
+  };
 
   // Render the 3-bar unseen view into a seat's vault-pre: row 0 grey fullness,
   // row 1 blue fissile, row 2 green. Same vault squares, drawn as bars.
@@ -1192,6 +1424,9 @@
   function _osRenderVault(seat) {
     if (_osObserved(seat)) _osSetVault(seat, _osVaultSourceCells(seat));
     else _osRenderEnemyBars(seat);
+    // Same choke point for the arsenal: every path that repaints a
+    // seat's vault has, by definition, just moved that seat's snapshot.
+    _osRenderArms(seat);
   }
 
   // Center of a seat's vault region in screen coords (animation origin). Pass
@@ -1754,8 +1989,34 @@
     return Math.round(OS_BLUE_GRADE_LIT[b.grade] ?? 0);
   }
 
+  // v1.34 — how much of a seat's blue spend this orbit turned into
+  // ordnance, read off the public arsenal figure rather than guessed at.
+  //
+  // This is a SEPARATE delta from the blue burn above, and conflating
+  // the two was the trap. Blue can leave a vault for reasons that have
+  // nothing to do with weapons, so "blue went down, therefore weapons"
+  // would light the cyan flight on a night nobody armed. And the
+  // arsenal can move on its own: firing an EMP drains the rack without
+  // touching blue at all. Only the arms delta knows which happened.
+  //
+  // Returns positive when the rack GREW (blue became ordnance) and
+  // negative when it SHRANK (a weapon was fired).
+  function _osArmsDelta(prevObs, nextObs) {
+    const a = prevObs?.arms, b = nextObs?.arms;
+    // A snapshot from before v1.34 has no arms key at all. Absent is not
+    // zero: treating it as zero would read every first post-upgrade
+    // reading as a whole rack being built in one night.
+    if (!a || !b || a.blue == null || b.blue == null) return 0;
+    return (Number(b.blue) || 0) - (Number(a.blue) || 0);
+  }
+
+  // Returns the length of the longest beat it staged. DUSK holds the
+  // camera on the stations for at least that long: an arming beat cut
+  // off halfway is the bug this whole rework exists to fix, and a
+  // catapult-only dwell is not long enough to cover one (v1.35).
   function _osBlueStageForDay(day, animate) {
-    const d = window._socOrbitalData; if (!d) return;
+    const d = window._socOrbitalData; if (!d) return 0;
+    let beatEnd = 0;
     // The orbit that resolves at DUSK(N) consumes blue between the END of
     // night N-1 (pre[N-1]) and the POST-orbit reading (post[N]). blue.total
     // includes the bank stipend, so this delta covers bank spend too.
@@ -1774,17 +2035,42 @@
         // Hidden station: burn = ACTUAL pips its blue bar dropped this turn.
         burn = Math.max(0, _osBlueBand(pb) - _osBlueBand(qb));
       }
-      if (burn > 0) _osBlueStageOne(seat, burn, exact, animate);
+      const armed = _osArmsDelta(pre[seat], post[seat]);
+      const postArms = post[seat]?.arms || null;
+      if (burn > 0) {
+        beatEnd = Math.max(beatEnd, _osBlueStageOne(
+          seat, burn, exact, animate, armed, postArms) || 0);
+      } else if (armed !== 0) {
+        _osArmsOnlyBeat(seat, animate, postArms);
+      }
     }
+    return beatEnd;
   }
 
-  // Lift a seat's committed blue out of the vault and hold it above the station.
-  function _osBlueStageOne(seat, burn, exact, animate) {
+  // The rack moved but no blue left the vault. Going UP that is a hidden
+  // seat whose coarse blue band happened not to cross a pip boundary;
+  // going DOWN it is ordnance that was fired during the night just
+  // played — and that already had its beat, hour by hour, as the bar
+  // fell under _armsFired. So this only ever settles the bar.
+  function _osArmsOnlyBeat(seat, animate, postArms) {
+    if (postArms) _armsPinned[seat] = postArms;
+    _osRenderArms(seat, animate);
+  }
+
+  // Lift a seat's committed blue out of the vault and hold it above the
+  // station. Returns how long the beat it scheduled runs for, so the
+  // caller can hold the camera on the stations until it has finished.
+  function _osBlueStageOne(seat, burn, exact, animate, armed, postArms) {
+    let beatEnd = 0;
     const stEl = document.querySelector(`[data-os-station="${seat}"]`);
-    if (!stEl) return;
+    if (!stEl) return beatEnd;
     const wrapEl = stEl.querySelector(".os-diamond-wrap") || stEl;
     const n = _osBlueHeldCount(burn, exact);
-    _blueHeld[seat] = { count: n, burn, exact };
+    // v1.34 — how many of the held ◆ are becoming ordnance rather than
+    // simply being spent. That many fly into the arsenal bar; the rest
+    // drift up and fade, because nothing was armed with them.
+    _blueHeld[seat] = { count: n, burn, exact, armed: Number(armed) || 0, postArms };
+    _blueHeld[seat].toArms = _osArmedGlyphCount(_blueHeld[seat]);
 
     let held = wrapEl.querySelector(`[data-os-blue-held="${seat}"]`);
     if (!held) {
@@ -1813,12 +2099,36 @@
         const fx = hr.left + hr.width * (n > 1 ? (0.15 + 0.7 * i / (n - 1)) : 0.5);
         _vaultSettleTimers.push(setTimeout(() => {
           _osQueuePtAnim(anchor.x, anchor.y, fx, hr.top + hr.height * 0.5,
-            "\u25C6", OS_BLUE_BURN_COLOR, { dur: 680, ease: "out", size: 12 });
+            "\u25C6", OS_BLUE_BURN_COLOR,
+            { dur: 680, ease: "out", size: 12, tag: "fissile" });
         }, i * OS_LOAD_STAGGER + 120));
       }
+      // v1.35 — and once it has landed in the held row, the part of it
+      // that became ordnance goes cyan and flies into the arsenal bar.
+      // This used to wait for PRAXIS, and the waiting was the whole
+      // problem: by praxis the night is running, the camera has left
+      // the stations, and a weapon bought at dusk is often fired the
+      // same night — so the one beat that says "they built something"
+      // went past unseen. The warning has to land while the player is
+      // still looking at the stations, which is now.
+      if (_blueHeld[seat].toArms > 0) {
+        const liftEnd = (n - 1) * OS_LOAD_STAGGER + 120 + 680;
+        _vaultSettleTimers.push(setTimeout(
+          () => _osArmsConvert(seat), liftEnd + 140));
+        beatEnd = liftEnd + 140 + _osArmsConvertMs(_blueHeld[seat].toArms);
+      }
+    } else if (_blueHeld[seat].toArms > 0) {
+      // Scrubbed onto this dusk. The post-orbital snapshot is already in
+      // place, so there is nothing to animate — just do not fly these
+      // glyphs anywhere later.
+      _blueHeld[seat].toArms = 0;
+      _osRenderArms(seat, false);
     }
 
-    // Pending "−Xp" badge (exact) or relative "◆ pips" (enemy).
+    // Pending "−Xp" badge (exact) or relative "◆ pips" (enemy). v1.35 —
+    // cyan when the blue was armed rather than merely spent. Same
+    // number, different substance: −200p in blue is an expense, −200p
+    // in cyan is a missile with your name on it.
     const badge = stEl.querySelector(`[data-os-blue-burn="${seat}"]`);
     if (badge) {
       badge.textContent = exact
@@ -1826,8 +2136,111 @@
         : `\u25C6 ${"\u25AA".repeat(n)}`;
       badge.dataset.pending = "1";
       badge.classList.remove("os-blue-burn--spent");
+      badge.classList.toggle("os-blue-burn--armed", (Number(armed) || 0) > 0);
     }
+    return beatEnd;
   }
+
+  // Wall-clock length of the arming beat for ``n`` glyphs, measured from
+  // the moment it starts to a breath after the last pip lights.
+  function _osArmsConvertMs(n) {
+    return OS_ARMS_LIFT_MS + (n - 1) * 70
+      + (n - 1) * 60 + OS_ARMS_FLY_MS + 260;
+  }
+
+  // How many of the held ◆ represent blue that became ordnance. The
+  // glyphs are a coarse rendering of an amount, so this converts back
+  // through whatever each one is worth on this seat.
+  function _osArmedGlyphCount(info) {
+    const armedBlue = Math.max(0, Number(info.armed) || 0);
+    if (armedBlue <= 0) return 0;
+    const perGlyph = info.exact
+      ? (info.burn / Math.max(1, info.count))
+      : OS_BLUE_PER_PIP;
+    return Math.min(info.count,
+      Math.max(1, Math.round(armedBlue / Math.max(1, perGlyph))));
+  }
+
+  // The arming beat, in two movements. First the held ◆ turn cyan where
+  // they hover — same glyphs, same place, the only thing that changed is
+  // what they ARE. Then they fly into the arsenal bar and light it, one
+  // pip per glyph as each arrives, so the bar visibly fills rather than
+  // snapping to a new reading.
+  function _osArmsConvert(seat) {
+    const info = _blueHeld[seat];
+    if (!info || !info.toArms) return;
+    const n = info.toArms;
+    info.toArms = 0;              // claimed — the consume beat leaves these be
+    const postArms = info.postArms;
+    const armedBlue = Math.max(0, Number(info.armed) || 0);
+
+    const stEl = document.querySelector(`[data-os-station="${seat}"]`);
+    const held = stEl?.querySelector(`[data-os-blue-held="${seat}"]`);
+    const glyphs = held
+      ? Array.from(held.querySelectorAll("span")).slice(0, n)
+      : [];
+    if (!glyphs.length) {
+      if (postArms) _armsPinned[seat] = postArms;
+      _osRenderArms(seat, true);
+      return;
+    }
+
+    glyphs.forEach((g, i) => {
+      g.dataset.armed = "1";
+      g.style.animationDelay = (i * 70) + "ms";
+      g.classList.remove("os-blue-held--in");
+      g.classList.add("os-blue-held--arming");
+    });
+
+    // The bar's reading has to come from the POST-orbital snapshot, and
+    // at dusk _stationObs is still parked on the pre-orbital one so the
+    // vault can drain into it. Pin the figure the glyphs are carrying.
+    const endBlue = postArms ? (Number(postArms.blue) || 0) : armedBlue;
+    const startBlue = Math.max(0, endBlue - armedBlue);
+    const base = postArms || { cap: OS_ARMS_CAP_FALLBACK };
+
+    _vaultSettleTimers.push(setTimeout(() => {
+      const pips = _osArmsPipRects(seat);
+      glyphs.forEach((g, i) => {
+        const r = g.getBoundingClientRect();
+        const t = pips[Math.min(Math.max(0, pips.length - 1), i)];
+        if (t) {
+          _osQueuePtAnim(r.left + r.width * 0.5, r.top + r.height * 0.5,
+            t.x, t.y, "\u25C6", OS_ARMS_COLOR,
+            { dur: OS_ARMS_FLY_MS, ease: "out", size: 12,
+              delay: i * 60, tag: "fissile" });
+        }
+        g.remove();
+        // Light the pip as this ◆ lands, not as it leaves.
+        _vaultSettleTimers.push(setTimeout(() => {
+          const blue = (i === n - 1)
+            ? endBlue
+            : startBlue + Math.round(armedBlue * (i + 1) / n);
+          _armsPinned[seat] = { ...base, blue };
+          _osRenderArms(seat, true);
+        }, i * 60 + OS_ARMS_FLY_MS));
+      });
+    }, OS_ARMS_LIFT_MS + (n - 1) * 70));
+  }
+
+  // Screen positions of a seat's arsenal pips, in fill order, so a ◆ in
+  // flight can be aimed at the pip it is about to light.
+  function _osArmsPipRects(seat) {
+    const el = document.querySelector(`[data-os-arms="${seat}"]`);
+    if (!el) return [];
+    const out = [];
+    el.querySelectorAll("span").forEach((s) => {
+      const r = s.getBoundingClientRect();
+      out.push({ x: r.left + r.width * 0.5, y: r.top + r.height * 0.5 });
+    });
+    return out;
+  }
+
+  // v1.35 — ordnance leaving the rack used to fly cyan ◆ out of the bar
+  // here. It doesn't any more: the bar now falls on the hour the weapon
+  // launches rather than at the next dusk, and at that point the pip
+  // fading out IS the event. Flying glyphs off a station the camera has
+  // left, a whole day after the fact, only ever said it twice.
 
   function _osBlueConsumeAll() {
     for (const seat of _activeSeats) if (_blueHeld[seat]) _osBlueConsumeOne(seat);
@@ -1849,23 +2262,41 @@
       }
       const held = stEl.querySelector(`[data-os-blue-held="${seat}"]`);
       if (held) {
+        // v1.35 — by the time we get here the ordnance has usually
+        // already flown: the arming beat runs at DUSK now, so what is
+        // left hovering is blue that was merely SPENT, and it keeps the
+        // original drift-up-and-fade. Pretending otherwise would be a
+        // lie told in animation.
+        //
+        // ``toArms`` is only still set on the short paths that stage and
+        // consume within a second of each other (final settlement, live
+        // resolve), where the dusk timer never got to fire. Same beat,
+        // just triggered late — and it marks its own glyphs, so the fade
+        // below steps around them.
+        const pending = info.toArms || 0;
+        if (pending > 0) _osArmsConvert(seat);
         held.querySelectorAll("span").forEach((g, i) => {
+          if (g.dataset.armed) return;
           const r = g.getBoundingClientRect();
           _osQueuePtAnim(r.left + r.width * 0.5, r.top + r.height * 0.5,
             r.left + (Math.random() - 0.5) * 30, r.top - (30 + Math.random() * 44),
             "\u25C6", OS_BLUE_BURN_COLOR,
-            { dur: 720 + Math.random() * 240, ease: "out", size: 12, delay: i * 50 });
+            { dur: 720 + Math.random() * 240, ease: "out", size: 12,
+              delay: i * 50, tag: "fissile" });
           g.style.animationDelay = (i * 50) + "ms";
           g.classList.add("os-blue-held--out");
         });
-        setTimeout(() => { held.remove(); }, 950);
+        const drop = pending > 0
+          ? OS_ARMS_LIFT_MS + pending * 70 + OS_ARMS_FLY_MS + 200
+          : 950;
+        setTimeout(() => { held.remove(); }, Math.max(950, drop));
       }
       const badge = stEl.querySelector(`[data-os-blue-burn="${seat}"]`);
       if (badge) {
         delete badge.dataset.pending;
         badge.classList.add("os-blue-burn--spent");
         setTimeout(() => {
-          badge.classList.remove("os-blue-burn--spent");
+          badge.classList.remove("os-blue-burn--spent", "os-blue-burn--armed");
           badge.textContent = "";
         }, 1000);
       }
@@ -1875,6 +2306,21 @@
 
   // Remove any staged/held blue with no animation (dawn / scrub / new day).
   function _osClearBlueHeld() {
+    // v1.34 — drop any fissile ◆ still in flight as well. A scrub
+    // backwards used to leave the canvas mid-animation, which was
+    // survivable when every particle only faded; now that some of them
+    // END somewhere (lighting an arsenal pip), a stranded flight reads
+    // as a build that did not happen. Snapping the bars to the
+    // authoritative state afterwards is the other half of that.
+    //
+    // Filtered by tag rather than cleared wholesale: this runs at dawn
+    // and on every scrub, and a catapult launch queued in the same tick
+    // has nothing to do with blue.
+    for (let i = _anims.length - 1; i >= 0; i--) {
+      if (_anims[i].tag === "fissile") _anims.splice(i, 1);
+    }
+    _armsPinned = {};
+    _osRefreshAllArms(false);
     for (const seat of _activeSeats) {
       const stEl = document.querySelector(`[data-os-station="${seat}"]`);
       if (stEl) {
@@ -1884,7 +2330,7 @@
         if (badge) {
           badge.textContent = "";
           delete badge.dataset.pending;
-          badge.classList.remove("os-blue-burn--spent");
+          badge.classList.remove("os-blue-burn--spent", "os-blue-burn--armed");
         }
       }
       delete _blueHeld[seat];
@@ -1902,10 +2348,16 @@
 
   /* ── point-to-point canvas animation ────────────────────────────── */
 
+  // ``colorEnd`` (v1.34) tints the glyph from ``color`` to ``colorEnd``
+  // across the flight. Used by the arsenal build beat, where a ◆ of blue
+  // arrives at the rack as cyan — the colour change IS the mechanic, so
+  // it has to happen in transit rather than at either endpoint.
   function _osQueuePtAnim(x0, y0, x1, y1, glyph, color, opts) {
     _osEnsureCanvas();
     _anims.push({
       glyph, color, x0, y0, x1, y1,
+      colorEnd: opts?.colorEnd ?? null,
+      tag:   opts?.tag   ?? "",
       dur:   opts?.dur   ?? 600,
       ease:  opts?.ease  ?? "inout",
       size:  opts?.size  ?? 8,
@@ -1913,6 +2365,18 @@
       slot: 0, seat: "_cat", dir: "_",
     });
     if (!_animRaf) _animRaf = requestAnimationFrame(_osAnimLoop);
+  }
+
+  // #rrggbb → #rrggbb across t. Only ever fed the two literals above, so
+  // it assumes 6-digit hex rather than parsing colour generally.
+  function _osLerpHex(a, b, t) {
+    const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+    if (!Number.isFinite(pa) || !Number.isFinite(pb)) return a;
+    const m = (sh) => {
+      const ca = (pa >> sh) & 255, cb = (pb >> sh) & 255;
+      return Math.round(ca + (cb - ca) * t);
+    };
+    return `rgb(${m(16)},${m(8)},${m(0)})`;
   }
 
   /* ── animation canvas ─────────────────────────────────────────────── */
@@ -1926,6 +2390,10 @@
   function _osEnsureCanvas() {
     if (_animCvs) return;
     _animCvs = document.createElement("canvas");
+    // Named like the other station surfaces so a probe can find it: the
+    // blue-to-cyan flight (§4.9.8) only exists as pixels here, and there
+    // is nothing else on the page to read it off.
+    _animCvs.setAttribute("data-os-anim", "1");
     _animCvs.style.cssText = "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9500";
     _animCvs.width  = window.innerWidth;
     _animCvs.height = window.innerHeight;
@@ -2033,17 +2501,21 @@
       const len = Math.sqrt(tanx * tanx + tany * tany) || 1;
       const ux  = -tanx / len, uy = -tany / len;
 
+      // v1.34 — the in-flight tint. The trail carries it too, so the
+      // wake behind a ◆ heading for the rack turns cyan with it.
+      const ink = a.colorEnd ? _osLerpHex(a.color, a.colorEnd, t) : a.color;
+
       const trailSize = Math.max(6, a.size * 0.65);
       _animCtx.font = `${trailSize}px 'Courier New',monospace`;
       for (let dd = 1; dd <= 3; dd++) {
         _animCtx.globalAlpha = Math.max(0, 0.25 - dd * 0.07);
-        _animCtx.fillStyle   = a.color;
+        _animCtx.fillStyle   = ink;
         _animCtx.fillText("·", x + ux * dd * 8, y + uy * dd * 8);
       }
 
       _animCtx.font        = `${a.size}px 'Courier New',monospace`;
       _animCtx.globalAlpha = raw > 0.95 ? 1 - (raw - 0.95) * 20 : 1;
-      _animCtx.fillStyle   = a.color;
+      _animCtx.fillStyle   = ink;
       _animCtx.fillText(a.glyph, x, y);
 
       // Identifying tag riding just below the craft ("probe" / "harvester" …).
@@ -2083,6 +2555,15 @@
   // Resolve the day the hover cards should read. Prefer the tick-tracked day
   // (correct in replay AND live, where the replay cursor is stale).
   function _osDay() {
+    // v1.34 — in live play prefer the newest day with readings. The
+    // replay rewind that runs at boot parks ``_currentDay`` on day 1,
+    // so a page opened mid-season used to show day-1 readings beside a
+    // station drawn from today; the arsenal row made that contradiction
+    // legible (0/600 next to two lit pips) rather than introducing it.
+    if (!_showingPast && typeof window._osLatestObsDay === "function") {
+      const latest = Number(window._osLatestObsDay()) || 0;
+      if (latest > 0) return latest;
+    }
     if (_currentDay) return _currentDay;
     const live = (typeof window._osGetCurrentReplayDay === "function")
       ? window._osGetCurrentReplayDay()

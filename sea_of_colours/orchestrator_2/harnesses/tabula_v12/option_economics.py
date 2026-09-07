@@ -886,7 +886,20 @@ def _enemy_vision(agent_view: Mapping[str, Any]) -> Set[Cell]:
 
 
 def _enemy_armed(weapon_estimates: Optional[Mapping[str, Any]]) -> bool:
+    """Is anyone holding anything?
+
+    v1.38 — asked ``emps_max or chaff_max``, which called a seat holding
+    100 blue of SNAP unarmed and priced every option as if the night
+    were safe. ``has_any`` reads the public total, so it covers whatever
+    the game prices rather than the two kinds that existed when this was
+    written.
+    """
     for e in (weapon_estimates or {}).values():
+        probe = getattr(e, "has_any", None)
+        if callable(probe):
+            if probe():
+                return True
+            continue
         if getattr(e, "emps_max", 0) > 0 or getattr(e, "chaff_max", 0) > 0:
             return True
     return False

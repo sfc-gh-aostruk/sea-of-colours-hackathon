@@ -123,11 +123,34 @@ def enrich_prior_entry(
 
 
 # ── render the continuous thread ─────────────────────────────────────────────
-def render_journal(entries: Sequence[Mapping[str, Any]]) -> str:
-    """Format the memory entries into the continuous STRATEGY JOURNAL block."""
+def render_journal(
+    entries: Sequence[Mapping[str, Any]], day: int | None = None,
+) -> str:
+    """Format the memory entries into the continuous STRATEGY JOURNAL block.
+
+    ``day`` is the night being planned. It only matters when the journal
+    is empty, and then it matters a lot — see below.
+    """
     rows = [e for e in (entries or []) if isinstance(e, Mapping)]
     rows.sort(key=lambda e: _as_int(e.get("day")))
     if not rows:
+        # v1.42 — an empty journal used to say "this is your first turn"
+        # unconditionally. On day 1 that is true. On day 6 it is a plain
+        # falsehood, and a damaging one: an agent that believes it has
+        # just arrived plays an opening, not a sixth night. The two cases
+        # are genuinely different and the prompt now distinguishes them,
+        # because "I have no notes" and "nothing has happened yet" call
+        # for opposite kinds of caution.
+        n = _as_int(day)
+        if n > 1:
+            return (
+                "STRATEGY JOURNAL (your continuous thread): (EMPTY — but this "
+                f"is night {n}, not your first. {n - 1} night(s) have already "
+                "been played and you kept no usable notes on them, so treat "
+                "the board and LAST NIGHT as your only record. Do not plan as "
+                "though the game just started; set a clear INTENT tonight so "
+                "tomorrow has something to reflect on.)"
+            )
         return (
             "STRATEGY JOURNAL (your continuous thread): (no prior nights — this "
             "is your first turn; set a clear INTENT you can reflect on tomorrow.)"

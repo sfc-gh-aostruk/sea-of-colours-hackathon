@@ -259,6 +259,10 @@
   var btnPlay = $("btn-play");
   var btnMulti = $("btn-multiplayer");
   var btnReplay = $("btn-replay");
+  // An <a>, not a <button> — the lab is a page, so it should middle-click
+  // into a new tab. It needs no click handler for that, only the hover
+  // treatment the other four get.
+  var btnLab = $("btn-lab");
   var hintEl = $("landing-hint");
   var badge = $("status-badge");
   var dot = $("status-dot");
@@ -343,7 +347,8 @@
       "btn-quick": "learn the game in three nights against the RED_HARVEST_LITE bot — nothing is saved",
       "btn-play": "the full launcher: pick your opponent, the map, and whether the season is saved",
       "btn-multiplayer": "play with other human friends as well as agents",
-      "btn-replay": "relive past games and learn new strategies"
+      "btn-replay": "relive past games and learn new strategies",
+      "btn-lab": "one frozen turn from a real season — invoke any agent on any seat and diff it against V12"
     };
 
     var asciiChars = "!@#$%^&*()_+-=[]{}|;:,.<>?/~`";
@@ -398,7 +403,7 @@
     }
 
     // Button text scramble
-    var buttons = [btnQuick, btnPlay, btnMulti, btnReplay];
+    var buttons = [btnQuick, btnPlay, btnMulti, btnReplay, btnLab];
     buttons.forEach(function (btn) {
       if (!btn) return;
       var textEl = btn.querySelector(".landing-btn-text");
@@ -471,7 +476,7 @@
     {
       preset: "tut-advanced",
       name: "Advanced",
-      blurb: "same board, three nights, weapons and signage switched on",
+      blurb: "same board, four nights, weapons and signage switched on",
     },
     {
       preset: "quick",

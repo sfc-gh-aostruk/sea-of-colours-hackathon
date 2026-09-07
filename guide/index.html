@@ -574,8 +574,8 @@
             <li>Most points after seven nights wins.</li>
           </ul>
           <p class="dim">
-            That is the whole loop. Everything else &mdash; EMPs, chaff, echo
-            vision, catapult lanes &mdash; is detail the
+            That is the whole loop. Everything else &mdash; SNAPs, EMPs, chaff,
+            echo vision, catapult lanes &mdash; is detail the
             <a href="../manual/index.html">manual</a> animates far better than
             prose can.
           </p>
@@ -665,21 +665,47 @@
 
         <div class="gd-frame">
           <div class="gd-frame-head">
-            <span class="gd-frame-title">Step 1 &middot; Get the code</span>
+            <span class="gd-frame-title">Step 1 &middot; Fork it, then clone your fork</span>
+          </div>
+          <div class="gd-note gd-note--warn">
+            <b class="tag">Fork first</b>
+            <p>
+              Open
+              <a href="https://github.com/sfc-gh-lgalan/sea-of-colours-hackathon">the
+              repo</a> and press <b>Fork</b>. You now have your own copy at
+              <code>github.com/&lt;you&gt;/sea-of-colours-hackathon</code>, and
+              <em>that</em> is the one to clone. Your agent lives in your fork
+              all day; at the end an organiser gathers everyone's forks to
+              build the league.
+            </p>
+            <p>
+              Cloning this repo directly instead is the one setup mistake that
+              costs real time, because nothing goes wrong until you try to
+              publish &mdash; you can install, play and build an agent against
+              the wrong remote perfectly happily, and only find out at the
+              deadline. <code>soc doctor</code> checks it for you.
+            </p>
           </div>
           <div class="gd-term" data-repo-url="sfc-gh-lgalan/sea-of-colours-hackathon">
             <button class="gd-copy" type="button">[ COPY ]</button>
-<pre><span class="s">$</span> git clone https://github.com/sfc-gh-lgalan/sea-of-colours-hackathon.git
-<span class="s">$</span> cd sea-of-colours-hackathon</pre>
+<pre><span class="c"># replace &lt;you&gt; with your GitHub username</span>
+<span class="s">$</span> git clone https://github.com/&lt;you&gt;/sea-of-colours-hackathon.git
+<span class="s">$</span> cd sea-of-colours-hackathon
+<span class="s">$</span> git remote add upstream https://github.com/sfc-gh-lgalan/sea-of-colours-hackathon.git</pre>
           </div>
           <div class="gd-note gd-note--info">
             <b class="tag">Access</b>
             <p>
-              The repo is private, so you need to be added as a collaborator
-              and signed in to GitHub first &mdash; ask the organiser if the
-              clone 404s. Prefer SSH? Use
-              <code>git@github.com:sfc-gh-lgalan/sea-of-colours-hackathon.git</code>.
-              Downloading the zip from the repo page works just as well.
+              The repo is private, so you need to be signed in to GitHub and
+              given read access before the <b>Fork</b> button will work
+              &mdash; ask the organiser if you get a 404. Prefer SSH? Use
+              <code>git@github.com:&lt;you&gt;/sea-of-colours-hackathon.git</code>.
+            </p>
+            <p>
+              That <code>upstream</code> remote is how you take kit fixes
+              during the day: <code>git pull upstream main</code>. You never
+              push to it. Everything you push goes to <code>origin</code>,
+              which is your fork.
             </p>
           </div>
           <p class="dim">
@@ -1398,17 +1424,19 @@ PY</pre>
 
         <h3>Mint your own agent</h3>
         <p>
-          One command. It forks V12, renames its identity so your turns
-          are attributed to you rather than to V12, and registers it.
+          One command. It copies V12 into a directory of your own and renames
+          its identity, so your turns are attributed to you rather than to
+          V12.
         </p>
 
         <div class="gd-term">
           <div class="gd-term-head">
             <span class="gd-term-dots"><i></i><i></i><i></i></span>
-            <span class="gd-term-title">fork the agent</span>
+            <span class="gd-term-title">mint your agent</span>
             <button class="gd-copy" type="button">copy</button>
           </div>
-<pre><code>python scripts/new_agent.py --team redwatch --name reaper</code></pre>
+<pre><code>python scripts/soc.py new --team redwatch --name reaper \
+    --participants "Ada Lovelace, Grace Hopper"</code></pre>
         </div>
 
         <p>
@@ -1416,8 +1444,21 @@ PY</pre>
           GAME dropdown, ready to play against V12. Name it
           <code>&lt;team&gt;_&lt;agent&gt;</code> &mdash; the label ends up in
           the audit trail and on the scoreboard, and a room full of agents
-          called <code>reaper</code> helps nobody.
+          called <code>reaper</code> helps nobody. Everyone at the table goes
+          in <code>--participants</code>: the league is the day's public
+          record, and an entry that names nobody cannot be credited.
         </p>
+
+        <div class="gd-note gd-note--info">
+          <b class="tag">There is no register to sign</b>
+          <p>
+            Minting writes an <code>agent.json</code> in your new directory
+            and that <em>is</em> the registration &mdash; the kit finds your
+            agent by scanning for those files at startup. You do not edit a
+            shared registry, which is exactly why a room of teams can all be
+            minting agents at once without treading on each other.
+          </p>
+        </div>
 
         <div class="gd-note gd-note--warn">
           <b class="tag">Don't edit V12 in place</b>
@@ -1520,6 +1561,45 @@ PY</pre>
             </li>
           </ul>
         </div>
+
+        <div class="gd-frame">
+          <div class="gd-frame-head">
+            <span class="gd-frame-title">Publishing it</span>
+          </div>
+          <p>
+            An agent that only exists on your laptop does not compete. Push it
+            to your fork, and push often &mdash; whatever is on your fork when
+            the organiser collects is what plays.
+          </p>
+          <div class="gd-term">
+            <button class="gd-copy" type="button">[ COPY ]</button>
+<pre><span class="s">$</span> python scripts/soc.py push</pre>
+          </div>
+          <p>
+            That commits your agent's directory and nothing else, then pushes
+            to <code>origin</code> &mdash; your fork. It refuses if you have
+            changed anything outside your own directory, because only your
+            directory travels to the league: a fix you made to the engine
+            would simply be missing there, and your agent would behave
+            differently than it does at your desk.
+          </p>
+          <p>
+            To hand work-in-progress to a teammate without publishing
+            anything, use <code>soc share</code> and they run
+            <code>soc grab</code> on the file. That is for the ten-minute
+            loop; <code>soc push</code> is for the record.
+          </p>
+          <div class="gd-note gd-note--info">
+            <b class="tag">Pushing is not entering</b>
+            <p>
+              Your fork is where your agent lives. The league is assembled at
+              the end of the day by an organiser running
+              <code>soc collect</code>, which lifts each agent out of each
+              fork into one staging area. Nothing you push lands in anyone
+              else's repo, and nobody else's push can break yours.
+            </p>
+          </div>
+        </div>
       </section>
 
       <!-- ══ 09 ═══════════════════════════════════════════════════ -->
@@ -1614,7 +1694,29 @@ PY</pre>
               <td>
                 The repo is private. GitHub returns 404 rather than 403 for
                 repos you cannot see, so this usually means you are not signed
-                in, or not yet a collaborator. Ask the organiser to add you.
+                in, or have not been given read access yet. Ask the organiser.
+                Check the URL has <em>your</em> username in it &mdash; you
+                clone your fork, not the original.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>soc push</code> says <span class="dim">origin is not
+                yours</span>
+              </td>
+              <td>
+                You cloned the original repo instead of forking it first.
+                Nothing is lost and nothing needs re-doing: <code>soc
+                push</code> prints the two commands that point this clone at
+                your own fork, and your work comes with it.
+              </td>
+            </tr>
+            <tr>
+              <td>Pushing says <span class="dim">permission denied</span></td>
+              <td>
+                Same cause as above. You only ever have write access to your
+                own fork &mdash; nobody, including you, pushes to the repo the
+                event runs from.
               </td>
             </tr>
           </table>

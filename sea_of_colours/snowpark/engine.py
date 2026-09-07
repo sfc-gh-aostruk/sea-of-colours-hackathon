@@ -2068,6 +2068,7 @@ def get_endgame_summary(store: SocStore, session_id: str) -> Dict[str, Any]:
             "probes_superseded": _kf_row("probes_superseded"),
             "emp_probes": _kf_row("emp_probes"),
             "emp_harvesters": _kf_row("emp_harvesters"),
+            "snap_harvesters": _kf_row("snap_harvesters"),
             "chaff_jams": _kf_row("chaff_jams"),
             "harv_damaged": _kf_row("harv_damaged"),
             "harv_lost_chaff": _kf_row("harv_lost_chaff"),

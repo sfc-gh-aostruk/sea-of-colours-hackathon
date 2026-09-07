@@ -238,10 +238,23 @@
      * House — what you can read about them without seeing them, and
      * what you can do to them without touching them.
      *
-     * It is the same three nights and two orbits, and the arc is the
-     * economy: the blue you land on in night one is literally what pays
-     * for the weapons in orbit, because 250 blue a season buys exactly
-     * one EMP and not one flare of chaff.
+     * FOUR nights and three orbits since v1.36 (Basic is still three).
+     * The arc is the economy: the blue you land on in night one is
+     * literally what pays for the weapons in orbit, because 250 blue a
+     * season buys exactly one EMP and nothing else.
+     *
+     * One weapon per orbit, fired the night after — buy EMP / buy SNAP
+     * / buy chaff, against nights that give each one something to do.
+     * Three weapons will not fit in three nights, and the fourth night
+     * bought two other things worth having: night two was the heaviest
+     * turn in either tutorial at four chapters and is now two, and
+     * `adv_chaff` finally plays on the night it was SHOT on. That film
+     * needs a rival to land, work and be caught mid-lift, which takes a
+     * night four; on the old cap the reel ran on night three and showed
+     * the player a sequence their own game could no longer produce.
+     *
+     * Chapter load, and please keep it flat if you edit this:
+     *   n1 1 · o2 1 · n2 2 · o3 1 · n3 3 · o4 2 · n4 2   (12 total)
      */
 
     "advanced:planning:1": {
@@ -338,6 +351,38 @@
           todo: "Decide now: probe into their redsign to pin the square, "
             + "or bank the seam you already hold.",
         },
+      ],
+    },
+
+    "advanced:orbit:3": {
+      title: "Orbit — the cheap weapon, and the one that arrives first",
+      chapters: [
+        {
+          film: "adv_buy_snap.webm",
+          heading: "A hundred blue buys one square of one hour",
+          body:
+            "Weapons are priced 100, 200, 300 — a SNAP, an EMP, a chaff "
+            + "flare — against a rack that holds 600. SNAP is the cheap "
+            + "one, and the only one you can afford out of what the EMP "
+            + "left you.\n\n"
+            + "You get very little for it. One missile, one square, one "
+            + "hour. No salvo, no wall, no eight-hour cloud.\n\n"
+            + "What you buy instead is the front of the queue. Every "
+            + "other weapon lands inside the hour along with everything "
+            + "else; SNAP lands ahead of it, before the board takes its "
+            + "note of who can see what. That single beat of head start "
+            + "is the whole weapon, and tomorrow night is where it pays "
+            + "for itself.\n\n"
+            + "Check your log — the training range has credited you the "
+            + "hundred, exactly one round.",
+          todo: "Buy one SNAP, and put the credits into probes.",
+        },
+      ],
+    },
+
+    "advanced:planning:3": {
+      title: "Night three — the jackpot fight, and the beat that decides it",
+      chapters: [
         {
           film: "adv_smash_grab.webm",
           heading: "Smash and grab — take the pure you can see, and take "
@@ -388,10 +433,42 @@
           todo: "If the beacon is somebody else's, take their eye out first "
             + "and comb the smear while they are blind.",
         },
+        {
+          film: "adv_snap.webm",
+          heading: "SNAP — the answer to the two grabs you just learned",
+          body:
+            "Both grabs have the same weak point, and it is not the "
+            + "harvester. It is the eye.\n\n"
+            + "Landing needs LIVE vision of the square, and the board "
+            + "decides who has live vision once, at the top of each "
+            + "hour. Everything else in the game happens under that "
+            + "note — including the EMP. Fry a beacon with an EMP on the "
+            + "same hour somebody is landing on it and the landing still "
+            + "goes through, because the board had already written down "
+            + "that the square was lit.\n\n"
+            + "SNAP resolves ABOVE that line. It is the one thing on the "
+            + "board that moves before the note is taken. Kill the probe "
+            + "with a SNAP and the square was never lit — so the drop it "
+            + "was lighting is refused TONIGHT, not tomorrow.\n\n"
+            + "That is a smash-and-grab stopped dead for a hundred blue, "
+            + "and it is the only way to do it. You are not out-shooting "
+            + "them. You are arriving first.\n\n"
+            + "It has a second use if you would rather gamble than deny. "
+            + "The square stays hot for the rest of that hour, and any "
+            + "harvester on it — standing there already, or walking or "
+            + "landing into it afterwards — is damaged, which means it "
+            + "harvests nothing that turn and costs 500 credits to put "
+            + "right. Guess the square somebody is dropping onto and you "
+            + "take their whole night rather than one hour of it.\n\n"
+            + "Aim it like anything else: right-click the square. Friendly "
+            + "fire is on, so do not SNAP your own beacon.",
+          todo: "SNAP the probe lighting a pure you cannot hold — before "
+            + "they land on it.",
+        },
       ],
     },
 
-    "advanced:orbit:3": {
+    "advanced:orbit:4": {
       title: "Orbit — a second hull, and the dearest thing on the board",
       chapters: [
         {
@@ -400,19 +477,62 @@
           body:
             "A harvester first: two seams need two hulls, and by now you "
             + "know where two seams are.\n\n"
-            + "Then look at chaff. It costs nothing in credits and 255 in "
-            + "blue — five more than a whole season's starting stipend. "
-            + "There is no turn on which you can simply buy it. You can "
-            + "only buy it having gone and landed on blue.\n\n"
-            + "If you cannot afford it this turn, nothing has gone wrong. "
-            + "That is the weapon telling you what it costs.",
-          todo: "Buy a second harvester. Buy chaff if the blue is there — "
-            + "and if not, plan a landing on blue.",
+            + "Then look at chaff. It costs nothing in credits and 300 in "
+            + "blue — more than a whole season's starting stipend, of "
+            + "which you have spent 200 on the EMP and 100 on the SNAP. "
+            + "There is no turn on which you could simply have bought "
+            + "it.\n\n"
+            + "So this one is on the house. Check your log: the training "
+            + "range has just credited you 300 blue, exactly one flare, "
+            + "and it will not do it again. In a real season that blue "
+            + "comes out of the ground or it does not come at all — which "
+            + "is the actual lesson, and the reason you are being shown "
+            + "the gift rather than handed it quietly.",
+          todo: "Buy a second harvester, then buy the chaff with the "
+            + "granted blue.",
+        },
+        {
+          film: "adv_arms_bar.webm",
+          heading: "Everyone can see what you are carrying",
+          body:
+            "Watch the station as the flare is built. The blue does not "
+            + "vanish — it turns cyan and flies to the bar on the far "
+            + "side of the hull from your vault. That bar is your "
+            + "ARSENAL: six pips, one per hundred blue of ordnance, up to "
+            + "a hard ceiling of 600. One pip is already lit; that is "
+            + "last turn's SNAP. The flare is worth three more.\n\n"
+            + "Two things follow, and they are the point of this "
+            + "chapter.\n\n"
+            + "The ceiling is real. At 600 the buy buttons grey out and "
+            + "say so. You cannot stockpile your way out of a bad "
+            + "position; a weapon you are hoarding is blue you are not "
+            + "spending, and at some point the rack simply refuses.\n\n"
+            + "And the bar is PUBLIC. Not a grade, not a guess — the "
+            + "exact figure, on every station, to every House, including "
+            + "yours on theirs. Your vault is still a silhouette to them. "
+            + "Your weapons are not. Hover any rival station and read "
+            + "their arsenal off the card.\n\n"
+            + "That cuts both ways and it is meant to. You will never be "
+            + "ambushed by a weapon nobody could have known about — and "
+            + "neither will they. The moment you arm, every seat on the "
+            + "board is planning around it.\n\n"
+            + "What it does NOT tell them is which weapons. At 100, 200 "
+            + "and 300 the figure rarely has one answer: your 400 is a "
+            + "SNAP and a chaff, and it is also two EMPs, and it is also "
+            + "four SNAPs. They know exactly how much is pointed at them "
+            + "and mostly not what it is — so read a rival's bar as a "
+            + "budget, not an inventory.\n\n"
+            + "It reads the other way too. Watch the bars through a "
+            + "night: a pip goes out the hour a weapon is fired, not the "
+            + "next morning. If a rival's arsenal empties at hour four "
+            + "and you are still standing at hour five, whatever they "
+            + "spent it on has already happened to somebody.",
+          todo: "Hover the rival station and read its arsenal line.",
         },
       ],
     },
 
-    "advanced:planning:3": {
+    "advanced:planning:4": {
       title: "Last night — taking the clock, and taking the ride home",
       chapters: [
         {
@@ -701,6 +821,9 @@
 
   function open(idx) {
     if (!state.reel) return;
+    // Opening now settles any deferred open — whether this came from the
+    // timer, the TUTORIAL button or the film harness driving us directly.
+    cancelPendingOpen();
     state.idx = Number.isFinite(idx) ? idx : 0;
     var root = build();
     root.hidden = false;
@@ -740,6 +863,26 @@
     return btn;
   }
 
+  /** v1.35 — a breath after the board settles before the modal covers
+   *  it, so the last frame of whatever just resolved actually registers
+   *  as having finished rather than being guillotined by a popup. */
+  var OPEN_AFTER_BEAT_MS = 1000;
+  var pendingOpen = false;
+  var openTimer = null;
+
+  function cancelPendingOpen() {
+    pendingOpen = false;
+    if (openTimer) { clearTimeout(openTimer); openTimer = null; }
+  }
+
+  function openAfterBeat() {
+    if (openTimer) clearTimeout(openTimer);
+    openTimer = setTimeout(function () {
+      openTimer = null;
+      open(0);
+    }, OPEN_AFTER_BEAT_MS);
+  }
+
   function onState(detail) {
     state.game = String(detail.game || "");
     var found = resolveReel(detail.tutorial, detail.phase, detail.day);
@@ -748,6 +891,7 @@
       state.key = "";
       state.scoped = "";
       if (btn) btn.hidden = true;
+      cancelPendingOpen();
       close();
       return;
     }
@@ -763,10 +907,27 @@
     // Auto-open once per turn. The player asked for the modal to be up
     // by default at the start of a turn; having it reappear on every
     // four-second poll would be a different and much worse feature.
-    if (changed && !isMuted() && seenSet().indexOf(scoped) === -1) {
-      open(0);
-    } else if (changed) {
-      close();
+    var wantsOpen = !isMuted() && seenSet().indexOf(scoped) === -1;
+
+    if (changed) {
+      cancelPendingOpen();
+      if (!wantsOpen) { close(); return; }
+      // v1.35 — the board gets to finish first. ``busy`` means an orbit
+      // is resolving or a night cinematic is running or about to, and
+      // the modal covers exactly the part of the screen those happen
+      // on. A film about the arsenal filling is worth very little
+      // played over the top of the arsenal filling.
+      if (detail.busy) { pendingOpen = true; close(); return; }
+      openAfterBeat();
+      return;
+    }
+
+    // Same turn as last time, so the only thing that can have changed
+    // is the board going quiet — which is what a held-back film is
+    // waiting for.
+    if (pendingOpen && !detail.busy && wantsOpen) {
+      pendingOpen = false;
+      openAfterBeat();
     }
   }
 

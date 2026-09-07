@@ -9,6 +9,28 @@
 -- (GameSession.to_dict / from_dict) 1:1 so Phase 2's Snowpark procs can
 -- ferry state in/out without translation layers.
 --
+-- ⚠️ THIS FILE UNDER-DESCRIBES THE LIVE ACCOUNT (v1.43).
+--    Six tables were migrated to HYBRID TABLES for latency and are hybrid in
+--    SOC_HACKATHON_DB.SEA_OF_COLOURS right now:
+--
+--      SOC_GAME_SESSION, SOC_GAME_LOG, SOC_REPLAY_FRAME,
+--      SOC_POLICY_QUEUE, SOC_AGENT_INVOCATION, SOC_AGENT_MEMORY
+--
+--    They are declared below as standard tables. Because every DDL is
+--    CREATE TABLE IF NOT EXISTS, re-running this file is a harmless no-op and
+--    will NOT convert them back — but a FRESH account deployed from this file
+--    gets standard tables and will be ~4x slower per point write.
+--
+--    Each migrated table has a *_FDN_BAK standard-table backup holding its
+--    pre-swap rows; revert is two renames per table. The measurements, the
+--    migration steps and the operational caveats (enforced primary keys,
+--    session-based consistency, doing renames with the web server down) are in
+--    docs/SNOWFLAKE_LATENCY_BRIEF.md §U–§V and
+--    docs/SNOWFLAKE_PERF_HANDOVER.md.
+--
+--    Hybrid tables are unavailable on Google Cloud and in trial accounts, so
+--    this file is deliberately left portable rather than hard-coding HYBRID.
+--
 -- ⚠️ NON-DESTRUCTIVE BY DESIGN.  All table DDLs are CREATE TABLE IF NOT
 --     EXISTS so re-running this file NEVER wipes existing data.  Schema
 --     evolutions (added columns, new tables) must be applied as

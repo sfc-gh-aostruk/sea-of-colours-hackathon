@@ -61,6 +61,7 @@ from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import (
     move_sanitizer,
     opponent_weapons,
     probe_hints as probe_hints_mod,
+    snap_cover as snap_cover_mod,
     recorder,
 )
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import (
@@ -370,7 +371,7 @@ def run(
     # day is authored by the plan pass below and stamped afterwards). Rendered in
     # place of the plain memory replay.
     journal_mod.enrich_prior_entry(prior_day_entry, last_night_memory)
-    memory_replay = journal_mod.render_journal(prior_entries)
+    memory_replay = journal_mod.render_journal(prior_entries, day)
 
     # 4. Precompute the hint menu (v7 compilers, now with v10 seeded variability:
     #    a per-(session, seat, night) rng breaks near-tie symmetry so seats fan
@@ -523,6 +524,17 @@ def run(
         if want_blue else []
     )
     harvesters_alive = len(probe_hints_mod._orbit_harvester_ids(agent_view))
+    # v1.40 — SNAP cover. Needs the estimates (is anyone even able to hold a
+    # SNAP) and the menu's landings (is there anything worth insuring), so it
+    # runs after both and before the registry that offers it. Returns [] on an
+    # ordinary night, and returns [] for good on a board that never prices
+    # SNAP — retiring the weapon retires this with it.
+    snap_cover_hints = snap_cover_mod.cover_hints(
+        agent_view,
+        seam_patterns=seam_patterns,
+        hot_drop_hints=hot_drop_hints,
+        estimates=weapon_estimates,
+    )
     option_registry = agency_mod.build_registry(
         agent_view=agent_view,
         seam_patterns=seam_patterns,
@@ -530,6 +542,7 @@ def run(
         probe_hints=probe_hints,
         chain_hints=chain_hints,
         supersede_hints=supersede_hints,
+        snap_cover_hints=snap_cover_hints,
         blue_requested=want_blue,
         harvesters_alive=harvesters_alive,
         hazard_cells=hazard_cells,
@@ -1083,7 +1096,11 @@ def run(
                         "response_text": thinker_reasoning,
                         "rationale": "[think pass — bounded reasoning]",
                         "ms_elapsed": think_ms,
-                        "prompt_excerpt": thinker_prompt[:32_000],
+                        # Full text — the audit layer decides how to fit
+                        # it. Slicing here as well used to double-truncate
+                        # from the head and threw the OPTION MENU away,
+                        # which is the one block a reader needs.
+                        "prompt_excerpt": thinker_prompt,
                     },
                     {
                         "label": THINKER_AGENT_LABEL,
@@ -1098,7 +1115,7 @@ def run(
                             if thinker_directive else "[plan=no directive]"
                         ),
                         "ms_elapsed": plan_ms,
-                        "prompt_excerpt": plan_prompt[:32_000],
+                        "prompt_excerpt": plan_prompt,
                     },
                 ]
                 if thinker_used else []
@@ -1108,7 +1125,7 @@ def run(
             "prompt_chars": len(prompt_text),
             "response_chars": len(response_text),
             "submit_result": submit_result,
-            "prompt_excerpt": prompt_text[:32_000],
+            "prompt_excerpt": prompt_text,
         },
     }
     # A season night happens ONCE and the audit's prompt_excerpt is truncated

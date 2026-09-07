@@ -8,13 +8,15 @@ should win you the room.
 **Don't edit this directory.** Fork it:
 
 ```bash
-python scripts/new_agent.py --team redwatch --name reaper
+python scripts/soc.py new --team redwatch --name reaper \
+    --participants "Ada Lovelace, Grace Hopper"
 ```
 
 That copies these files to `harnesses/redwatch_reaper/`, repoints the
 imports, renames the agent identity so your turns show up under your own
-name in the audit trail, and registers the binding. Restart the server
-and `REDWATCH_REAPER` is in the New Game dropdown. Keeping V12 pristine
+name in the audit trail, and writes the `agent.json` that registers it.
+Nothing shared is edited. Restart the server and `REDWATCH_REAPER` is in
+the New Game dropdown. Keeping V12 pristine
 is what lets you answer "is my change actually better?" — you need
 something to play against.
 
@@ -214,8 +216,8 @@ python scripts/run_matchup_v12.py --modes lite
 pytest sea_of_colours/orchestrator_2/tests -q
 ```
 
-Your registered label works as an eval `--config` with no extra setup —
-registering the binding is the only registration there is.
+Your label works as an eval `--config` with no extra setup — the
+`agent.json` in your own directory is the only registration there is.
 
 ## Known rough edges
 

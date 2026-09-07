@@ -39,9 +39,31 @@ def _v11_decision_schema() -> dict:
     # ``intent``/``reflection`` land at the end if v7 ever drops ``reasoning``.
     props.setdefault("intent", {"type": "string"})
     props.setdefault("reflection", {"type": "string"})
+    props["situational"] = _v38_situational(props.get("situational"))
     schema = dict(_V7_DECISION_SCHEMA)
     schema["properties"] = props
     return schema
+
+
+def _v38_situational(v7_spec: dict | None) -> dict:
+    """Add ``snap`` to the situational read the thinker echoes back.
+
+    SITUATIONAL FACTS grew a ``snap`` line in v1.38 and the prompt tells
+    the thinker to echo that block back. Under Cortex strict mode the
+    schema is the binding half of that instruction: ``situational`` sets
+    ``additionalProperties: False`` and lists ``required``, so asking for
+    a key the schema forbids is a request the model is not allowed to
+    satisfy. Both halves move together or neither does.
+
+    Rebuilt rather than mutated, like everything else here — the v7 dict
+    is a module-level constant that v7 and v8 still serve from.
+    """
+    spec = dict(v7_spec or {})
+    props = dict(spec.get("properties") or {})
+    props["snap"] = {"type": "boolean"}
+    spec["properties"] = props
+    spec["required"] = list(spec.get("required") or []) + ["snap"]
+    return spec
 
 
 _V11_DECISION_SCHEMA = _v11_decision_schema()

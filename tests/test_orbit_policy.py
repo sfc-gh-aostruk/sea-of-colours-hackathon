@@ -171,15 +171,42 @@ def test_lowering_the_threshold_buys_weapons_earlier():
 
 
 def test_raising_the_stockpile_cap_keeps_buying():
-    """Stock at the shipped cap blocks the buy; a higher cap allows it."""
-    view = _view(credits=2000, blue=400, cap_used=3, chaff_stock=1, emp_stock=2)
+    """Stock at the shipped cap blocks the buy; a higher cap allows it.
 
-    stock, _ = fork_plan(dict(view))
+    v1.34 — this used to hold 2 EMP and a chaff, which is 655 blue of
+    ordnance and no longer a state the engine can be in (§4.9.8 caps it
+    at 600). Two EMP is 400 and leaves room for a third, so the dial is
+    still the only thing under test.
+
+    Sat in the middle (roll) band with the flip pinned, because in the
+    always-build band the surplus top-up would buy the EMP regardless of
+    this dial — which would make the test pass for the wrong reason.
+    """
+    view = _view(credits=2000, blue=260, cap_used=3, chaff_stock=0, emp_stock=2)
+
+    shipped = OrbitDials(emp_roll_chance=1.0)
+    stock, _ = fork_plan(dict(view), dials=shipped)
     assert not [a for a in stock if a["a"] == "build_emp"]
 
-    deep = OrbitDials(emp_stockpile_cap=5)
+    deep = OrbitDials(emp_stockpile_cap=5, emp_roll_chance=1.0)
     got, _ = fork_plan(dict(view), dials=deep)
     assert {"a": "build_emp", "count": 1} in got
+
+
+def test_the_arsenal_cap_declines_instead_of_proposing_a_doomed_build():
+    """A seat at the ceiling says so, rather than ordering a refusal.
+
+    The engine would reject the build anyway (§4.9.8), so this is about
+    not spending the move on it — and about the rationale naming the
+    real reason, since "unaffordable" would be a lie with 2000c in hand.
+    """
+    view = _view(credits=2000, blue=900, cap_used=3, chaff_stock=0, emp_stock=3)
+
+    actions, rationale = fork_plan(dict(view))
+    assert not [a for a in actions if a["a"].startswith("build_emp")]
+    assert not [a for a in actions if a["a"].startswith("build_chaff")]
+    assert "arsenal cap" in rationale, rationale
+    assert "unaffordable" not in rationale
 
 
 def test_the_probe_target_sets_the_magazine():

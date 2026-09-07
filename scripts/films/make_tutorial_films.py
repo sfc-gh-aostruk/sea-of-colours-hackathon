@@ -80,9 +80,12 @@ VIEWPORT = {"width": 1280, "height": 800}
 #   * all of it inset from the edge, because a probe is a radius-4 disk
 #     and a close-up on column 0 is a close-up of the bezel.
 #
-# The blue is also the arc: EMP is 200 blue and chaff is 255 against a
+# The blue is also the arc: the weapons cost 100 / 200 / 300 against a
 # 250 stipend, so the hot drop on night one is literally what pays for
 # the weapons in orbit. Change the seed and that stops being true.
+# (The training range tops the last two up — see ``blue_grant_for`` —
+# but only enough to make the lesson buyable, never enough to make the
+# mining pointless.)
 #
 # It comes FROM the preset rather than being restated here, because the
 # Advanced preset pins the same board for the player. That is the whole
@@ -2349,6 +2352,121 @@ def _adv_emp_wait(f: Film, base: str, sid: str) -> None:
     f.wait(600)
 
 
+@film("adv_snap")
+def _adv_snap(f: Film, base: str, sid: str) -> None:
+    """Night three: one round, one square, and a landing that never lands.
+
+    The claim this film has to earn is a timing claim, and timing is the
+    hardest thing to photograph. So it is shot as a refusal: the rival
+    has already queued a drop onto their own jackpot, resting on the eye
+    they put down last night. The camera watches the SNAP take the eye
+    and the drop come back refused IN THE SAME HOUR — which an EMP on
+    the same square in the same hour could not do, because it resolves
+    below the hour's vision note and SNAP resolves above it.
+
+    The rival's night is on the books before the camera rolls (see
+    ``_setup_advanced``), so what plays out is genuinely their plan
+    being broken rather than a staged absence.
+    """
+    theirs = tuple(f.plan["theirs"])
+
+    f.say("Their jackpot, their eye on it since last night.", hold=2800)
+    f.hover_cell(theirs[0], theirs[1], ms=900, hold=1400)
+    f.say("And a harvester of theirs in orbit. You do not need to guess "
+          "what happens next \u2014 there is only one thing to do with "
+          "that.", hold=3800)
+    f.park()
+
+    f.say("You cannot outrun a drop. You can arrive before it.", hold=3000)
+    f.click(_adv_deploy(f, "SNAP"), before=520, after=520)
+    f.click(f.cell(theirs[0], theirs[1]), before=420, after=860, ms=660)
+    f.escape(after=400)
+    f.expect_slots(1, "one round, on the square their eye is standing on")
+
+    f.say("One missile. One square. Aimed at the PROBE, not the "
+          "harvester.", hold=3400)
+
+    f.praxis(cues=[
+        ("H01", "The round lands first \u2014 before the board takes its "
+         "note of who can see what.", 1100, [theirs]),
+        ("H01", "Their eye is gone. So on this hour, that square was "
+         "never lit \u2014 and the drop resting on it is REFUSED.",
+         1200, [theirs]),
+        ("AURORA", "Their harvester is still in orbit. The jackpot is "
+         "still on the board.", 800),
+    ])
+    f.pull_out()
+
+    # The contrast is the entire lesson, and it is a rule rather than a
+    # dice roll, so the film states it flatly rather than shooting a
+    # second take that would only show the same cell twice.
+    f.say("An EMP on that square, on that hour, does NOT do this.",
+          hold=3400)
+    f.say("It resolves under the hour's note. The board has already "
+          "written down that the square was lit, so the landing stands "
+          "and you have paid 200 to kill a probe that had already done "
+          "its job.", hold=4600)
+    f.say("SNAP is the only thing on the board that moves before the "
+          "note is taken. That beat is what the hundred buys.", hold=4000)
+
+    f.say("It has a second use, if you would rather gamble.", hold=2600)
+    f.say("The square stays hot for the rest of that hour. Anything that "
+          "walks or lands into it is damaged \u2014 no harvest that turn, "
+          "and 500 credits to put right.", hold=4400)
+    f.say("Guess the square they are dropping onto and you take their "
+          "whole night, not one hour of it.", hold=3400)
+    f.say(None)
+    f.wait(600)
+
+
+@film("adv_buy_snap", ready='[data-orbit-action="build_snap"]')
+def _adv_buy_snap(f: Film, base: str, sid: str) -> None:
+    """Orbit three: the cheap weapon, and why cheap is not weak (v1.36).
+
+    Deliberately a SHORT film. SNAP does almost nothing you can point a
+    camera at — one missile, one square, one hour — and the temptation
+    is to pad that with the mechanic, which belongs in ``adv_snap`` on
+    the night it is fired. This film has one job: establish the price
+    ladder, so that the number on the buy button reads as "the cheap
+    one" rather than as an arbitrary hundred.
+    """
+    f.say("Three weapons, and they are priced 1, 2, 3.", hold=2600)
+
+    for action, blurb in (
+        ("build_snap", "SNAP \u2014 100"),
+        ("build_emp", "EMP \u2014 200"),
+        ("build_chaff", "chaff \u2014 300"),
+    ):
+        sel = f'[data-orbit-cost="{action}"]'
+        if f.pg.locator(sel).count():
+            f.say(blurb, hold=1500)
+            f.point_near(sel, dx=0, dy=-26, ms=560)
+            f.wait(1100)
+    f.say(None)
+
+    f.say("Your rack holds 600. So the ladder is really six pips, and "
+          "these are one, two and three of them.", hold=3800)
+
+    f.say("You have 50 blue left of the 250 you started with \u2014 the EMP "
+          "took the rest. Only one of the three is even reachable.",
+          hold=4000)
+    f.say("This turn the training range has credited you 100, exactly "
+          "one round. A real season mines it.", hold=3400)
+
+    f.click('[data-orbit-action="build_snap"]', before=520, after=900)
+    f.wait(700)
+    if f.pg.locator("#cc-orbit-blue-proj").count():
+        f.point_near("#cc-orbit-blue-proj", dx=0, dy=-26, ms=700)
+        f.wait(1500)
+
+    f.say("A hundred blue buys one square of one hour. That sounds like "
+          "nothing.", hold=3200)
+    f.say("What it actually buys is being FIRST. Tomorrow night is where "
+          "that turns out to matter.", hold=3600)
+    f.say(None)
+    f.wait(500)
+
+
 @film("adv_buy_chaff", ready='[data-orbit-action="build_chaff"]')
 def _adv_buy_chaff(f: Film, base: str, sid: str) -> None:
     """Orbit three: a second hull, and the dearest thing on the board."""
@@ -2357,22 +2475,114 @@ def _adv_buy_chaff(f: Film, base: str, sid: str) -> None:
 
     cost = '[data-orbit-cost="build_chaff"]'
     if f.pg.locator(cost).count():
-        f.say("Chaff costs no credits at all \u2014 and 255 blue")
+        f.say("Chaff costs no credits at all \u2014 and 300 blue")
         f.point_near(cost, dx=0, dy=-26, ms=700)
         f.wait(2000)
-    f.say("That is more than the 250 you start a season with. Chaff is "
-          "not something you can buy \u2014 it is something you mine for.",
-          hold=3400)
+    f.say("That is more than the 250 you start a season with, and you "
+          "have spent 300 of it already. Chaff is not something you can "
+          "buy \u2014 it is something you mine for.", hold=3800)
+
+    # v1.34 — the training subsidy. The engine grants one chaff's worth
+    # of blue at this orbit's open (``award_tutorial_blue_topup``), so
+    # the buy now succeeds where it used to be a lesson in going
+    # without. The film says where the blue came from: a gift presented
+    # as a windfall teaches the wrong economy.
+    f.say("This turn the training range has credited you 300 \u2014 one "
+          "flare, once. A real season mines it.", hold=3400)
 
     f.click('[data-orbit-action="build_chaff"]', before=520, after=900)
     f.wait(900)
     if f.pg.locator("#cc-orbit-blue-proj").count():
         f.point_near("#cc-orbit-blue-proj", dx=0, dy=-26, ms=700)
         f.wait(1600)
-    f.say("If you cannot afford it this turn, that is not a mistake. "
-          "Go and land on blue.", hold=3000)
+    f.say("Spend it. What it buys is three hours in which nobody moves.",
+          hold=3000)
     f.say(None)
     f.wait(500)
+
+
+@film("adv_arms_bar", ready='[data-orbit-action="build_chaff"]')
+def _adv_arms_bar(f: Film, base: str, sid: str) -> None:
+    """Orbit three, second reel: weaponised blue is public (§4.9.8).
+
+    Shot on the same turn as ``adv_buy_chaff`` and deliberately not
+    merged into it. That film is about what a flare costs; this one is
+    about what buying it TELLS everybody, which is a different lesson
+    and lands better after the purchase than during it.
+
+    The beat this exists to capture cannot be staged in the Orbit panel:
+    the rack does not move until the orbit RESOLVES, so the blue-to-cyan
+    flight happens on the commit. Hence buy, commit, then push in on the
+    hull while the pips light.
+    """
+    f.say("One more thing about that flare, and it is the important one.",
+          hold=2800)
+
+    f.click('[data-orbit-action="build_chaff"]', before=520, after=900)
+    f.say("Watch the station, not the panel.", hold=2200)
+
+    # A phase resolves only once EVERY seat has committed, and on this
+    # duel board nobody is flying the rival. Without this the film sits
+    # on "waiting for YELLOW" and the transfer never happens on camera.
+    submit_orbit(base, sid, [], "p2")
+
+    # The purchase resolves here — this is the only moment the transfer
+    # animation exists, so the camera has to already be on the hull.
+    f.commit_orbit()
+    f.wait(400)
+
+    arms = '[data-os-arms="p1"]'
+    if f.pg.locator(arms).count():
+        f.push_in_on(arms, pad=42.0, max_scale=3.0, ms=900,
+                     why="the arsenal bar is the subject of this film")
+        # A bar of six DIM pips is what an empty rack and a broken data
+        # path both look like, and the first cut of this film shot the
+        # second one: forty seconds of narration about cyan, over a
+        # station with no cyan on it. Six dim pips here is a failure.
+        lit = f.pg.eval_on_selector(
+            arms, "el => (el.textContent || '').replace(/[^\\u2588]/g, '').length")
+        if not lit:
+            f.fails.append(
+                "p1's arsenal bar is unlit at the moment the film says the "
+                f"blue turned cyan (bar reads "
+                f"{f.pg.eval_on_selector(arms, 'el => el.title')!r})")
+        f.say("The blue did not disappear. It turned CYAN.", hold=2800)
+        f.wait(900)
+        f.say("Six pips, a hundred blue of ordnance each. That is your "
+              "ARSENAL, and it caps at 600.", hold=3800)
+        f.point_near(arms, dx=0, dy=-26, ms=760)
+        f.wait(1800)
+        f.pull_out()
+    else:
+        # Never silently ship a film of the page background.
+        f.fails.append(
+            "no arsenal bar on p1's station — the whole subject of "
+            "adv_arms_bar is missing from frame")
+
+    f.say("At 600 the buy buttons grey out. You cannot hoard your way "
+          "out of a bad position.", hold=3600)
+
+    # The public half. A rival's card carries the same exact figure —
+    # that is the claim, so the film has to actually show it rather
+    # than assert it over a shot of the player's own station.
+    rival = '[data-os-station="p2"]'
+    if f.pg.locator(rival).count():
+        f.say("And it is not yours alone to know.", hold=2400)
+        f.glide(rival, ms=700)
+        f.wait(1400)
+        f.push_in_on(rival, pad=30.0, max_scale=2.6, ms=900,
+                     why="the rival arsenal is the public half of the lesson")
+        f.say("Every House reads every arsenal. Exactly \u2014 not a "
+              "grade, not a guess.", hold=3600)
+        f.wait(1200)
+        f.pull_out()
+
+    f.say("Your vault is still a secret. Your weapons never are.",
+          hold=3400)
+    f.say("Nobody on this board will ever be ambushed by a weapon they "
+          "could not have seen coming. Including you.", hold=4000)
+    f.say(None)
+    f.wait(600)
 
 
 @film("adv_chaff")
@@ -2656,8 +2866,9 @@ def _setup_duel(base: str, name: str, seed: int) -> tuple[str, Plan]:
 #: Advanced films, all of them duels — see ``_setup_advanced``.
 ADVANCED_FILMS = {
     "adv_hotdrop", "adv_buy_emp", "adv_redsign", "adv_redsign_rival",
-    "adv_smash_grab", "adv_blind_grab",
-    "adv_emp_rush", "adv_emp_wait", "adv_buy_chaff", "adv_chaff",
+    "adv_smash_grab", "adv_blind_grab", "adv_snap",
+    "adv_emp_rush", "adv_emp_wait", "adv_buy_snap", "adv_buy_chaff",
+    "adv_arms_bar", "adv_chaff",
 }
 
 #: Where in the storyline each film opens. Order matters: the setup
@@ -2667,21 +2878,40 @@ _ADV_TURN = {
     "adv_buy_emp": 1,        # orbit 2
     "adv_redsign": 2,        # night 2
     "adv_redsign_rival": 2,  # night 2, mirrored
-    "adv_buy_chaff": 3,      # orbit 3
+    "adv_buy_snap": 3,       # orbit 3
+    "adv_buy_chaff": 5,      # orbit 4
+    # Same turn as adv_buy_chaff, its own session: this one commits the
+    # orbit to catch the blue-to-cyan transfer, which that film must not
+    # do (it ends in the panel, mid-purchase).
+    "adv_arms_bar": 5,       # orbit 4
     # Three films open on night 3, each a session of its own. They all
     # want the same board — two beacons lit, an EMP in stock, a hull
     # spare — and then do completely different things with it.
     "adv_smash_grab": 4,     # night 3: take the pure you can see
     "adv_blind_grab": 4,     # night 3: take a guess at the one you cannot
+    "adv_snap": 4,           # night 3: deny the one they can see
     # Both takes of the spliced walk-in open on the same turn, which is
     # the point — the two halves differ only in what the player does
     # with the hours. `adv_emp` itself is kept here so the headless
-    # probe can still stage "night three" by the name humans use.
-    "adv_emp": 4,
-    "adv_emp_rush": 4,       # night 3: take the clock, ignore it
-    "adv_emp_wait": 4,       # night 3: take the clock, and use it
+    # probe can still stage "night four" by the name humans use.
+    #
+    # v1.36 moved these from night 3 to night 4. Night 3 became the
+    # jackpot fight when SNAP arrived, and `advanced:planning:4` is
+    # where the reel plays them — a film carries the day number it was
+    # shot on burnt into its own chrome, so a lesson shown on night
+    # four has to be SHOT on night four or the header argues with the
+    # board behind the player. See `_EMP_TAKES` for what that costs the
+    # setup.
+    "adv_emp": 6,
+    "adv_emp_rush": 6,       # night 4: take the clock, ignore it
+    "adv_emp_wait": 6,       # night 4: take the clock, and use it
     "adv_chaff": 6,          # night 4
 }
+
+#: The walk-in takes, which need a night the storyline does not
+#: otherwise leave them: an unspent EMP, one hull, and a rival holding
+#: still. Three branches in ``_setup_advanced`` key off this.
+_EMP_TAKES = {"adv_emp", "adv_emp_rush", "adv_emp_wait"}
 
 
 def _setup_advanced(base: str, name: str) -> tuple[str, Plan]:
@@ -2770,33 +3000,100 @@ def _setup_advanced(base: str, name: str) -> tuple[str, Plan]:
     submit_night(base, sid, [probe(ADV_MINE)], "p1")
     submit_night(base, sid, [probe(ADV_THEIRS)], "p2")
 
-    # ── turn 3 · orbit 3 — the second hull, and the chaff ────────────
+    # ── turn 3 · orbit 3 — the SNAP ──────────────────────────────────
+    # v1.36 — this orbit used to buy the chaff and the second hull.
+    # Both moved to turn 5, because the teaching subsidy moved: the
+    # engine now grants one SNAP's worth of blue here and one chaff's
+    # worth at the next orbit (``TUTORIAL_BLUE_GRANT_WEAPON``). Shooting
+    # the chaff buy on this turn would be shooting a purchase the player
+    # cannot make until tomorrow — and, since v1.36 priced chaff at 300,
+    # one the seat genuinely cannot afford on camera.
     if stop <= 3:
         return sid, plan
     submit_orbit(base, sid, [
-        {"a": "build_chaff", "count": 1},
-        {"a": "build_harvester"},
+        {"a": "build_snap", "count": 1},
         {"a": "build_probe", "count": 2},
     ], "p1")
     submit_orbit(base, sid, [{"a": "build_probe", "count": 2}], "p2")
 
     # ── turn 4 · night 3 — the salvo ─────────────────────────────────
     if stop <= 4:
-        # The rival's eye has to still be ON the jackpot for the salvo
-        # to take it, so they re-probe it this night.
-        submit_night(base, sid, [probe(ADV_THEIRS)], "p2")
+        if name == "adv_snap":
+            # This one film needs the rival to actually TRY the
+            # smash-and-grab, because the lesson is it being refused.
+            #
+            # They do not probe tonight: the eye they are landing on is
+            # the one they put down on night two, which is still alive
+            # (three-night lifetime). That matters. The whole point is
+            # that a landing rests on a beacon that already exists, and
+            # the SNAP arrives above the hour's vision note and takes it
+            # away retroactively — so their drop, queued in good faith
+            # against a square that WAS lit, is refused on the night.
+            # Re-probing would put a second eye on the square and the
+            # denial would not be clean.
+            their_h = [
+                u["id"] for u in view(base, sid, "p2")["units"]
+                if u.get("type") == "harvester" and u.get("orbit")
+            ]
+            if not their_h:
+                raise SystemExit(
+                    "advanced setup left the rival with no harvester in "
+                    "orbit — adv_snap would have nothing to deny"
+                )
+            submit_night(base, sid, [
+                {"a": "drop", "unit": their_h[0], "at": list(ADV_THEIRS)},
+                {"a": "pickup", "unit": their_h[0]},
+            ], "p2")
+        else:
+            # The rival's eye has to still be ON the jackpot for the
+            # salvo to take it, so they re-probe it this night.
+            submit_night(base, sid, [probe(ADV_THEIRS)], "p2")
         return sid, plan
-    submit_night(base, sid, [
-        {"a": "emp_launch", "at": [list(c) for c in ADV_SALVO]},
-        probe(ADV_BESIDE),
-    ], "p1")
+    if name in _EMP_TAKES:
+        # The walk-in takes are the one pair shot AFTER this night, so
+        # this is the night that must not spend their weapon. A bare
+        # WAIT rather than a probe: anything we put on the board here
+        # is still on it when the camera rolls, and the film lays its
+        # own eye at ADV_BESIDE as part of the lesson.
+        submit_night(base, sid, [{"a": "wait"}], "p1")
+    else:
+        submit_night(base, sid, [
+            {"a": "emp_launch", "at": [list(c) for c in ADV_SALVO]},
+            probe(ADV_BESIDE),
+        ], "p1")
     submit_night(base, sid, [probe(ADV_THEIRS)], "p2")
 
-    # ── turn 5 · orbit 4 ─────────────────────────────────────────────
-    submit_orbit(base, sid, [{"a": "build_probe", "count": 2}], "p1")
+    # ── turn 5 · orbit 4 — the second hull, and the chaff ────────────
+    # The chaff subsidy lands here (v1.36), so this is the first orbit
+    # on which a flare is buyable at all.
+    if stop <= 5:
+        return sid, plan
+    if name in _EMP_TAKES:
+        # No second hull for the walk-in takes. The film drives "the"
+        # harvester by clicking the first fleet row, and a second row
+        # makes that selector a coin toss — so these two takes keep the
+        # one-hull fleet they were choreographed against. No flare
+        # either: it would sit in the DEPLOY panel next to the button
+        # the film is pointing at.
+        submit_orbit(base, sid, [{"a": "build_probe", "count": 2}], "p1")
+    else:
+        submit_orbit(base, sid, [
+            {"a": "build_chaff", "count": 1},
+            {"a": "build_harvester"},
+            {"a": "build_probe", "count": 2},
+        ], "p1")
     submit_orbit(base, sid, [{"a": "build_probe", "count": 2}], "p2")
 
     # ── turn 6 · night 4 — the lift that never comes ─────────────────
+    if name in _EMP_TAKES:
+        # The walk-in wants the opposite of the chaff night: the rival
+        # sitting still with a live eye on their own jackpot, so the
+        # wall has something to deny and the seam is still there to
+        # walk onto when it expires. Giving them the hot drop below
+        # would put a hull on the square the player is walking at.
+        submit_night(base, sid, [probe(ADV_THEIRS)], "p2")
+        return sid, plan
+
     # Their whole night is posted before the camera rolls: hot drop,
     # two squares of work, then reach for the lifter on H05. Our flare
     # goes up on H04 and smothers H04-H06.

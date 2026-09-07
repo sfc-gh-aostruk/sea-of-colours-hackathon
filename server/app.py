@@ -54,6 +54,8 @@ from sea_of_colours.snowpark.backend import get_store
 from sea_of_colours.snowpark import engine as soc_engine
 from sea_of_colours.game.session import MAX_SEATS, Phase
 from sea_of_colours.game import tutorial as soc_tutorial
+from turnlab import routes as turnlab_routes
+from turnlab import store as turnlab_store
 
 
 # v0.9.6 — N-seat games (1..MAX_SEATS) use canonical slugs ``p1`` … ``pN``.
@@ -460,12 +462,47 @@ if _DOCS_DIR.is_dir():
 # server for a room of attendees can point them at a URL, and an agent
 # reviewing its own bake does not have to know where the repo lives.
 # Absent until someone records, hence the existence check.
+#
+# The page itself is served from its source rather than from the copy
+# the recorder leaves in the bake directory, for two reasons (v1.41):
+# that copy is only as fresh as the last `--record`, and without one
+# there is no directory to mount at all — which would put the live diff
+# loop behind "go and run a twenty-minute suite first". Registered
+# before the mount so it wins the /battles/ path; the mount still
+# serves index.js and data/ beside it.
+_ROOM_HTML = (
+    _REPO_ROOT / "sea_of_colours" / "evals" / "battles" / "room" / "room.html"
+)
+
+
+@app.get("/battles/", include_in_schema=False)
+@app.get("/battles", include_in_schema=False)
+def battle_room() -> Response:
+    if not _ROOM_HTML.is_file():
+        raise HTTPException(status_code=404, detail="the room is missing")
+    return Response(
+        content=_ROOM_HTML.read_text(encoding="utf-8"),
+        media_type="text/html; charset=utf-8",
+        headers=_NO_CACHE_HEADERS,
+    )
+
+
 if _BATTLES_DIR.is_dir():
     app.mount(
         "/battles",
         _NoCacheStatic(directory=_BATTLES_DIR, html=True),
         name="battles",
     )
+
+
+# ── the turn lab ────────────────────────────────────────────────────
+#
+# A side experiment that clones frozen turns and lets agents play the
+# copies. It lives entirely in ``turnlab/`` — its own routes, its own
+# page, its own local store — and is included here rather than written
+# here so that nothing in it can reach for this module's store by habit.
+# See turnlab/README.md.
+app.include_router(turnlab_routes.router)
 
 
 # Markdown reachable over HTTP, by exact path. An allowlist rather than
@@ -523,7 +560,18 @@ def _store_for(game_id: str):
     side by side. Ids created before this existed, or by another process,
     aren't in the registry and fall back to the default — which is the
     backend that wrote them.
+
+    v1.42 — turn-lab sessions are routed out to the lab's own local
+    store, ahead of the registry. They have to be: a lab clone opens in
+    the ordinary game UI and is served by the ordinary game routes, so
+    without this hook the app would look for it in whichever backend the
+    process happens to be on and find nothing. Keeping the test on the
+    id (rather than registering each clone) means it also works for a
+    clone made by an earlier process, which is what you get when you
+    restart the server with a lab tab still open.
     """
+    if turnlab_store.owns(game_id):
+        return turnlab_store.store()
     return soc_backend.store_for_session(game_id)
 
 
@@ -2081,8 +2129,14 @@ def api_game_cards_markdown(
         rows = [r for r in rows if str(r.get("player") or "").lower() == player]
     rows.sort(key=lambda r: (int(r.get("day") or 0), int(r.get("seq") or 0)))
 
+    # One card per TURN, not per row. A V12-family harness writes one
+    # invocation row per pass — reasoning, decision, packager — so a
+    # row-per-card view listed every turn three times, identically
+    # labelled, with the thinking on one card and the option ids it
+    # chose on the next (v1.41).
     normalised = [
-        soc_cards.normalise(r, season=season, session_id=game_id) for r in rows
+        soc_cards.normalise_group(g, season=season, session_id=game_id)
+        for g in soc_cards.group_rows(rows)
     ]
     want_html = str(fmt).lower() == "html"
     empty_note = (
@@ -2124,6 +2178,14 @@ def api_game_cards_markdown(
             **_NO_CACHE_HEADERS,
         },
     )
+
+
+# v1.43 — the `/api/battles/*` fast-diff routes lived here. They drove
+# a live mode in the battle room: pick a frozen turn, pick an agent, get
+# one turn back diffed against V12. The turn lab does that on turns that
+# were actually played rather than constructed ones, so the routes went
+# with the module behind them. `/battles/` still serves the recorded
+# room, which is static and never fetched anything.
 
 
 def _infer_runtime(agent_id: str | None) -> str:

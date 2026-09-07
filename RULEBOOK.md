@@ -1,7 +1,7 @@
 # Sea of Colours — Master Rulebook
 
-Version: 1.32
-Last updated: 2026-08-28
+Version: 1.39
+Last updated: 2026-09-07
 
 This is the single source of truth for the world, the fiction, and how
 play resolves. Every change is recorded in the [Changelog](#changelog) at
@@ -25,6 +25,9 @@ The following settings define the **canonical competitive ruleset** as of v0.9.1
 | `RED_QUALITY_MULTIPLIER` | `0.75 / 1.0 / 1.5 / 3.0` | trace / vein / mass / pure. The convex curve is why probing beats scraping (§4.4). |
 | `GREEN_ENDGAME_PENALTY` | `100` | Flat charge per GREEN parcel, regardless of purity (§4.7). |
 | `HOARD_CAPACITY` | `15` | Vault slots. Since v1.13 the vault empties every orbit, so this caps **one night's** haul (§3.14). |
+| `WEAPONISED_BLUE_CAP` | `600` | v1.34 — most blue-worth of ordnance one seat may hold. Six pips of 100. Over-cap builds are refused at purchase and cost nothing. The figure is **public** to every seat, exactly (§4.9.8). |
+| `BLUE_COST_BY_KIND` | `snap 100 · emp 200 · chaff 300` | v1.36 — the weapon price ladder, 1 : 2 : 3 into a cap of 6. Deliberately makes most public arsenal totals ambiguous between loadouts: an exact quantity, an inexact inventory (§4.9.8). Stamped per game, so a retune never reprices an in-flight or archived season. |
+| `SNAP_COST_CREDITS` / `EMP_COST_CREDITS` | `250` / `250` | The credit half of a build. Not stamped per game — credits are a live dial, and only blue denominates the cap (§4.9.8). Chaff is `0`. |
 | `decluster_pure_red` | `True` | No two `pure` (255) cells may be 8-adjacent. Extras in a touching group are demoted to high `mass`, so a jackpot is always a single contested cell (§2.2). |
 | Pure demotion band | `220 – 254` | Where a demoted pure lands — top of `mass`, still worth combing (§2.2). |
 | `spread_pure_red` | `True` | v1.24 — every board carries ≥ `min_pure_count` pures, none closer than `min_pure_separation` (§2.2). |
@@ -1620,6 +1623,18 @@ and `world.echo` cells from a probe-launch pulse carry the
 this from my own probe" vs. "I learnt this because the rival's
 probe-impact was seen from orbit".
 
+**The night log obeys the same asymmetry (v1.38).** The engine writes one
+shared log per session, and it is written for the watcher, not for a
+seat: it names every House's landings by coordinate, and a bot seat's
+entry states its plan in prose. `agent_view.recent_log` therefore carries
+only the rows that name no other House. Redaction is by mention rather
+than by subject — a row naming two Houses is withheld from both — which
+loses the occasional line about your own units and never leaks one about
+theirs. The structured blocks above are unaffected: they are computed
+from the full log before it is cut, which is what lets
+`competitor_intel` keep publishing a rival's launches while the raw feed
+stops publishing their drops.
+
 #### 3.15.1 Station observations (platform readings, v0.9.11)
 
 Beyond launch/recovery counts, every House can take a coarse **reading**
@@ -2181,27 +2196,39 @@ The Nox phase gained three aggressive weapons and an explicit
 [`sea_of_colours/game/weapons.py`](sea_of_colours/game/weapons.py)
 so tuning them is a one-file edit.
 
-**Two of the three are still in service** — the EMP salvo (§4.9.3) and
-the orbital chaff flare (§4.9.5). The caltrop mine was retired in v1.31
-and its slot is deliberately left open for a replacement; §4.9.4 records
-what happened to it.
+**There are three weapons again as of v1.36** — the EMP salvo (§4.9.3),
+the SNAP round (§4.9.4) and the orbital chaff flare (§4.9.5). SNAP takes
+the slot the caltrop mine vacated when it was retired in v1.31; §4.9.4
+records both, because the retirement is the precedent the new weapon is
+built to be able to follow.
+
+The three are priced **1 : 2 : 3** against a cap of six (§4.9.8): SNAP
+100 blue, EMP 200, chaff 300. That is not decoration. It means the
+public arsenal figure is an exact count of *how much* ordnance a seat
+holds and a poor guide to *which*, because 300 is a chaff or three
+SNAPs, and 600 is two chaff or three EMPs or one of everything. Before
+v1.36 the prices happened to make every total unique, and the arsenal
+readout was effectively an itemised inventory of your rival's rack.
 
 #### 4.9.1 Blue purity — the weapons currency
 
-Weapons are funded out of the seat's vaulted **BLUE** parcels.
-`GameSession.blue_purity_available(player)` is the sum of every
-BLUE parcel's `purity`. `GameSession.debit_blue_purity(player,
-cost)` consumes parcels **lowest-purity first** until the
-running total covers `cost`; any overshoot in the final parcel is
-**wasted** (no refund). The economy intentionally rewards a seat
-that mines BLUE in even, high-purity chunks: a seat with two
-100-purity parcels is strictly worse off than one with a single
-200-purity parcel, because the single parcel can fund an EMP
-salvo (200) cleanly while two 120-parcels waste 40 to do the
-same job.
+Weapons are funded out of the seat's **BLUE bank** and its vaulted
+**BLUE** parcels. `GameSession.blue_purity_available(player)` is the
+bank plus the sum of every BLUE parcel's `purity`.
+`GameSession.debit_blue_purity(player, cost)` spends the bank first,
+then consumes parcels **lowest-purity first** until the running total
+covers `cost`.
+
+**Overshoot in the final parcel is refunded** as a residual BLUE parcel
+inheriting that parcel's lineage (v0.9.5). It is not wasted. *(This
+paragraph described the pre-v0.9.5 burn until v1.34; the engine has
+refunded since v0.9.5 and the prose had drifted.)*
 
 This is the foundation under §4.6 (RED is propellant for orbital
 launches; BLUE is propellant for orbital weapons).
+
+How much ordnance that blue may become at once is capped, and the
+result is public — see §4.9.8.
 
 #### 4.9.2 WAIT command + hour scheduling
 
@@ -2285,7 +2312,94 @@ seconds.
   hour and takes no part in the collision pre-passes (§3.6). One applied
   action per seat per hour (§3.10), with no exception for weapons.
 
-#### 4.9.4 Caltrop mine cluster — retired (v1.31)
+#### 4.9.4 SNAP round — `{"a": "snap", "at": [x, y]}` (v1.36)
+
+One missile, one square, one hour. SNAP is the cheap weapon and the fast
+one, and **speed is the rule** — everything else about it follows from
+where it sits in the hour.
+
+- **Build-first, like the others.** Bought in Orbit via
+  `{"a": "build_snap", "count": N}`; the night move drains
+  `weapon_stock["snap"]`. Empty stock wastes the move with `"no SNAP in
+  stockpile"`.
+- **Cost (paid in Orbit):** `SNAP_COST_BLUE_PURITY` (default **100**) +
+  `SNAP_COST_CREDITS` (default **250**) per round. The cheapest ordnance
+  in the game in blue, and the same credit price as an EMP — the credit
+  half is the build fee, and building a thing costs what it costs.
+- **One cell, and only one.** `at` is a bare `[x, y]`. A payload
+  offering a list is **refused by name** rather than silently taking the
+  first, because an agent that thinks it bought a spread should find out
+  now. `SNAP_RADIUS` is 0, which the same `2r(r+1)+1` formula the EMP
+  uses turns into exactly one cell, so nothing special-cases it.
+- **It resolves FIRST — above the hour's vision snapshot.** This is the
+  weapon. Order within the hour (§4.9.3's "emp_first" list, amended):
+  cloud decay and field sweep, then chaff pre-emption, **then SNAP**,
+  then the hour-start live-vision snapshot, then EMP-launch pre-emption,
+  then the disable set, then the collision pre-passes, then regular
+  dispatch.
+- **So it can deny a landing in the hour it kills the beacon.** A probe
+  destroyed by a SNAP is destroyed *before* the hour's visibility is
+  recorded, so a drop that square was lighting has no live sensor
+  coverage and is refused **tonight** (§3.9.7), not next night. This is
+  the deliberate opposite of the EMP ruling: an EMP resolves *below* the
+  snapshot, so a beacon it kills was already written down as lit and the
+  landing stands (see `docs/OUTSTANDING_ISSUES.md` #24). Which side of
+  the snapshot a weapon sits on **is** the difference between the two,
+  and it is the answer to smash-and-grab.
+- **It maims harvesters, on a window rather than an instant.** Any
+  harvester **standing** on the cell when the round lands is damaged,
+  and so is any harvester that **arrives** on that cell later in the
+  same hour — by step or by drop. The cell is stamped *hot* for the rest
+  of the hour and cools at the next one, so a square SNAPped at hour 3
+  is safe to walk onto at hour 4. SNAP guards a square for a beat; it is
+  not a minefield.
+- **A walk-in is wrecked where it stands; a landing is turned back.**
+  The two arrivals are not the same move and do not resolve the same
+  way. A harvester that **steps** onto a hot cell completes the step and
+  is crippled on the square — it was already on the surface and there is
+  nowhere to refuse it to. A harvester that tries to **land** on one
+  never touches down: the drop is refused, the hull is damaged **in
+  orbit**, and because it never made an outing it does not spend its one
+  landing for the night (§3.9.2). That is the same shape as dropping
+  onto a rival harvester (§3.6) — the engine's existing answer to a
+  landing that arrives into something — and it is a harder stop than an
+  EMP cloud, which lands you and merely denies the harvest (§4.9.3).
+- **Either way the square is not harvested.** The landing never happens
+  and the walk-in returns before the harvest, so a well-timed SNAP
+  leaves the ore in the ground. This is the "protect a square for the
+  turn" half of the weapon, and it is why the two different resolutions
+  reach the same tactical promise.
+- **The damage is the ordinary damage (§3.6.1).** Not a second kind of
+  broken: a maimed harvester cannot harvest or auto-harvest, and the
+  500c repair (§4.2) applies.
+- **The night reports it on two channels (§5.1).** The strike itself is
+  **public** — `{"type": "snap", "owner", "at", "hours"}` on
+  `combat_events`, fired whether or not it found anything, because the
+  scorch mark announces it to anyone looking. **Who it hit is private to
+  the victim** — `{"type": "snap_hit", "unit", "victim", "by", "hours",
+  "outcome"}`, where `outcome` is `"crippled"` or `"landing_aborted"`.
+  That split is the same one `emp` / `emp_hit` uses. The scoreboard
+  credits the shooter under `snap_harvesters`, kept apart from
+  `harv_damaged` so a shot hull is never read as a rammed one.
+- **Friendly fire is on**, exactly as it is for the salvo. A SNAP put
+  down on your own beacon kills your own beacon.
+- **A jammed hour launches nothing.** Chaff outranks SNAP the same way
+  it outranks the EMP (§4.9.5, v1.14): the round does not fly and the
+  charge stays in stock.
+- **A seat that fired has spent its hour** (§3.10). No exception for
+  being fast.
+- **Visibility:** open. The launch frame is public, and the cell carries
+  a one-hour scorch mark (`SNAP_CLOUD_HOURS` = 1) that is scenery, not a
+  cloud — nothing standing in it is smothered. It has its own replay
+  channel (`frame.snap`, `frame.snap_clouds`) rather than sharing the
+  EMP's, so a client cannot paint one as the other and tell the watcher
+  a harvester is disabled when it is not.
+- **FX:** a single dart at `SNAP_MISSILE_SPEED` (1.5×) the flight time of
+  a probe or an EMP missile, in amber rather than the EMP's cyan. The
+  speed is published on `weapon_specs.snap` because it is the only cue a
+  watcher gets that this thing lands ahead of everything else.
+
+#### 4.9.4b Caltrop mine cluster — retired (v1.31)
 
 The caltrop mine was the third weapon: an Orbit buy (`build_mine`) that
 armed a hidden cluster of cells with a night order (`mine_lay`), and any
@@ -2294,7 +2408,10 @@ harvester stepping into one had its step cancelled and was left
 left empty rather than back-filled in a hurry.
 
 The section number is kept so the citations elsewhere in this book, and
-in the code, still resolve.
+in the code, still resolve. It is `4.9.4b` since v1.36, when SNAP took
+the vacant slot; the retirement account below is unchanged and is worth
+keeping in front of anyone adding a weapon, because it is the shape a
+withdrawal has to take.
 
 - **Both halves are refused by name, not ignored.** `build_mine` in an
   Orbit submission and `mine_lay` in a night queue each come back as a
@@ -2331,7 +2448,9 @@ in the code, still resolve.
   one from `weapon_stock["chaff"]`. Empty stock → wasted move with
   `"no chaff flare in stockpile"`.
 - **Cost (paid in Orbit, NOT at launch):** `CHAFF_COST_BLUE_PURITY`
-  (default 255) + `CHAFF_COST_CREDITS` (default 0) per flare.
+  (default **300** since v1.36, was 255) + `CHAFF_COST_CREDITS`
+  (default 0) per flare. The dearest of the three, and the top of the
+  1 : 2 : 3 ladder (§4.9).
 - **Behaviour:** at hour `N` (the slot the move occupies, plus
   `CHAFF_DURATION_HOURS - 1` carry-over hours; **default 3**, so a
   chaff smothers hours N, N+1, N+2), **every** seat's action in each
@@ -2396,6 +2515,96 @@ cleared and its unspent stock refunded on load (§4.9.4). Both dicts
 tolerate being absent, which is why an old save opens without
 ceremony.
 
+#### 4.9.8 The arsenal is public, and it has a ceiling (v1.34)
+
+Two rules, one idea: **what a seat is carrying is not a secret, and
+there is a limit to how much of it there can be.**
+
+**Weaponised blue.** A seat's *weaponised blue* is the build cost of the
+ordnance currently in its `weapon_stock`:
+
+```
+weaponised_blue = Σ over kinds  count × BLUE_COST_BY_KIND[kind]
+                = snap × 100 + emp × 200 + chaff × 300
+```
+
+Every seat's figure is **broadcast to every other seat**, exactly, on the
+station observation (`arms.blue`, alongside `arms.cap`). It is not fuzzed
+and not graded — unlike the vault contents beside it in the same readout
+(§3.15.x), which stay a silhouette. A weapon's whole purpose is to be
+aimed at somebody else; keeping the count hidden made the counter-play a
+guessing game rather than a decision.
+
+**An exact quantity, an inexact inventory (v1.36).** The figure is
+denominated in cost, so it says precisely *how much* ordnance a seat is
+carrying — and, at the 1 : 2 : 3 prices, usually not *which*. The seven
+reachable totals are 0, 100, 200, 300, 400, 500, 600, and 23 distinct
+racks fit under the ceiling, so most totals decode to several loadouts:
+300 is one chaff, or three SNAPs, or a SNAP and an EMP; 600 is two
+chaff, three EMPs, one of each, or six SNAPs.
+
+That ambiguity is the point of the v1.36 retune, not a side effect of
+it. Until v1.36 the prices happened to make every reachable total unique
+(0, 200, 255, 400, 455, 510, 600), which quietly made the readout an
+itemised list of your rival's rack. Knowing a rival has spent 300 blue
+on weapons is a fact worth acting on; knowing they have exactly one
+chaff and nothing else removed the reading of it.
+
+`decode_rack` returns **every** loadout consistent with a total, and
+callers must treat the answer as a range. The engine never reveals which
+one is real.
+
+**The racks are alternatives, and anything rendering them must say so
+(v1.39).** A total decodes to a *set* of racks and a seat holds exactly
+one of them. Collapsing that set to a per-weapon range — "0 to 3 EMPs,
+0 to 2 chaff" — is not a lossy summary but a false one: those are
+independent marginals, and read together they describe a 1200-blue rack
+that this section forbids. Of the seven racks that fit 600, one holds
+both an EMP and a chaff.
+
+At the 1 : 2 : 3 ladder no total admits more than seven racks, so any
+surface with room to list them should list them. A surface that only has
+room for a per-weapon answer must ask a per-weapon question — "could
+this seat have any chaff", never "how many of each does it have" — and
+the answer to that one is sound, because a rack containing a chaff costs
+at least the 300 a chaff costs. That is what makes a weapon warning
+carry its own minimum spend without anyone writing the threshold down.
+
+**The ceiling.** `WEAPONISED_BLUE_CAP` = **600**. A build that would take
+a seat past it is **refused at purchase**, and the refusal costs nothing —
+no blue, no credits, no partial fill. A batch that would breach the cap
+buys none of itself rather than topping up to the line, matching the
+"no partial fill" guarantee on every other Orbit build (§4.3).
+
+600 is six pips of 100, and the three weapons are one, two and three of
+them: six SNAPs, three EMPs, two chaff, or any mix that fits. The cap is
+stated in blue rather than in units so that a price change moves it
+automatically, and so a fourth weapon inherits it without a rules edit —
+which is exactly how SNAP arrived in v1.36 without this paragraph
+changing.
+
+**Prices are a fact about a season, not about the process (v1.36).**
+Every game stamps the price list and the cap it was born with
+(`weapon_blue_costs` / `weapon_blue_cap` on the session). A retune
+applies to games created after it; a season already in flight keeps
+buying at the numbers its players have been planning against all week,
+and an archived season replays priced the way it was actually played. A
+save written before the stamp existed hydrates on the pre-v1.36
+economy — chaff at 255, and no SNAP anywhere: not priced, not in the
+counters, not in the view, and refused if something asks to build one.
+
+Both numbers reach agents in the view: `arms` on every station
+observation, and `meta.rules.weapon_blue_cap` beside `weapons_enabled`,
+with the price list the cap is denominated in at
+`meta.rules.weapon_blue_costs` (v1.35). Neither appears at all when
+`weapons_enabled` is off (§4.9), so a teaching game carries no weapon
+vocabulary in its payload.
+
+The arsenal is public on the hour, not on the day. A rack that a seat
+empties at hour four reads as empty from hour four; it does not stay lit
+until dawn. That is the same rule, held to honestly — a warning light
+that lags the thing it warns about is not one.
+
 ### 4.10 Blue-sign — orbital radiative signature (v0.9.x)
 
 BLUE is radioactive (§1.1), and that radiation leaks through cloud and
@@ -2446,10 +2655,17 @@ The trigger is discovery, not birth:
   discovery frame, not at the top of the night.
 - It is **anonymous**: the sign never names the house that spotted it.
   Rivals learn *a* pure seam exists and roughly where — not who found it.
-- It is **persistent**: once minted it stays for the rest of the season
-  and does **not** clear when the seam is harvested out (mirroring
-  blue-sign's persistence). Depletion must be inferred from observed
-  rival activity, not from the sign.
+- It **retires when the seam is spent** (v1.33). The beacon burns while
+  any of its pure cells are still pure, and goes out the moment the last
+  one is harvested to synthetic green — logged, anonymously, as `RED SIGN
+  spent — the pure seam near (~x, ~y) is exhausted`. A dead beacon leaves
+  every seat's view entirely, so nobody keeps racing toward a jackpot
+  that is gone. This is the one place redsign does **not** mirror
+  blue-sign: blue-sign is radiative physics and shines whether the seam
+  is worth anything or not, while redsign is an announcement *about a
+  jackpot*, and there is nothing to announce once the jackpot is banked.
+  Retirement stays anonymous — the log line names no house, and the
+  engine's ground-truth `spent_by` never reaches a seat view.
 - Only **pure** RED (255) triggers it. Rich-but-impure RED does not.
 
 Like blue-sign the beacon is deliberately **rough**: the smear is
@@ -2470,9 +2686,8 @@ Surfacing:
   It is deliberately **fog-only**: it paints only on `UNKNOWN` cells and
   recedes as you explore toward the seam — on live or echo tiles the
   player can already see the terrain (including the pure seam itself), so
-  the hint would be redundant and is suppressed there. It persists once
-  discovered (like blue-sign, it does **not** clear when the seam is
-  harvested).
+  the hint would be redundant and is suppressed there. It lasts as long
+  as the beacon does, and goes with it when the seam is spent (v1.33).
 - **Map (discovery burst)** — a one-shot filled **red rhombus** pulse
   (a diamond echo of the player-coloured probe-landing explosion) blooms
   over the seam the instant it is discovered on forward replay / the live
@@ -2813,6 +3028,308 @@ SOC_BACKEND=memory python scripts/run_season.py --seed 1
 ---
 
 ## Changelog
+
+### v1.39 — 2026-09-07
+
+**Agents were reading the public arsenal wrong, in three ways (§4.9.8).**
+
+The engine has broadcast every seat's weaponised blue exactly since
+v1.34, and the number was right. What harnesses made of it was not.
+Nothing here changes a rule; it changes what the agents are told about
+the rules that already exist. The engine change is a missing counter.
+
+- **A seat holding 100 blue was invisible.** The arsenal block filtered
+  on "has EMP or chaff", which a lone SNAP satisfies neither of. So the
+  one weapon that refuses a landing outright was the one weapon a rival
+  could carry without the prompt mentioning it. `WeaponEstimate` had no
+  SNAP field at all — the omission was structural, not a stale filter.
+
+- **A seat holding 600 blue was overstated by exactly double.** The
+  block rendered per-weapon marginals — `emp=[0..3] chaff=[0..2]` —
+  which are two independent ranges printed side by side with nothing
+  saying they are alternatives. The natural reading is "up to three EMPs
+  *and* up to two chaff": 1200 blue under a 600 cap. Of the seven racks
+  that actually fit 600, exactly one holds both an EMP and a chaff.
+
+  Fixed by stating the racks instead. A total admits at most seven at
+  the 1:2:3 ladder, so the block now names them, says the seat holds
+  **exactly one**, and prints the price ladder and the cap so the model
+  can check the arithmetic. The marginals survive internally because ~47
+  call sites ask them the one question they answer honestly — "could
+  this seat have any of X" — which is now a method, `could_hold`.
+
+- **A fired SNAP left no trace in the public silhouette.** The activity
+  tally (§3.14) had no `snaps` counter and `snap_launch` was not an
+  orbital event tag, so a seat could fire one every night and its
+  observable silhouette stayed flat. The strike is public; withholding
+  the count only cost agents an inference a human reads off the board.
+
+**Weapon warnings now carry a minimum spend, and it enforces itself.**
+Each `beware_*` block fires only when some rack fitting that seat's
+published total contains the weapon. No threshold is written down: a
+rack holding a chaff costs at least the 300 a chaff costs, so a seat
+that has weaponised 100 cannot be in one. A fourth weapon inherits the
+guarantee on the day it is priced. SNAP gains `DOCTRINE_BEWARE_SNAP`,
+its own geometry paragraph, and a `snap` dial in the situational read.
+
+**`snap_hit` reaches the reaction path.** The victim-private half of a
+SNAP was not in the "this hit me" event list, so a seat could be SNAPped
+nightly and never react; and the renderer had no branch for it, so it
+printed as a Python dict. Both halves now read as prose, and a refused
+landing is worded differently from a crippled walk-in — one leaves a
+harvester in orbit with its outing unspent, the other leaves a hull on
+the board, and an agent that cannot tell them apart looks for a wreck
+that is not there.
+
+**A frozen card now says who was armed.** The turn lab's whole question
+is "how did my fork play this turn", and the card said nothing about
+weapons — so a fork that ignored an armed rival and a fork that never
+saw one produced identical cards, needing opposite fixes. The line is
+read off `station_intel`, not off the lab's own `arms` argument: the
+latter is what was asked for, the former is what reached the percept,
+and when they disagree that disagreement is the bug.
+
+**The example fork had drifted.** `emp_harvest_test` never received the
+v1.36 fix that decodes against the board's own price table, so it read
+every legacy season at today's rates and saw unarmed seats where there
+were armed ones. Both shipped harnesses are now held to one reading of a
+public total by `tests/test_arsenal_reaches_the_agent.py`; what a fork
+*does* with the arsenal remains entirely its own business.
+
+### v1.38 — 2026-09-07
+
+**The night log was shared, and agents were being handed all of it
+(§3.15).**
+
+- **Symptom.** `store.list_log` takes no seat and a log row has no owner
+  column, so `get_view` put the raw twenty-row window on every agent's
+  percept as `recent_log`. A rival's landings arrived by coordinate,
+  which §3.15 has always made private, and a rival bot's rationale line
+  arrived in full — target cell, escort probe and all — a turn before it
+  played. Measured on a plain heuristic-vs-heuristic season: 11 of the 20
+  rows in one seat's own `recent_log` were the other seat's.
+
+- **Not a live cheat, an open door.** Nothing shipped reads the key —
+  no harness under `orchestrator_2/` touches it, and both prompts are
+  built from the structured blocks. It is fixed because a fork is a
+  directory anyone can write, and a fork that reads what the percept
+  offered it has not broken any rule we had written down.
+
+- **Fix.** `recent_log` is cut to the rows that name no other seat.
+  Matching is by mention, on seat id, display name and tag, so a season
+  with named Houses redacts the same as one without. Rows naming nobody
+  — settlement, phase changes, the clock — are kept for everyone.
+
+- **What deliberately did not change.** `last_night.my_orders` and
+  `competitor_intel` still read the **unfiltered** log, because their
+  entitlement to it is the whole point: the first filters it to the
+  asking seat, and the second lifts only `probe_launch`, which §3.14
+  makes a public flare. The cut lands on the emitted key alone.
+  `tests/test_log_stays_in_its_seat.py` pins both halves, so tidying the
+  filter upstream goes red rather than quietly blinding a seat to
+  launches it is owed.
+
+- **Known limit, not fixed here.** The window is still cut to twenty rows
+  *before* redaction, so a seat now sees fewer than twenty of its own.
+  Cosmetic while nothing reads the key. The human LOG panel is a separate
+  feed and was not touched.
+
+### v1.37 — 2026-09-07
+
+**A landing that arrives into a SNAP is turned back, and the night now
+says so out loud.**
+
+Both halves are corrections to v1.36's SNAP, found by asking what the
+weapon actually reports rather than what it does.
+
+**A refused landing is refused (§4.9.4).** SNAP shipped treating a drop
+onto a hot cell the way it treats a walk-in: the hull landed, and was
+crippled where it lay. That was the wrong shape twice over. The engine
+already has an answer for "your landing arrived into something" —
+dropping onto a rival harvester leaves the hull damaged **in orbit**, its
+outing unspent (§3.6) — and SNAP was the only thing in the game that
+damaged a hull and landed it anyway. Worse, it silently burned the
+victim's one landing for the night (§3.9.2) on a landing that, narrated
+honestly, never happened. A drop into a SNAPped cell is now refused: hull
+damaged in orbit, outing intact. A **step** onto one is unchanged — a
+harvester already on the surface has nowhere to be refused to, so it
+completes the move and is wrecked on the square. Either way the square
+banks nothing, which was always the promise.
+
+**SNAP was invisible on the one channel built for this.** EMP writes
+`emp` / `emp_hit` to `combat_events` and chaff writes `chaff`; SNAP wrote
+nothing at all, while `ENGINE_INTERFACE.md` told every fork the feed
+carried "SNAP / EMP / chaff resolutions". Agents were being pointed at a
+channel that was always empty for the one weapon whose whole value is
+tempo. Now:
+
+- **`snap`** — public, recorded even when the round hits nothing,
+  because the scorch mark announces it to anyone looking and "they spent
+  100 blue on an empty square" is intelligence.
+- **`snap_hit`** — private to the victim, carrying `outcome` of
+  `"crippled"` or `"landing_aborted"`. Both leave a damaged hull and
+  only one leaves it on the board, so the distinction is carried rather
+  than left to be inferred from a position the victim cannot see.
+
+**And the kill feed stops calling it a collision.** SNAP damage was filed
+under `harv_damaged`, which is documented as harvester-on-harvester
+damage — so the one scoreboard number that says who did what to whom was
+reporting that the two houses had rammed each other. It now has its own
+`snap_harvesters` row.
+
+None of this changes a shipped season: SNAP is a v1.36 weapon and no
+archived season contains one.
+
+### v1.36 — 2026-09-06
+
+**A third weapon, and a price ladder that makes the arsenal readout
+worth reading again.**
+
+Two changes that only make sense together.
+
+**The ladder.** Chaff goes 255 → **300** blue, and the three weapons are
+now priced 1 : 2 : 3 — SNAP 100, EMP 200, chaff 300 — into a cap of 600,
+which is six pips of 100 (§4.9, §4.9.8).
+
+The old prices had an accident in them. Every total reachable under the
+cap was unique (0, 200, 255, 400, 455, 510, 600), so the public arsenal
+figure introduced in v1.34 was not "how much ordnance is that seat
+holding" but "here is an itemised list of their rack". The first was the
+rule we wanted; the second is what shipped. At 1 : 2 : 3 most totals are
+shared — 300 is a chaff or three SNAPs or a SNAP and an EMP — so the
+broadcast is an **exact quantity and an inexact inventory**, which is the
+reading that leaves a decision in it. `decode_rack` now returns every
+consistent loadout and its callers treat the answer as a range.
+
+**Prices are now a fact about a season.** Each game stamps the price list
+and cap it was born with. A retune applies to new games; a season in
+flight keeps the numbers its players have been planning against, and an
+archived season replays priced as it was played. Saves written before the
+stamp hydrate on the pre-v1.36 economy — chaff at 255, no SNAP anywhere.
+Without this, changing chaff's price would have walked the arsenal bar of
+every finished season mid-night.
+
+**SNAP** (§4.9.4) takes the slot the caltrop vacated in v1.31. One
+missile, one square, one hour, 100 blue and 250c. Its rule is its
+position in the hour: it resolves **above the hour-start vision
+snapshot**, so a probe it kills is dead before visibility is recorded and
+the landing that beacon was lighting is refused *that night*. That is the
+deliberate inverse of the EMP, which resolves below the snapshot and
+therefore cannot void a same-hour landing (#24, v1.28) — which side of
+the snapshot a weapon sits on is the whole difference between them, and
+it is the answer to smash-and-grab. SNAP also maims any harvester
+standing on the cell or arriving during that hour, using the ordinary
+`damaged` flag and the ordinary 500c repair, so a well-timed round
+protects a square for the turn.
+
+SNAP is built to be **withdrawable**. Its clouds, its replay channel, its
+pre-empt phase and its FX are all separate from the EMP's rather than
+branches inside it, and removing its entry from `BLUE_COST_BY_KIND` takes
+it out of the price list, the counters, the view, the specs table, the
+lab racks and the buy panel at once. `docs/ADDING_A_WEAPON.md` states the
+one obligation that does not follow automatically: a withdrawal owes the
+seats their blue back, the way v1.31 did for the caltrop.
+
+### v1.35 — 2026-09-06
+
+**The arsenal reads as a warning, on the beat the warning matters.**
+
+No rule changed here; what changed is when a seat finds out. §4.9.8 says
+weaponised blue is public, and it was — on a bar that did not move until
+the night was already running. A weapon bought at dusk is very often
+fired the same night, so the one beat that said "they built something"
+went past off-camera, and a public fact nobody is shown is a private one.
+
+- **The arming beat moved from PRAXIS to DUSK.** Blue lifted out of a
+  vault now turns cyan where it hovers and flies into the arsenal bar
+  while the orbit resolves, so the bar is lit before the night starts.
+  The dusk dwell is held long enough to cover it rather than cutting it
+  off, which is what the first cut of this did.
+- **The bar falls when the weapon flies, not at dawn.** It reads
+  post-orbital rack minus whatever has launched by the hour under the
+  cursor, so an emptied rack shows as empty from the launch onwards.
+  Pips fade up as they light and down as they are spent.
+- **`meta.rules.weapon_blue_costs`.** The price list the cap is
+  denominated in, published beside `weapon_blue_cap`. Clients have to
+  price a rack between the hours of a night; a second copy of the prices
+  outside the engine would survive exactly until the first retune.
+- **The hover card reads the arsenal live.** It asks for the `pre`
+  snapshot, which is honest for a fuzzed vault and wrong for ordnance:
+  between buying a weapon and playing the night it said `0/600b` beside
+  a station bar showing two lit pips. Every other row on that card is
+  last night's; this one is now.
+- **Teaching films wait for the board.** The tutorial modal covers the
+  map and used to open the instant the phase flipped — straight over the
+  orbital resolution and the night cinematic, so a teaching game hid the
+  animations a normal game shows. It now opens a second after the board
+  goes quiet.
+
+### v1.34 — 2026-09-06
+
+**Weapons stop being a secret, and start having a ceiling (§4.9.8).**
+
+- **Weaponised blue is public.** Every seat's `emp×200 + chaff×255` is
+  broadcast exactly to every other seat as `arms.blue` on the station
+  observation. It sits above the fuzzing gate, so unlike the vault
+  contents beside it, rivals get the number and not a grade. The
+  counter-play to a weapon was previously a guessing game built on
+  watching a rival's blue band drop between nights; now it is a
+  decision. Weapons are the one thing on a platform whose purpose is to
+  be aimed at somebody else.
+- **`WEAPONISED_BLUE_CAP = 600`.** A build that would take a seat past
+  the ceiling is refused at purchase and costs nothing — no blue, no
+  credits, no partial fill. A batch that would breach it buys none of
+  itself. Denominated in build cost rather than unit count, so a price
+  retune moves the ceiling with it and a future third weapon inherits
+  it without a rules edit.
+- **Both reach agents.** `arms` on every station observation,
+  `meta.rules.weapon_blue_cap` beside `weapons_enabled`. Neither exists
+  when weapons are off, so a teaching game's payload carries no weapon
+  vocabulary at all.
+- **A decodable total, for now.** The seven reachable totals under the
+  cap are distinct, so a public total is effectively a public
+  inventory. That is a property of the current prices, not of the rule.
+- **§4.9.1 corrected.** It claimed overshoot on the final BLUE parcel
+  was wasted with no refund. The engine has refunded it as a residual
+  parcel since v0.9.5; the prose had drifted for that whole span. No
+  behaviour changed.
+
+### v1.33 — 2026-09-04
+
+**§4.11 now says what the engine has always done: a redsign retires when
+its seam is spent.** No behaviour changed. The prose was wrong, and had
+been for months.
+
+- **What the prose claimed.** That the beacon "does **not** clear when the
+  seam is harvested out (mirroring blue-sign's persistence)", and made a
+  strategic virtue of it: "Depletion must be inferred from observed rival
+  activity, not from the sign."
+- **What the engine does.** `_retire_redsign_if_spent` flips `live` to
+  false the moment the last pure cell of a seam is harvested to synthetic
+  green, stamps `spent_day` / `spent_by`, logs an anonymous `RED SIGN
+  spent` line, and `_sweep_redsign_liveness` backstops any path that
+  edits purity directly. The view layer drops dead regions before a seat
+  ever sees them.
+- **Which one is right.** The engine. A blue-sign is radiative physics and
+  shines whether the seam is worth anything or not; a redsign is an
+  *announcement about a jackpot*, and once the jackpot is banked there is
+  nothing left to announce. A beacon that outlives its seam broadcasts
+  "pure in FOG" forever and lures every seat into chasing nothing, which
+  is a worse game than the one the prose was defending.
+- **Why it mattered now rather than whenever it drifted.** Nobody had been
+  bitten, because the engine was correct and the agents read the engine.
+  But the fork guide sends people to the RULEBOOK to learn the mechanic,
+  and a room of them was hours from writing agents against a rule that
+  does not exist — the kind of bug that surfaces as "my agent hoards
+  probes for a seam that is gone" long after anyone would think to check
+  the prose.
+- **Fanned out.** The stale claim was repeated in two engine comments that
+  sat directly above the code contradicting them —
+  `GameSession.redsign`'s field docstring and the view builder's
+  `redsign` block. Both corrected. Behaviour was already pinned by
+  `tests/test_redsign.py` (retirement on harvest, exit from every seat
+  view, staying live until the last pure cell goes), which is why the
+  drift was invisible: the tests were testing the engine, not the prose.
 
 ### v1.32 — 2026-08-28
 

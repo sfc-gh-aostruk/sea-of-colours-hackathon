@@ -153,8 +153,14 @@ _DEFAULT_EMP_CREDIT_COST = 0
 _DEFAULT_EMP_RADIUS = 2
 _DEFAULT_EMP_MISSILES = 3
 
-_DEFAULT_CHAFF_BLUE_COST = 255
+_DEFAULT_CHAFF_BLUE_COST = 300  # v1.36 — was 255
 _DEFAULT_CHAFF_CREDIT_COST = 0
+
+_DEFAULT_WEAPONISED_BLUE_CAP = 600
+"""Fallback for ``meta.rules.weapon_blue_cap`` (RULEBOOK §4.9.8) — the
+most blue-worth of ordnance a seat may hold. Read off the view when it
+is there, exactly like the weapon prices above, so a retune does not
+need an agent edit."""
 
 _BLUE_WEAPON_TARGET = 400
 """Rolled-up BLUE the seat farms toward before it's "flush" on weapons
@@ -1877,13 +1883,44 @@ def plan_orbit_actions(
     # EMP stays capped at a small stockpile so we don't hoard salvos we
     # never fire — which is exactly the failure V12 ships with, and the
     # reason this cap is worth keeping rather than tuning up.
+    # v1.34 — the arsenal ceiling (RULEBOOK §4.9.8). Threaded through the
+    # affordability helpers so every branch below inherits it, rather
+    # than bolted onto each one. At most one weapon is queued per orbit,
+    # so the held figure does not need to move mid-plan.
+    weapon_blue_cap = int(
+        ((view.get("meta") or {}).get("rules") or {}).get(
+            "weapon_blue_cap", _DEFAULT_WEAPONISED_BLUE_CAP
+        )
+    )
+    held_weapon_blue = emp_stock * emp_blue_cost + chaff_stock * chaff_blue_cost
+
+    def _room_for(blue_cost: int) -> bool:
+        return held_weapon_blue + blue_cost <= weapon_blue_cap
+
     def _afford_emp() -> bool:
-        return blue_total >= emp_blue_cost and remaining >= emp_credit_cost
+        return (
+            blue_total >= emp_blue_cost
+            and remaining >= emp_credit_cost
+            and _room_for(emp_blue_cost)
+        )
 
     def _afford_chaff() -> bool:
-        return blue_total >= chaff_blue_cost and remaining >= chaff_credit_cost
+        return (
+            blue_total >= chaff_blue_cost
+            and remaining >= chaff_credit_cost
+            and _room_for(chaff_blue_cost)
+        )
 
-    if weapons_enabled and blue_total > _BLUE_ALWAYS_BUILD_THRESHOLD:
+    if weapons_enabled and not _room_for(min(emp_blue_cost, chaff_blue_cost)):
+        # Say the cap out loud rather than letting it read as "cannot
+        # afford" — an agent at the ceiling with a full wallet is a
+        # different situation, and the descriptor is what a fork reads
+        # when it wonders why its build never fired.
+        descriptors.append(
+            f"weapon build skipped (holding {held_weapon_blue} of the "
+            f"{weapon_blue_cap} blue arsenal cap)"
+        )
+    elif weapons_enabled and blue_total > _BLUE_ALWAYS_BUILD_THRESHOLD:
         if chaff_stock < 1 and _afford_chaff():
             actions.append({"a": "build_chaff", "count": 1})
             remaining -= chaff_credit_cost

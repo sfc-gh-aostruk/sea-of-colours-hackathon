@@ -3,7 +3,11 @@
 Covers the pieces that make the split safe and comparable to single-call v6:
   * directive parse (reasoning-first / DECISION-last), sanitize, and render;
   * the thinker completion predicate;
-  * build_prompt's ``mode`` switch and strategist-directive injection.
+  * the ``mode`` switch and strategist-directive injection, checked against
+    v12's LIVE assembler (``tabula_v12.prompt``). Until v1.40 these pointed
+    at ``_v7.prompt.build_prompt``, which v10 had already replaced — the
+    tests stayed green and kept 400 lines of unreachable code alive in a
+    file every attendee fork copies.
 
 The live two-call orchestration itself is exercised end-to-end by the season
 runner; here we lock in the deterministic plumbing.
@@ -11,10 +15,8 @@ runner; here we lock in the deterministic plumbing.
 
 from __future__ import annotations
 
-from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import (
-    directive as dm,
-    prompt as prompt_mod,
-)
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12 import prompt as prompt_mod
+from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import directive as dm
 
 
 def _view(width=20, height=20):
@@ -118,6 +120,13 @@ def test_predicate_true_only_after_decision():
 
 
 # ── build_prompt mode switch ───────────────────────────────────────────
+#
+# v1.40 — pointed at v12's LIVE assembler. These three were written against
+# ``_v7.prompt.build_prompt`` and kept it green long after v10 replaced it
+# with its own sectioned assembler, which is how 400 lines of dead code
+# survived in a file every fork copies. The contract they check — reasoning
+# first in thinker mode, the directive riding high in mover mode — is real
+# and still shipped; only the module under test was wrong.
 def _common_kwargs():
     return dict(
         agent_view=_view(),

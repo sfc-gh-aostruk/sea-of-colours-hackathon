@@ -54,6 +54,7 @@ from sea_of_colours.game.weapons import (
     CHAFF_COST_CREDITS,
     EMP_COST_BLUE_PURITY,
     EMP_COST_CREDITS,
+    WEAPONISED_BLUE_CAP,
 )
 
 
@@ -101,6 +102,12 @@ class OrbitDials:
     emp_credit_cost: int = EMP_COST_CREDITS
     chaff_blue_cost: int = CHAFF_COST_BLUE_PURITY
     chaff_credit_cost: int = CHAFF_COST_CREDITS
+    #: Fallback for ``meta.rules.weapon_blue_cap`` (RULEBOOK §4.9.8).
+    #: Not doctrine — the engine refuses an over-cap build regardless.
+    #: It is here so this seat declines gracefully rather than spending
+    #: an order on a refusal, which for a fork that buys on sight is a
+    #: real risk: it reaches the ceiling faster than anything else.
+    weapon_blue_cap: int = WEAPONISED_BLUE_CAP
 
 
 #: The shipped economy. Fork-local, so retuning it cannot affect a rival.
@@ -308,18 +315,60 @@ def plan_orbit_actions(
     # So this seat buys an EMP the FIRST day it can afford one — no BLUE
     # threshold beyond the price itself, no roll. Chaff drops behind it
     # and keeps the surplus band it always had.
+    # v1.34 — the arsenal ceiling (RULEBOOK §4.9.8). This seat feels it
+    # sooner than most: buying on sight, it reaches 600 in three days and
+    # then every further order is a refusal. Unlike the other dials the
+    # running total has to move as we queue, because this policy can buy
+    # an EMP and a chaff in the same orbit.
+    weapon_blue_cap = int(
+        ((view.get("meta") or {}).get("rules") or {}).get(
+            "weapon_blue_cap", dials.weapon_blue_cap
+        )
+    )
+    # v1.38 — sum EVERY kind the game prices, not the two this policy
+    # happens to buy. It used to be ``emp_stock * emp + chaff_stock *
+    # chaff``, which stopped being the seat's arsenal the moment a third
+    # weapon existed: a seat holding two SNAPs read as 0 of 600, so the
+    # policy would cheerfully propose a build the engine then refused at
+    # the cap. This seat feels that sooner than most, per the note above.
+    held_weapon_blue = 0
+    for kind, price in (weapon_prices or {}).items():
+        if not isinstance(price, Mapping):
+            continue
+        held_weapon_blue += (
+            int(weapon_stock.get(kind, 0) or 0) * int(price.get("blue", 0) or 0)
+        )
+
+    def _room_for(blue_cost: int) -> bool:
+        return held_weapon_blue + blue_cost <= weapon_blue_cap
+
     def _afford_emp() -> bool:
-        return blue_total >= emp_blue_cost and remaining >= emp_credit_cost
+        return (
+            blue_total >= emp_blue_cost
+            and remaining >= emp_credit_cost
+            and _room_for(emp_blue_cost)
+        )
 
     def _afford_chaff() -> bool:
-        return blue_total >= chaff_blue_cost and remaining >= chaff_credit_cost
+        return (
+            blue_total >= chaff_blue_cost
+            and remaining >= chaff_credit_cost
+            and _room_for(chaff_blue_cost)
+        )
 
-    if weapons_enabled and emp_stock < dials.emp_stockpile_cap and _afford_emp():
+    if weapons_enabled and not _room_for(min(emp_blue_cost, chaff_blue_cost)):
+        descriptors.append(
+            f"weapon build skipped (holding {held_weapon_blue} of the "
+            f"{weapon_blue_cap} blue arsenal cap) — fire something tonight "
+            "and the rack reopens tomorrow"
+        )
+    elif weapons_enabled and emp_stock < dials.emp_stockpile_cap and _afford_emp():
         actions.append({"a": "build_emp", "count": 1})
         remaining -= emp_credit_cost
         emp_reserve = 0          # spent — the rest of the list may have it
         emp_took_change = True
         blue_total -= emp_blue_cost
+        held_weapon_blue += emp_blue_cost
         descriptors.append(
             f"built EMP on sight (blue {blue_total + emp_blue_cost} >= "
             f"{emp_blue_cost}, rack {emp_stock} < {dials.emp_stockpile_cap}) "
@@ -348,6 +397,7 @@ def plan_orbit_actions(
             actions.append({"a": "build_chaff", "count": 1})
             remaining -= chaff_credit_cost
             blue_total -= chaff_blue_cost
+            held_weapon_blue += chaff_blue_cost
             descriptors.append(
                 f"built CHAFF for egress jam (blue still {blue_total} after "
                 f"the EMP)"
@@ -356,6 +406,7 @@ def plan_orbit_actions(
             actions.append({"a": "build_chaff", "count": 1})
             remaining -= chaff_credit_cost
             blue_total -= chaff_blue_cost
+            held_weapon_blue += chaff_blue_cost
             descriptors.append("built CHAFF (blue surplus top-up)")
 
     # Priority 4: top the probe magazine up. A flat "build 2" ran dry and

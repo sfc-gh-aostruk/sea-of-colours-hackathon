@@ -437,6 +437,10 @@
                         <span class="cc-weapon-icon cc-weapon-icon-chaff" aria-hidden="true"></span>
                         <span data-weapon-stock-count="chaff">0</span>
                       </span>
+                      <span class="cc-weapon-stock-chip" data-weapon="snap">
+                        <span class="cc-weapon-icon cc-weapon-icon-snap" aria-hidden="true"></span>
+                        <span data-weapon-stock-count="snap">0</span>
+                      </span>
                     </span>
                   </div>
                 </div>
@@ -616,8 +620,35 @@
                         </span>
                         <span class="cc-orbit-why" data-orbit-why="build_emp" hidden></span>
                       </div>
-                      <!-- v1.31 — the MINE row stood here. The weapon is
-                           retired and its slot is vacant. -->
+                      <!-- v1.36 — SNAP takes the slot the retired MINE
+                           row left vacant. Cheapest of the three and the
+                           only one that asks for a single square. -->
+                      <div class="cc-orbit-act">
+                        <span class="cc-orbit-act-line">
+                          <button
+                            type="button"
+                            class="cli-btn solo-add-orbit cc-add-btn cc-add-btn-weapon"
+                            data-orbit-action="build_snap"
+                          >
+                            [
+                              <span class="cc-weapon-icon cc-weapon-icon-snap" aria-hidden="true"></span>
+                              SNAP &times;<span class="cc-weapon-count" data-orbit-weapon-count="snap">1</span> ]
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            step="1"
+                            value="1"
+                            id="solo-orbit-snap-count"
+                            class="cc-probe-count-input"
+                            title="How many SNAP rounds to build this slot"
+                            aria-label="SNAP count"
+                          />
+                          <span class="cc-orbit-cost" data-orbit-cost="build_snap"></span>
+                        </span>
+                        <span class="cc-orbit-why" data-orbit-why="build_snap" hidden></span>
+                      </div>
                       <div class="cc-orbit-act">
                         <span class="cc-orbit-act-line">
                           <button

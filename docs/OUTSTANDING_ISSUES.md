@@ -1504,7 +1504,40 @@ missing, not the placement.
 
 ---
 
-## 36. 🔴 (OPEN) RULEBOOK §4.11 says a redsign never clears; the engine retires it
+## 36. ✅ (DONE, v1.33) RULEBOOK §4.11 says a redsign never clears; the engine retires it
+
+**Status (v1.33):** Resolved in the engine's favour — the beacon retires when
+its seam is spent, and the prose now says so. No behaviour changed.
+
+**Root cause:** documentation drift, not a code defect. The engine has retired
+spent beacons since v9 (I12) and `tests/test_redsign.py` has pinned it the
+whole time — retirement on harvest, exit from every seat view, staying live
+until the last pure cell goes. The tests were testing the engine, so nothing
+ever went red while the prose said the opposite.
+
+**Which way it was settled:** a blue-sign is radiative physics and shines
+whether the seam is worth anything or not; a redsign is an *announcement about
+a jackpot*, and once the jackpot is banked there is nothing to announce. A
+beacon that outlives its seam broadcasts "pure in FOG" forever and lures every
+seat into chasing nothing.
+
+**Fix (documentation fan-out):**
+- `RULEBOOK.md` §4.11 — the persistence bullet rewritten as a retirement
+  bullet, the map-smear line corrected, `### v1.33` changelog entry added,
+  header bumped to 1.33.
+- `sea_of_colours/game/session.py` — the `redsign` field docstring repeated the
+  stale claim *directly above* `_retire_redsign_if_spent`. Corrected.
+- `sea_of_colours/snowpark/view.py` — same again on the view builder's
+  `redsign` block, above the `live` filter that implements the retirement.
+  Now also records why that filter is what keeps retirement anonymous:
+  `spent_by` is engine ground truth and never reaches a seat.
+- The other two surfaces named below needed nothing. The V12 prompt already
+  branches on `_has_live_redsign` and the view hands it only live regions;
+  the Advanced tutorial's night-two card was already silent on the question.
+
+**Why it was worth doing before the day:** the fork guide sends people to the
+RULEBOOK to learn the mechanic, and a room of them was hours from writing
+agents against a rule that does not exist.
 
 **Found:** while checking the redsign mechanic against the tutorial copy, not
 from a play report — so nobody has been bitten by it yet that we know of.
@@ -1561,6 +1594,423 @@ could — both strings were individually correct-looking and the bug only exists
 when they are read together. It surfaced because a film pointed a camera at the
 card and held it there for four seconds.
 
+## 38. ✅ (DONE, v1.42) V12 read its opponent's journal as its own, on Snowflake only
+
+**Status (v1.42):** Fixed in `_v7/memory.py` (both the V12 copy and the
+`emp_harvest_test` fork's copy), and pinned by a repo-wide test.
+
+**Symptom:** none, which is the point. The agent's STRATEGY JOURNAL simply
+contained nights it had not played, phrased in the first person, and it
+reflected on them as its own. On a file store nothing was wrong; only
+Snowflake seasons were affected.
+
+**Root cause:** `SOC_AGENT_MEMORY` is a **hybrid (Unistore) table** with
+primary key `(SESSION_ID, PLAYER, KIND)`. `_hydrate_from_snowflake` loaded
+a seat's journal with
+
+```sql
+WHERE session_id = ? AND player = ? AND kind LIKE 'arena:day%'
+```
+
+and a **range predicate on a primary-key column makes the scan stop
+honouring the equality on the preceding key column**. Proven against the
+standard-table backup of the same rows that already exists in the account:
+
+| table | `player='p1' AND kind LIKE 'arena:day%'` |
+|---|---|
+| `SOC_AGENT_MEMORY_FDN_BAK` (standard) | 7 rows, all p1 — correct |
+| `SOC_AGENT_MEMORY` (hybrid) | 14 rows — p1's 7 **and p2's 7** |
+
+Scope is narrow and worth remembering: a range predicate on a **key**
+column breaks, on a **non-key** column it does not. That is why the only
+other `LIKE` in the repo — `season_name LIKE 'eval:%'` against the equally
+hybrid `SOC_GAME_SESSION` — is unaffected, verified by counting.
+
+The damage compounded quietly. Entries are filed into a dict keyed by day,
+so a rival's day-3 row overwrote the agent's own rather than appearing
+beside it. Nothing logged, nothing duplicated, no error — just the wrong
+memories, and prose plausible enough to read as your own.
+
+**Fix:** select on the two equality columns only and filter `kind` in
+Python, re-checking `PLAYER` on every row on the way through, since
+nothing in the result can be trusted to satisfy a predicate the scan
+dropped. At most ~10 rows per (session, seat), so there is no cost to it.
+
+**Tests:** `turnlab/tests/test_lab.py::test_no_query_filters_agent_memory_with_a_range_on_kind`
+parses every file's real SQL string literals (skipping docstrings, which
+discuss the bug at length) and fails on any `kind LIKE` / `STARTSWITH(kind`
+against this table. It is deliberately repo-wide rather than scoped to
+V12: `_v7/memory.py` is copied wholesale into every fork, so the bug
+ships again with each new agent unless the whole tree is held to it.
+
+**Not done:** finished seasons were not re-scored. The contamination is
+in what agents *read*, not in the engine's record of what happened, so
+standings stand; but a pre-v1.42 Snowflake season's agent reasoning
+should be read with this in mind.
+
+---
+
+## 39. ✅ (DONE, v1.34) A page opened mid-season captioned day 1 as the latest news
+
+**Status (v1.34):** Fixed. Found while verifying the arsenal bar, but it
+is older than that feature and had nothing to do with it.
+
+**Root cause:** `station.js` resolves the day its hover cards read with
+`_osDay()`, which prefers `_currentDay` — the day of the last rendered
+tick. The replay rewind that runs at boot deliberately parks
+`_currentDay` on the *first* day of the season, so that the reel's
+opening DUSK renders what it should. Nothing moved it forward again
+until a night actually played. So on a page opened in the middle of a
+season, every station hover card served day-1 readings — a rival's hold,
+fissile grade and green estimate as they were on the opening night,
+under a heading that says "end of Nox".
+
+Nobody had reported it because the fuzzy rows degrade quietly: "hold
+empty · fissile medium · ~0 green" is a plausible reading of almost any
+day. The arsenal row is what made it legible — an exact `0/600b` sitting
+next to a station whose own bar showed two lit cyan pips is a
+contradiction on one screen, and that is how it was caught.
+
+**Fix:** `app.js` exposes `window._osLatestObsDay()` (the newest day with
+`pre` readings, the same resolver the RECAP button uses), and `_osDay()`
+prefers it whenever the UI is not showing the past. Replay is untouched:
+`_showingPast` gates the new branch, so a scrub still reads the day under
+the cursor.
+
+**Verified:** `scripts/_probe_arms_bar.py` hovers a rival mid-season and
+prints the card; it read `arsenal 0/600b` against a true 200 before, and
+`200/600b` after.
+
+---
+
+## 40. ✅ (DONE, v1.34) Queueing an orbit action never re-checked what you could afford
+
+**Status (v1.34):** Fixed. Also pre-existing, also found while verifying
+the arsenal cap.
+
+**Root cause:** `_updateOrbitAffordability()` ran only from the orbit
+panel's render, which is driven by the status poll and only redraws when
+the *server's* view changes. The queue is client-side, so adding a row
+never triggered it. The dimming and the "short 205b" notes therefore
+described the opening wallet for as long as you stood at the desk, even
+though `projectOrbitBudget()` — which the same function calls — exists
+precisely to account for the queue. The v1.25 comment above it ("what you
+can afford is a question about the remainder, not the opening balance")
+was describing an intent the wiring did not deliver.
+
+Harmless-ish before v1.34, because a queue the wallet cannot cover is
+part-filled in declared order and the queue rows say so. It stops being
+harmless with the arsenal ceiling: the cap is the one limit a queue can
+reach entirely on its own — three EMPs queued against an empty rack is a
+legal-looking order the engine will refuse on the third — and the
+projection meant to dim it never ran.
+
+**Fix:** `renderOrbitQueue()` now redoes the affordability pass against
+`lastOrbitView`, with the damaged-harvester tally cached from the last
+render (`_lastDamagedCount`) so it does not need a full redraw.
+
+**Verified:** `scripts/_probe_arms_bar.py` pins the cap at the seat's
+current holding and reads the buttons; they now say `rack full 200/200b`.
+
+---
+
+## 41. ✅ (DONE, v1.45) A page opened at VESPERA showed no score until you pressed LIVE
+
+**Status (v1.45):** Fixed. Pre-existing — reproduced unchanged on the
+commit before the arsenal work, so the weapons feature only made it
+easier to notice.
+
+**Symptom:** open a game mid-season and both station readouts sit on
+their `—` placeholder next to a live board that plainly has a score in
+it. Pressing LIVE fills them in. The reporter's own diagnosis was the
+useful one: *"it doesn't work if you don't have any red"*.
+
+**Root cause:** every other thing that writes a station score is a
+*beat* — a replay tick (`osOnReplayTick`), the orbital DUSK stage
+(`osOnLiveDusk`), or the LIVE button (`osOnLive`). `_osInitPanels()`
+built the skeleton, pre-populated `_stationObs`, refreshed the vaults
+and stopped, so a page that had just opened had run no beat and the
+readouts kept the `—` they are born with in `_osBuildStation`.
+
+Why it hid for so long is the reporter's red: a seat that ships RED
+resolves an orbit, `_stageLiveOrbitBeat()` sees activity in the
+catapult blob and stages a DUSK beat, and that paints the scores. Play
+a normal game from the New Game modal and the placeholder is gone
+before you ever look at it. Ship nothing — or reload the page
+mid-season, which runs no beat either — and there is nothing to paint
+them.
+
+**Fix:** `_osInitPanels()` now settles the readouts to the present as
+its last act, using the same latest-day-across-`catapultByDay`
+computation `osOnLive` uses, and immediately rather than tweened
+(this is the cold open, not a scoring moment). Before the replay
+payload exists — day one, or the skeleton built from the live player
+list — it writes 0 rather than leaving `—`, because nobody has shipped
+anything and zero is the true reading.
+
+**Verified:** driven in a real browser against three games on a
+scratch server. Mid-season with nothing shipped: `—,—` → `0,0` on
+load, matching post-LIVE. Mid-season with a real score: `0, 217.75`
+plus the leader highlight on load, identical to post-LIVE, where
+before it was `—,—`. Day one: `0,0`. Scrubbing still tracks the tick
+and LIVE still restores, so the init settle pins nothing.
+`scripts/_probe_arms_bar.py` passes all three scenes with no console
+errors.
+
+---
+
+## 42. ✅ (DONE, v1.36) The turn lab offered two racks that every shipped board refuses
+
+**Status (v1.36):** Fixed on the day it was created — found while
+verifying SNAP rather than reported.
+
+**Symptom:** pick the `snap` or `arsenal` rack on any board in `/lab`
+and opening it fails with *"rack 'snap' needs snap, which this board's
+season does not stock"*.
+
+**Root cause:** not the refusal — that is correct and deliberate. Weapon
+prices are stamped per game (§4.9.8), so a night frozen before SNAP
+existed has no SNAP in its economy, and `arm()` declines rather than
+writing a rack that board's own engine could never have sold. The bug
+was upstream of it: `catalogue()` listed every rack unconditionally,
+and all ten shipped boards were minted before v1.36. So SNAP arrived in
+the lab as two menu items that could not be chosen on any board in the
+library — a menu whose items were traps.
+
+**Fix:** `catalogue()` takes the board's blob and marks each rack
+`available`, with a reason when it is not; `/api/lab/racks` accepts a
+`board` query and `lab.html` re-fetches per board, rendering the
+unavailable ones disabled and labelled *n/a on this board*.
+
+Marked rather than filtered, deliberately: "that weapon is younger than
+this board" is worth telling an attendee, whereas a list that is quietly
+shorter on some boards than others just reads as a second bug.
+
+**~~Left open on purpose~~ — closed in v1.40.** No board in the library
+could exercise SNAP, so the racks were correct but unreachable. Three
+V12-vs-V12 seasons were played at the 1:2:3 ladder (seeds 7301–7303,
+`scripts/_mint_snap_boards.py`), and four nights out of the twenty-one
+were kept: `83e44557_d6`, `fad99794_d3`, `30890438_d2` and
+`30890438_d6`. The other seventeen were deleted rather than shipped —
+a library is a set of nights somebody chose, and twenty-one
+undifferentiated ones is a haystack. All four price a SNAP, so the
+`snap` and `arsenal` racks are live on them; `arsenal` on one of these
+puts a seat at exactly the 600 cap, which is also the most ambiguous
+total a rival can be shown (three EMPs, two chaff, or one of each), and
+therefore the sharpest test of the v1.39 arsenal read.
+
+Each carries the editorial note the machine could not write, and every
+figure in those notes was read off the saved session rather than
+remembered. The clause that decides how a night is played is marked
+`[[like this]]` and the launcher renders it in yellow — a blurb is five
+sentences of even grey otherwise, and the one fact that matters reads
+exactly like the scene-setting around it. Escaping runs before the
+markers are converted, so `<mark>` is the only tag a note can ever
+produce.
+
+---
+
+## 43. ✅ (DONE, v1.36) You could fire a SNAP and watch nothing happen
+
+**Status (v1.36):** fixed. Reported by a player on the first night they
+fired one: *"no graphics play from the snap — nothing comes out of the
+station and no missile hits the board."*
+
+**Symptom:** exactly that. The launch resolved, the probe died, the drop
+was refused, the arsenal bar dropped a pip, the log said so — and the
+screen showed none of it.
+
+**Root cause:** three faults that happened to add up to zero.
+
+1. **The platform had no branch.** `station.js`'s arrival dispatcher
+   knows `probe_emit`, `emp_launch`, `mine_emit`, `chaff_flare` — and
+   never had one for `snap_launch`. `playSnapFx` called the hook
+   correctly and the hook fell through every arm of the `if` and
+   returned. Nothing was broken; the case was simply never written.
+2. **The board FX was two orders of magnitude too faint.** SNAP flies
+   1.5× faster than an EMP over the same distance, so its one-pixel
+   trail was on screen about a third as long as an EMP's — and where an
+   EMP answers its missiles with `_playEmpExpansion`, SNAP had no impact
+   beat at all. Measured with `scripts/films/ink_check.py`, the strike
+   peaked at **61 px** of amber against the EMP cloud's **12,180 px**.
+   Every individual piece was present and correct. Together they were
+   invisible.
+3. **The scorch mark pre-empted its own missile.** `paintSnapCloudOverlay`
+   runs synchronously when the tick paints, so the mark appeared ~0.4s
+   before the round arrived and the missile then flew into a square that
+   had visibly already been hit — the exact "board moves before the
+   sprite lands" trap AGENTS.md warns about. The EMP is defended from
+   this by `_empExpansionActive`; SNAP had no equivalent.
+
+**Fix:** a `✚` launch glyph in amber on the platform, at 1470ms so the
+weapon does not read as slow in the one place it is meant to read as
+fast; an opt-in `weight`/`headSize` on `spawnProbeTrail` (probes and
+EMPs keep their exact previous behaviour) so SNAP flies a heavier round;
+a new `_playSnapImpact` — a cross rather than a ring, because a ring
+would claim ground a single-square weapon never touched; a scorch mark
+at usable opacity; and a `_snapImpactActive` gate, with a watchdog,
+holding the mark until the round lands.
+
+**Why nothing caught it:** `tests/test_snap.py` pins the engine and
+`scripts/_probe_snap.py` pins the DOM, and both were green throughout —
+the launch *did* resolve and the frame *did* carry the payload. The FX
+is canvas-drawn, so there is nothing in the DOM to assert on, and the
+one film of it went out as a minute of narration over an empty board.
+The gap was that no check ever asked whether a thing was **drawn**, only
+whether it **happened**. `scripts/films/ink_check.py` is that check, and
+`scripts/_probe_snap.py` scene 5 shoots the platform in isolation
+against the EMP as a control.
+
+**Redrawn in v1.40, because the fix over-corrected.** Everything above
+made the strike visible; it made it visible in the wrong idiom. The
+cross was drawn with `shadowBlur` and the scorch wore a border and two
+box-shadows, so a SNAP became the only glowing object on a board that
+is otherwise entirely flat fills and glyphs — it read as a lit sprite
+from a different game. The cross also threw bars 2.1 cells out, which
+claimed ground a single-square weapon never touches.
+
+So it strikes in the EMP's own alphabet now. `_EMP_CHARS` became
+`_ORDNANCE_CHARS` and SNAP shares it: the same block ramp
+(`░░ ░▒ ▒▒ ▒▓ ▓▓ ██`), the same tile geometry, the SNAP amber. The two
+weapons use it differently and that difference is the picture — the EMP
+walks the ramp *across* a 13-cell rhombus so the field rolls, while
+SNAP walks it *down* one square over time, landing on `██` and cooling
+to a scorch that breathes between the two sparse rungs. Nothing leaves
+the cell, no shadow anywhere, and the strike tile is the same
+`.snap-cloud-cell` the hour sits on, so the mark arrives hot rather
+than handing over to a different-looking one.
+
+Measured the same way it was caught: **268 px** peak against the old
+cross's 323 px, so it is flatter without being fainter in any way that
+matters (the invisible first cut was 61 px). `adv_snap.webm` was
+re-shot — a film is build output, and leaving it would have taught a
+visual the game no longer draws. `scripts/_probe_snap_ink.py` is the
+new companion check: it asks what the mark *looks like* rather than
+whether it happened, asserting the glyph comes from the shared ramp and
+that the computed style carries no box-shadow, text-shadow or filter.
+It also pins the property the redraw must not lose — it re-watches the
+same round from the seat whose probe was destroyed, where the cell is
+`cell--stale`, and confirms the mark still renders. A SNAP is fired
+from an orbital station, so RULEBOOK §4.9.4 makes it open: every seat
+sees it regardless of who can see the ground.
+
+---
+
+## 44. ✅ (DONE, v1.36) Three tutorial films were teaching the wrong day
+
+**Status (v1.36):** fixed. Found by reading the day header out of every
+Advanced film and comparing it against the reel that plays it.
+
+**Symptom:** on the Advanced tutorial's last two turns, the film inside
+the modal disagreed with the game behind it. The player was on day 4;
+the recording said `# day 3 · orbit` and `NOX 03` in their own header
+font. `adv_buy_chaff` was worse than stale-looking — it quoted **255
+blue** for a flare that had cost 300 since v1.36, showed a
+`build CHAFF ×1 (255b)` button, and closed on *"if you cannot afford it
+this turn, that is not a mistake"*, advice the training subsidy had
+made false. Three generations of drift in one clip.
+
+**Root cause:** a film is a screen recording, so it carries the day it
+was shot on burnt into the game chrome — and adding Advanced's fourth
+night moved reels without re-shooting them. The source was corrected at
+the time: `_ADV_TURN` moved `adv_buy_chaff` and `adv_arms_bar` to rig
+turn 5, and `_adv_buy_chaff`'s narration was rewritten for 300 and the
+subsidy. Only the `.webm` files on disk were not re-made, and nothing
+anywhere compares the two. `adv_emp` was a third case with a different
+shape: its reel moved to night 4 while `_ADV_TURN` correctly kept it on
+turn 4, so source and film agreed with each other and both disagreed
+with the reel.
+
+**Fix:** `adv_buy_chaff` and `adv_arms_bar` re-shot as they stood.
+`adv_emp` needed the storyline changed before it could be shot on night
+four at all — the canonical night 3 spends the EMP, orbit 4 buys a
+second hull the film's fleet-row selector cannot disambiguate, and the
+rival hot-drops onto the square the walk-in walks at. `_EMP_TAKES` in
+`make_tutorial_films.py` is the three-branch detour that leaves those
+two takes an unspent weapon, one hull and a rival holding still. The
+lesson survives the move: rushing still banks nothing, waiting still
+banks the jackpot (1078).
+
+**Why nothing caught it, and what does now:** the existing tests check
+that every reel names a film that exists and that no film is an orphan
+— both were true throughout. `test_a_film_is_shown_on_the_day_it_was_
+shot_on` now compares each reel's day against its film's shoot turn,
+which catches the `adv_emp` shape. The stale-`.webm` shape **cannot**
+be tested, because the only evidence is inside the video; the rule is
+that moving a reel between days means re-shooting its films, and
+`docs/TUTORIAL_PLAN.md` §9 says so where a reader will meet it.
+
+---
+
+## 45. ✅ (DONE, v1.38) Every agent was handed every seat's night log
+
+**Symptom:** none, which is why it lasted. Nothing misbehaved, no test
+failed, and no season looked wrong. The defect was in what the percept
+*offered*, not in what anything did with it.
+
+`agent_view.recent_log` carried the raw shared feed. On a plain
+heuristic-vs-heuristic season, 11 of the 20 rows in p1's own
+`recent_log` were about p2 — including exact landing coordinates, which
+§3.15 has always made private, and this, which is worse than
+coordinates:
+
+```
+[RED_HARVEST] [heuristic] (p2) harvester_p2 HOT-DROP:
+    secure probe@[11, 1] + drop@[11, 2]→RED@[11, 1]
+```
+
+That is the opponent's plan, in prose, in the percept, a turn before it
+happened.
+
+**Root cause:** the log is written for the watcher. One feed per
+session, `store.list_log` takes no seat, and a row is `(day, seq, level,
+text)` with no owner column to filter on. `get_view` fetched twenty rows
+and `build_agent_view` passed them straight through to the emitted key.
+The *derived* blocks were always careful — `last_night` filters to the
+asking seat with `_is_my_row`, `competitor_intel` lifts only
+`probe_launch` — so the fog rule was understood and implemented one
+layer above the hole.
+
+**Why it was never a live cheat:** no harness reads the key. Grep
+`recent_log` across `orchestrator_2/` and there are no hits: V12, `_v7`
+and `emp_harvest_test` all build their prompts from the structured
+blocks. It is fixed anyway, because a fork is a directory anyone can
+write, `recent_log` is a documented key, and an attendee whose fork
+reads it has not broken a rule anyone wrote down — which makes it our
+problem to adjudicate, on the day, in front of the room.
+
+**Fix:** `_log_for_seat` in `snowpark/view.py` cuts the emitted list to
+rows naming no other seat, matching on seat id plus display name and tag
+so a season with named Houses redacts like an anonymous one. Two choices
+inside that are worth keeping:
+
+- **By mention, not by subject.** A row naming two seats is withheld
+  from both. Blunter than parsing the subject out of free text, and
+  chosen because that parse is exactly what is already being done
+  crudely upstream — this one fails toward fog instead. Cost is the odd
+  line about your own unit (`expired probe_p1_3, probe_p2_5`), which the
+  seat learns from `my_assets` regardless.
+- **Rows naming nobody are kept.** Settlement and phase transitions are
+  the clock, and a seat unable to date its own log is a worse bug than
+  the one being fixed.
+
+The filter lands on the emitted key **only**. `_last_night_recap` and
+`_competitor_intel` still receive the unfiltered list, because their
+entitlement to it is the point — tidy the filter upstream and a seat
+silently stops seeing rival probe launches it is lawfully owed.
+`tests/test_log_stays_in_its_seat.py` pins that direction as well as the
+leak itself.
+
+**Still open, deliberately:** the twenty-row window is cut *before*
+redaction, so a seat now gets fewer than twenty of its own rows —
+cosmetic while nothing reads the key, and not worth coupling the fetch
+in `engine.py` to the filter in `view.py` to fix. Separately, the human
+LOG panel is a different feed (`get_session_status`) and was not
+touched; whether a player should read a rival's coordinates there is a
+UI fog question, not this one.
+
+---
+
 | # | Area | Severity | Blocking multiplayer? |
 |---|------|----------|-----------------------|
 | 1 | Vision / trails (echo coverage — now fog-frozen) | ✅ done (v1.8) | no |
@@ -1600,3 +2050,172 @@ card and held it there for four seconds.
 | 35 | Fallout from 34: the caption is pinned to the bottom of the page, so a crop that keeps 492×308 of a 1280×800 frame left every close-up unnarrated. Caption now tracks the crop, and `say()` fails the shoot if it lands off the edge | ✅ done (v1.36) | no |
 | 36 | RULEBOOK §4.11 says a redsign persists after its seam is harvested out and depletion must be inferred; the engine retires it as `spent`. Design question, not a typo — flagged, not resolved | 🔴 open | no |
 | 37 | The cell card called a harvested square "banking scores 0" three lines under its own `-100` score block. Stale note from before green was priced in the tooltip; green costs 100/parcel at settlement and entry harvests are compulsory | ✅ done (v1.37) | no |
+| 38 | On Snowflake, V12 loaded its opponent's STRATEGY JOURNAL as its own: `SOC_AGENT_MEMORY` is a hybrid table and a range predicate on the key column `kind` makes the scan drop the equality on `player`. Filter `kind` in Python instead; a non-key column is unaffected | ✅ done (v1.42) | no |
+| 39 | Station hover cards read day 1 all season on a page opened mid-game: the boot rewind parks `_currentDay` on the reel's first day and only a played night moved it. Live play now resolves the newest day with readings; replay still reads the cursor | ✅ done (v1.34) | no |
+| 40 | Queueing an orbit action never re-ran the affordability pass, so the dimming described the opening wallet rather than what the queue left of it — and the arsenal ceiling, which a queue can hit on its own, could never dim anything | ✅ done (v1.34) | no |
+## 46. ✅ (DONE, v1.39) The prompt described a rack twice the size of the cap
+
+**Symptom:** a seat that had weaponised the full 600 blue appeared in
+V12's prompt as:
+
+```
+  p2: emp=[0..3] chaff=[0..2]
+```
+
+Two independent ranges, printed adjacently, with nothing saying they are
+alternatives. The natural reading — and, on the evidence of the plans
+that came back, the model's reading — is "up to three EMPs *and* up to
+two chaff". That is 1200 blue against a cap of 600. Of the seven racks
+that actually fit 600, exactly one holds both an EMP and a chaff.
+
+**Root cause:** `WeaponEstimate` stored only per-weapon marginals over
+the decoded rack set, and the renderer printed them. Marginals are the
+right answer to "could this seat have any chaff" and a false answer to
+"what could this seat have", and the block was asking the second
+question with a structure that only supports the first. The set was
+never kept — `decode_rack` returned it, `update_estimates` reduced it to
+min/max per kind, and the racks were discarded on the spot.
+
+Two more defects sat in the same place:
+
+* **A seat holding 100 blue rendered no block at all.** The filter was
+  `emps_max > 0 or chaff_max > 0`, which a lone SNAP satisfies neither
+  of — so the weapon that refuses a landing outright was the one a rival
+  could hold invisibly. `WeaponEstimate` had no SNAP field to begin
+  with, so this was structural rather than a stale condition.
+* **`snap_hit` was not in the "this hit me" list**, so a seat could be
+  SNAPped nightly and never react; and `_format_combat_event` had no
+  branch for it, so when it did arrive it printed as a Python dict.
+
+**Fix:** the estimate carries `racks` — the decoded set — and everything
+written for a reader states it: "600 blue of ordnance — exactly ONE of
+these 7", followed by the racks, the price ladder and the cap. The
+marginals stay for the ~47 call sites that ask the one question they
+answer honestly, now behind `could_hold(kind)`. Because a rack holding a
+chaff costs at least the 300 a chaff costs, that method *is* the minimum
+spend for a warning, with no threshold written anywhere.
+
+**Engine half:** `snap_launch` was not an orbital event tag and the
+activity tally had no `snaps` counter, so a fired SNAP left the public
+silhouette flat. The strike is already public; the omission only cost
+agents an inference a human reads off the board.
+
+**Also found here:** the example fork `emp_harvest_test` never received
+the v1.36 fix that decodes against the board's own price table, so it
+read archived seasons at today's prices and saw unarmed seats where
+there were armed ones. Both shipped harnesses are now pinned to one
+reading of a public total by `tests/test_arsenal_reaches_the_agent.py`.
+What a fork *does* with the arsenal is still entirely its own business.
+
+**Near miss worth recording:** giving `card.py` an arsenal line tripped
+rung 1 of the weapons-readiness ladder ("the agent knows it owns a
+rack"), because that rung greps for a `weapon_stock` read outside the
+buying code. A diagnostic render is not the night phase knowing
+anything, and a fork handed a green bottom rung by a debug line would be
+sent up the ladder with the rung missing. `card.py` joined the excluded
+set, with a test.
+
+| 41 | A page opened mid-season showed `—` for every station score until you pressed LIVE. Only a *beat* ever wrote a score, and a fresh page has run none; shipping RED staged a DUSK beat, which is why it looked like "no red breaks it". `_osInitPanels` now settles to the present | ✅ done (v1.45) | no |
+| 42 | The lab's rack picker offered `snap` / `arsenal` on boards frozen before SNAP existed, so choosing either always failed. The refusal was right; listing them was not. `catalogue()` is board-aware and the picker disables what a board cannot hold. The four SNAP-priced nights that were missing were minted and noted in v1.40 | ✅ done (v1.36, v1.40) | no |
+| 43 | Firing a SNAP showed nothing: `station.js` had no `snap_launch` branch, the board FX measured 61 px of ink against the EMP's 12,180, and the scorch mark painted before its own missile arrived. Launch glyph added, heavier round + a cross-shaped impact beat, and the mark now gated behind the landing | ✅ done (v1.36) | no |
+| 44 | Adding Advanced's fourth night moved three reels between days without re-shooting their films, and a film carries its day burnt into the recorded chrome — so the modal said `NOX 03` over a day-4 board, and `adv_buy_chaff` still quoted 255 blue and pre-subsidy advice. All three re-shot (`adv_emp` needed `_EMP_TAKES` to leave it a spendable weapon on night four), and the reel-day/shoot-turn agreement is now a test | ✅ done (v1.36) | no |
+| 45 | The engine's night log is one shared feed with no owner column, and `get_view` put all twenty rows on every agent's percept: a rival's landing coordinates (private, §3.15) and a rival bot's rationale line in full. Nothing shipped read it. `recent_log` is now cut to rows naming no other seat; the blocks entitled to the whole log still get it | ✅ done (v1.38) | no |
+| 46 | V12's prompt rendered a rival's 600-blue arsenal as `emp=[0..3] chaff=[0..2]` — independent marginals that read as a joint range, describing 1200 blue under a 600 cap. A lone SNAP (100 blue) rendered no block at all, and `snap_hit` reached neither the reaction path nor the event renderer. The estimate now carries the decoded rack set and states it as "exactly ONE of these N"; warnings gate on `could_hold`, which carries its own minimum spend. Engine: `snap_launch` now counts in the public activity tally | ✅ done (v1.39) | no |
+
+## 47. ✅ (DONE, v1.40) The SNAP doctrine named a move the menu could not offer
+
+`DOCTRINE_BEWARE_SNAP` (v1.39) told the agent that a grab resting on one
+probe could be insured by putting a second probe over the same cell. That
+was correct advice and an unreachable move: the agent plans by picking ids
+off the option menu, and no id for it could ever be generated.
+
+**Root cause.** `_v7/probe_hints.py` answers one question — where do I open
+fresh ground — and rejects a re-cover in three independent places.
+`_seed_candidates` only seeds cells outside live vision. `_MIN_PROBE_SEPARATION`
+(5) drops any seed within Chebyshev 5 of a probe this seat has *ever*
+launched, and a probe covering the same cell as another is by construction
+within 4 of it. Then any survivor with no fresh fog is dropped outright,
+under a comment stating that re-probing a cell already in a friendly disk
+"wastes an hour and a probe slot".
+
+Each of those is right about the question it answers, and the last one was
+right about SNAP too — until SNAP existed. A cell a rival can delete for
+100 blue makes redundancy insurance rather than waste.
+
+**Fix.** A separate generator, `_v7/snap_cover.py`, asking a different
+question: which landing tonight rests on a single probe, and where else
+could a probe stand that sees the same cell. It runs only when a rival
+`could_hold("snap")`, the seat has a probe to spend, and the menu offers a
+landing worth insuring (a redsign beacon, or visible red at 128+), and it
+offers at most two. Registered last in `build_registry` so it can name the
+options it backs, as `PRSNAP*` under its own menu heading, with `kind`
+still `"probe"` so the packager needs no new verb — `Option.menu_group`
+is the seam that lets those differ.
+
+Two geometric rules it exists to keep. `SNAP_RADIUS` is 0, so difference of
+cell is what buys the insurance and the cover may never share a cell with
+the probe it backs. And the cover may never stand ON the contested cell: a
+SNAP aimed there denies the landing whatever else is true, so cover parked
+on it fails in the one case it was bought for.
+
+**Wording.** The option names SNAP in its title and again in its rationale,
+because the doctrine that explains the danger and the option that answers
+it are read pages apart. Nothing about it is binding: it states the cost,
+states that the risk is unknowable, and says in as many words that an
+unarmed rival makes it a wasted probe. `DOCTRINE_BEWARE_SNAP` and the
+`beware_snap` wishlist tag were reworded to match — they now point at
+`PRSNAP*` as something to weigh, where before they read as an instruction.
+
+**One bug the unit tests could not see.** The gate took `estimates` and
+iterated it directly. The harness holds them as `{seat: WeaponEstimate}`,
+so iterating yielded seat *strings*, whose missing `could_hold` raised the
+same `AttributeError` the pre-v38 fallback swallows — the gate answered
+"nobody could be holding a SNAP" against a seat holding all three, and the
+module was dead in the live pipeline while every test passed. The tests
+passed a list; only driving `turnlab.turn.plan_only` with a stubbed model
+on a real frozen board exposed it. `_estimates()` now normalises the shape,
+and a test pins that a mapping and a list give the same answer. Verified
+firing end-to-end afterwards: 4 of 40 armed board/seat combinations offer a
+cover, which is about the rate a rare play should have.
+
+Pinned by `tests/test_snap_cover_probe.py` (20 tests), which covers the
+geometry, every gate that keeps it silent, and the non-binding framing.
+Ported to `emp_harvest_test`. Deleting `snap_cover.py` and its one harness
+call site retires the whole thing, which is the isolation SNAP was built
+with.
+
+## 48. ✅ (DONE, v1.40) A third of the v7 prompt was dead, and the dead part answered weapons questions wrongly
+
+`_v7/prompt.py` is live code with a misleading name: V12 forked v7's
+*feeding* layer (prompt assembly) but deliberately kept reusing its
+*computation* layer, so thirteen of its formatters run on every turn. What
+was not obvious is that the other nine functions — 470 lines of 1304 — had
+been unreachable for two versions.
+
+**Root cause.** `build_prompt` (188 lines) was superseded when v10 wrote its
+own sectioned assembler; the standalone hint formatters were retired when
+v11 made the option menu the single source of truth for actionable plays.
+Neither removal deleted the originals, and `build_prompt` had three tests in
+`test_tabula_v7_split.py` written against it, so it stayed green forever and
+nothing ever flagged it — code whose only caller was its own test suite.
+
+**Why it mattered rather than just being untidy.** The dead `build_prompt`
+still carried the pre-SNAP weapons gating: a raw `getattr(e, "emps_max", 0)
+> 0` check, no `could_hold`, no SNAP block. That is precisely the bug class
+v1.39 fixed, sitting in a plausible-looking place — a grep for "where does
+the EMP doctrine get attached" finds it before the live one in
+`tabula_v12/prompt.py`. And since attendees fork V12 wholesale, every fork
+in the room carries a copy of the wrong answer.
+
+**Fix.** Deleted the nine unreachable functions, the `_ACTION_SCHEMA` nothing
+imports, and the imports orphaned by their removal (1304 → 841 lines, both
+harnesses, code byte-identical modulo import paths). The module docstring
+now says what the file is and states plainly that nothing in it builds a
+prompt.
+
+The three `build_prompt` tests were **retargeted, not deleted**: the
+contract they check (reasoning-first in thinker mode, the directive riding
+high in mover mode) is real and still shipped, and nothing else asserted it
+against v12's live assembler — the v12 tests pass `mode="thinker"` but never
+check what it does. Pointing them at `tabula_v12.prompt` preserved the
+coverage and removed the last reason the dead copy existed.

@@ -20,6 +20,18 @@ New / rewritten in v10:
     vs not-mine), the user's hot-drop poker.
   * DOCTRINE_WEAPONS_ORBITAL — EMP/chaff reframed as targeted orbital strikes.
   * DOCTRINE_COMPREHENSION — read the attributed WHAT HAPPENED digest and act.
+
+New in v1.38:
+  * DOCTRINE_BEWARE_SNAP — the third weapon had doctrine nowhere, so a seat
+    holding one drew no reaction at all. Written here rather than in the
+    frozen v7 strategies, which v10 re-exports but must not edit.
+
+All three beware blocks are gated on ``WeaponEstimate.could_hold(kind)``,
+which is a spend threshold that enforces itself: a rack containing a chaff
+costs at least the 300 blue a chaff costs, so a seat that has weaponised
+100 cannot be in one and the chaff block cannot fire against it. Before
+v1.38 the EMP and chaff blocks were gated on separately-computed maxima
+and SNAP had no gate to be wrong about.
 """
 
 from __future__ import annotations
@@ -733,6 +745,53 @@ KNOW WHO HAS WHAT — weapons are ORBITAL strikes, not ground units:
 """
 
 
+# Deliberately the shortest of the three BEWARE blocks, and the only one
+# that ends with a single instruction.
+#
+# The first draft carried a four-bullet mitigation section — land offset,
+# spread across distinct cells, assume the rack is not spent — which is a
+# defensive playbook against a weapon the agent cannot see coming. SNAP
+# is one cell chosen by somebody else with no tell; there is no read to
+# make, so that section could only buy timid play across the board, paid
+# for out of the attention the seat needs for harvesting.
+#
+# What survives is the part that is actionable BEFORE the fact, and it is
+# one line: a grab resting on one probe rests on one deletable cell.
+# Everything else about a SNAP is learned afterwards from the combat feed
+# (``snap_hit``), which is why that renderer is worth more here than any
+# amount of doctrine.
+DOCTRINE_BEWARE_SNAP = """\
+OPPONENT WEAPONS — beware_snap (one square, taken off you first):
+  What it does to you:
+    * ONE missile at ONE cell, resolved there BEFORE the hour's vision
+      snapshot and before every drop, step and pickup on it.
+    * A probe on that cell is DESTROYED BEFORE IT SEES. The sight it
+      would have given never exists, so a landing that depended on it
+      is refused for want of vision — not blocked, unsighted.
+    * A harvester on the cell, or stepping into it, is DAMAGED and
+      harvests nothing. A landing into it is turned back: the hull
+      stays in orbit, damaged, its outing unspent.
+
+  The one thing that CAN be done in advance, if you judge it worth a
+  probe: a grab resting on a SINGLE probe rests on a single cell a rival
+  can delete for 100 blue, the cheapest thing on the ladder. A SECOND
+  probe that sees the same cell from a different one keeps the sight
+  when the first is taken — SNAP lands on one square, so it cannot have
+  both.
+
+  When the menu can build that cover it offers it as PRSNAP*, and it is
+  an OPTION, not an instruction. It banks nothing, it costs a probe and
+  an hour on ground you can already see, and it is worth nothing at all
+  if the rival never bought a SNAP — which you cannot know, only bound.
+  Weigh it like any other play: how sorry you would be to lose this
+  landing, against what else that probe could open. Declining it is a
+  perfectly good answer on most nights.
+
+  Beyond that, do not re-plan around SNAP. You cannot see it coming, and
+  the rest of what it did you will read in the combat feed afterwards.
+"""
+
+
 DOCTRINE_WEAPONS_MULTIWAVE = """\
 WEAPONS => MORE UNITS ON THE SEAM, NOT ONE SHORTER CHAIN (offensive read):
   The defensive rules above (short chains, dodge predictable pickup windows) are
@@ -771,6 +830,7 @@ __all__ = [
     "DOCTRINE_LASTDAY_SUPERSEDE",
     "DOCTRINE_BEWARE_EMP",
     "DOCTRINE_BEWARE_CHAFF",
+    "DOCTRINE_BEWARE_SNAP",
     "DOCTRINE_COMPREHENSION",
     "DOCTRINE_CERTAINTY",
     "DOCTRINE_RISK_LADDER",

@@ -3574,6 +3574,18 @@ body.cc-mode {
   border-color: var(--green);
 }
 
+/* v1.42 — hover must not undo the active fill. `.cc-tab:hover` carries a
+   pseudo-class and so outranks `.cc-tab--active`, which swapped the solid
+   green for a translucent wash — while the label kept `color: var(--bg)`
+   from the rule below. Near-black text on a dark panel: the active tab
+   read as an empty box for as long as the pointer rested on it, which is
+   most of the moment after you click one. */
+.cc-tab--active:hover {
+  color: var(--bg);
+  background: var(--green);
+  border-color: var(--green);
+}
+
 .cc-tab--active .cc-tab-key,
 .cc-tab--active .cc-tab-label,
 .cc-tab--active .cc-tab-meta {
@@ -4113,6 +4125,86 @@ body.cc-mode {
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 0 3px rgba(255, 255, 255, 0.9);
+}
+
+/* SNAP (v1.36) — an amber four-pointed star, drawn as two crossed
+   bars rather than a glyph so it stays sharp at 14px.
+
+   Amber and NOT cyan, deliberately. Cyan is the EMP's colour and the
+   arsenal bar's; a cyan SNAP would read as a small EMP, and the whole
+   point of the weapon is that it is a different thing — one square,
+   one hour, and first in the hour. The star also reads as "fast" next
+   to the EMP's halo, which is the other thing a player has to know. */
+.cc-weapon-icon-snap::before,
+.cc-weapon-icon-snap::after {
+  content: "";
+  position: absolute;
+  background: #ffd166;
+  box-shadow: 0 0 4px rgba(255, 209, 102, 0.7);
+}
+.cc-weapon-icon-snap::before {
+  left: 50%;
+  top: 1px;
+  bottom: 1px;
+  width: 1.8px;
+  margin-left: -0.9px;
+}
+.cc-weapon-icon-snap::after {
+  top: 50%;
+  left: 1px;
+  right: 1px;
+  height: 1.8px;
+  margin-top: -0.9px;
+}
+
+/* The one-hour scorch mark a SNAP leaves. Separate class from
+   ``.emp-cloud-cell`` on purpose: an EMP cloud says "anything in here
+   is smothered", and this says only "something went off here". Painting
+   them the same would make the SNAP mark a lie about the ground. */
+/* SNAP — one struck square, drawn in the EMP cloud's block alphabet and
+   the SNAP amber (v1.40).
+
+   Flat, deliberately. This used to be a tinted box wearing a 1.5px
+   border and two box-shadows, inset and out. It was the only glowing
+   object on a board that is otherwise all flat fills and glyphs, so a
+   SNAP did not read as this game's ordnance — it read as a lit sprite
+   from a different one. Everything that made it glow is gone: no
+   box-shadow, no border, and no text-shadow either, which is the one
+   place this departs from `.emp-cloud-cell` rather than copying it.
+
+   Sized and positioned to the exact cell bounds by the caller, so the
+   mark is the square — a centred chip would understate how total the
+   denial is on the one cell it applies to. */
+.snap-cloud-cell {
+  position: absolute;
+  pointer-events: none;
+  z-index: 6;
+  background: rgba(255, 209, 102, 0.1);
+  font-family: var(--mono, "JetBrains Mono", "Fira Mono", monospace);
+  font-size: var(--map-font-size, 14px);
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: rgba(255, 209, 102, 0.95);
+  white-space: pre;
+}
+
+/* The arrival. Scaled up and dropped onto the cell so the round visibly
+   lands, over a fifth of a second — long enough to see, short enough
+   that it never competes with the missile that caused it. The scorch
+   left behind does not animate its geometry at all; only the glyph
+   changes, so a spent square sits still on the board. */
+.snap-cloud-cell--strike {
+  background: rgba(255, 209, 102, 0.22);
+  animation: snap-strike-in 200ms ease-out;
+}
+
+@keyframes snap-strike-in {
+  0%   { opacity: 0; transform: scale(1.55); }
+  55%  { opacity: 1; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 /* CHAFF — a white density glyph that loops from light to full
@@ -8620,6 +8712,40 @@ button.cli-btn.cc-replay-view-btn--seat.cc-replay-view-btn--active {
      above got a couple of lines. */
   grid-template-rows: auto auto auto 1fr;
 }
+/* The lab adds a fifth child — the invoke box, above the seat tabs — so
+   it needs one more auto row. Without it every row shifts down by one,
+   the 1fr lands back on the seat tabs, and the panel fails in precisely
+   the way described above: buttons as full-height slabs, feed reduced to
+   a sliver. Same bug, one child later. */
+body.cc-mode--lab #cc-panel-log {
+  /* Two full agent takes — orders, intent, reflection, decision rows —
+     are taller than the drawer, and a fixed 1fr row clips the overflow
+     rather than scrolling it, which put ACCEPT below the fold with no
+     way to reach it. Same treatment the vault and orbit panels get:
+     let every row size to its content and scroll the panel as a whole. */
+  grid-template-rows: auto auto auto auto auto;
+  overflow-y: auto;
+}
+/* Otherwise the feed is a second scroller inside the first, and the
+   panel scrollbar stops before the content does. */
+body.cc-mode--lab .cc-agent-feed {
+  overflow-y: visible;
+  min-height: 0;
+}
+/* The season's thinking has no place on a frozen turn.
+   The feed and its seat tabs replay whoever held the seat in the season
+   the board was cut from — day 2's orbit plan from a run nobody here
+   made — and the season card exports dump the same history to a file.
+   Next to the take you just asked for, that is somebody else's
+   reasoning wearing the same seat colours. The lab's own [ READ ] and
+   [ .MD ] on the plans stay; they export this turn. */
+body.cc-mode--lab #agent-seat-tabs,
+body.cc-mode--lab #agent-feed,
+body.cc-mode--lab #cc-panel-log .cc-panel-subhead,
+body.cc-mode--lab #agent-cards-read,
+body.cc-mode--lab #agent-cards-download {
+  display: none;
+}
 .cc-agent-feed {
   flex: 1 1 auto;
   min-height: 0;
@@ -10751,4 +10877,204 @@ button.cli-btn.cc-advisor-tab[hidden] { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .soc-tut-video { animation: none; }
+}
+
+/* ── TURN LAB (v1.42) ──────────────────────────────────────────────
+   Only ever visible on a lab session, which is a throwaway clone of a
+   frozen turn. Each seat block carries its own --lab-ink (cyan for p1,
+   magenta for p2, from the player colours), and everything belonging to
+   that seat is drawn in it — the tag, the plan on the board, the order
+   list. Two plans on one board have to stay tellable apart at a glance,
+   and colour is the only channel that survives being glanced at. */
+
+.cc-lab {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  padding: 9px 10px 10px;
+  margin: 0 0 10px;
+  /* A grid item defaults to min-width:auto, so it cannot shrink below
+     its own min-content — and the agent <select> sets that floor from
+     its longest option label. Left alone it widened the panel's only
+     column to ~555px, dragging every sibling past the panel's clip edge
+     and taking the INVOKE button off-screen with them. */
+  min-width: 0;
+}
+.cc-lab-seat {
+  border-left: 2px solid var(--lab-ink, #9fa6ad);
+  padding: 6px 0 6px 8px;
+  margin-top: 8px;
+}
+.cc-lab-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cc-lab-tag {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--lab-ink, #9fa6ad);
+  order: 0;
+}
+/* The drawer is ~350px, and a tag plus a button leaves the agent picker
+   about 170px — not enough to tell "V12 — LLM agent (needs a PAT)" from
+   anything else. So the picker takes a line of its own underneath, via
+   order + a 100% basis against the row's wrap, rather than being sized
+   down to a stub. Reordering in CSS keeps the DOM in reading order for
+   anything stepping through it. */
+.cc-lab-invoke-btn { order: 1; margin-left: auto; }
+.cc-lab-pick {
+  order: 2;
+  flex: 1 1 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 3px 5px;
+}
+.cc-lab-out { margin-top: 7px; font-size: 11px; }
+.cc-lab-meta { opacity: 0.6; margin-bottom: 5px; }
+.cc-lab-err { color: #ff9a9a; }
+
+/* v1.42 — loud on purpose: this is the one state where the panel would
+   otherwise show a plausible plan that is not the agent's. */
+.cc-lab-fallback {
+  color: #ffd28a;
+  background: rgba(255, 170, 60, 0.12);
+  border-left: 3px solid #ffaa3c;
+  padding: 5px 7px;
+  margin-bottom: 6px;
+  line-height: 1.45;
+}
+
+.cc-lab-moves { list-style: none; margin: 0 0 6px; padding: 0; }
+.cc-lab-moves li { display: flex; gap: 6px; line-height: 1.5; }
+.cc-lab-moves .h {
+  flex: 0 0 22px;
+  color: var(--lab-ink, #9fa6ad);
+  opacity: 0.75;
+}
+
+.cc-lab-out dl {
+  margin: 0 0 6px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 8px;
+  font-size: 10.5px;
+}
+.cc-lab-out dt { opacity: 0.5; }
+.cc-lab-out dd { margin: 0; }
+.cc-lab-why {
+  opacity: 0.8;
+  line-height: 1.5;
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+  padding-left: 7px;
+  margin-bottom: 6px;
+}
+.cc-lab-bar { display: flex; gap: 5px; flex-wrap: wrap; }
+.cc-lab-bar .cli-btn { font-size: 10.5px; padding: 2px 6px; }
+.cc-lab-accept { border-color: var(--lab-ink, #9fa6ad) !important; }
+
+.cc-lab-filter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 11px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  flex-wrap: wrap;
+  font-size: 10.5px;
+}
+
+/* The lab is one night, not a season. ORBIT buys for tomorrow and INTEL
+   reads a history the board does not have, so both are answering
+   questions that cannot be asked here — and a tab that opens onto
+   nothing is worse than no tab. */
+body.cc-mode--lab .cc-tab[data-cc-tab="orbit"],
+body.cc-mode--lab .cc-tab[data-cc-tab="intel"],
+/* v1.42 — ORDERS goes with them. Every seat here is cast from the AGENT
+   pane, so a composer is not a feature but a way to put a hand-typed
+   order into a night that is supposed to be the agents' answer. */
+body.cc-mode--lab .cc-tab[data-cc-tab="orders"] {
+  display: none;
+}
+/* The mobile composer is the same tab by another route. */
+body.cc-mode--lab #cc-mobile-orders { display: none; }
+/* The [1]..[8] are captions, not shortcuts — with two tabs gone they
+   would just read as a row with holes punched in it. */
+body.cc-mode--lab .cc-tab-key { display: none; }
+
+/* Nothing left to do but look, or start again. Everything that could
+   change the turn goes flat: the seats have played, the night has
+   resolved, and the board is now a record of what happened. */
+body.cc-lab-spent #lab-invoke .cc-lab-pick,
+body.cc-lab-spent #lab-invoke .cc-lab-invoke-btn,
+body.cc-lab-spent #lab-invoke .cc-lab-accept,
+body.cc-lab-spent #cc-panel-orders,
+body.cc-lab-spent #cc-mobile-orders {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* v1.42 — sticky, and at the TOP of the panel rather than the foot of
+   it. This is the only live control once a turn is spent, and it was
+   sitting under two seats' worth of collapsed output in a drawer that
+   scrolls: present, correct, and reliably not found. Sticking it to the
+   top of the scroller means "start again" is wherever you happen to be
+   in the panel. */
+#lab-reset {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 4;
+  margin: 0 0 11px; padding: 9px 10px;
+  border: 1px solid rgba(255, 214, 120, 0.4);
+  border-radius: 3px;
+  background: rgba(28, 22, 8, 0.97);
+  font-size: 11px;
+}
+#lab-reset[hidden] { display: none; }
+/* Caption on its own line. The drawer is narrow and clips rather than
+   scrolling sideways, so anything sharing a row with a button pushes it
+   out of reach instead of merely looking cramped. */
+#lab-reset .why { flex: 1 1 100%; opacity: 0.6; }
+.cc-lab-reset-btn {
+  border-color: rgba(255, 214, 120, 0.55) !important;
+  color: #ffd678;
+}
+
+/* Your seat is sealed: its agent's plan is in, and a human order queued
+   on top would blend into the same policy. postPolicy is what refuses;
+   this just makes the refusal visible before a queue gets built. */
+body.cc-lab-sealed #cc-panel-orders,
+body.cc-lab-sealed #cc-mobile-orders {
+  opacity: 0.4;
+  pointer-events: none;
+}
+body.cc-lab-sealed #cc-panel-orders::before {
+  content: "sealed — this seat's agent plan is in for tonight";
+  display: block;
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+/* v1.42 — the lab's plan overlay used to live here: a coloured ring and
+   an hour number per cell. It is gone, and the proposal now goes through
+   `paintPlannedOrdersOverlay` like any queued policy, so an agent's plan
+   and a human's queue are the same picture. Keeping a second board
+   language for proposals meant you could not compare the two by eye, and
+   the copy had already drifted — it drew a ring for an EMP and never the
+   35-cell footprint underneath it.
+
+   What is left is the panel side: which seat is currently on the board. */
+.cc-lab-seat--shown {
+  border-color: var(--lab-ink, #9fa6ad);
+  background: color-mix(in srgb, var(--lab-ink, #9fa6ad) 9%, transparent);
+}
+.cc-lab-seat--shown .cc-lab-tag::after {
+  content: " ON BOARD";
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  opacity: 0.75;
 }

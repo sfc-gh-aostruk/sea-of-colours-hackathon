@@ -308,12 +308,29 @@ def _blue_parcel(owner: str, idx: int, purity: int) -> Dict[str, Any]:
 
 
 # v0.9.4 — both seats now build weapons during their half of the
-# demo, so both get pre-seeded with the same denomination ladder.
-# Each ladder covers one EMP (200) and one chaff (255) with zero waste.
+# demo, so both get pre-seeded with the same denomination ladder,
+# covering one of everything on the price list with zero waste.
 #
-#   EMP   (200 blue) : 50 + 50 + 50 + 50
-#   Chaff (255 blue) : 255
-WEAPONS_BLUE_PARCELS: List[int] = [50, 50, 50, 50, 255]
+# Priced off the weapons table rather than written out (v1.36): this
+# used to read [50, 50, 50, 50, 255] for an EMP and a chaff, and the
+# moment chaff went 255 -> 300 the demo was seeding a seat that could
+# not afford the weapon the demo exists to show.
+#
+# Fifties rather than one lump per weapon because the station draws a
+# pip per parcel and this whole script is a camera rig for watching
+# blue turn cyan — one pip is not an animation. Every published cost is
+# a multiple of 100, so fifties divide all of them exactly, and they
+# stay under the 255 purity ceiling (§3.14) that a 300 lump would not.
+def _weapons_blue_ladder() -> List[int]:
+    from sea_of_colours.game.weapons import BLUE_COST_BY_KIND
+    return [
+        50
+        for cost in BLUE_COST_BY_KIND.values()
+        for _ in range(int(cost) // 50)
+    ]
+
+
+WEAPONS_BLUE_PARCELS: List[int] = _weapons_blue_ladder()
 
 
 def _slug(name: str) -> str:

@@ -66,9 +66,29 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 def buffering_enabled() -> bool:
-    """``SOC_BUFFERED_STORE`` — off unless explicitly enabled."""
+    """``SOC_BUFFERED_STORE`` — on unless explicitly disabled.
+
+    On by default since v1.43. It shipped off while it was new, which
+    meant the canonical run command never used it and the saving was
+    only ever collected by whoever had read the latency brief.
+
+    Measured on a full seven-day season rather than a bench, because
+    that is what somebody actually waits for: 97.9s → 62.2s with
+    heuristic seats, 254.5s → 205.3s with V12 in one. Smaller than the
+    per-turn store figures suggest — a real season is mostly engine and
+    model time, which no amount of buffering touches.
+
+    What it costs, stated plainly: game state is still flushed every
+    turn, so a crash can never rewind or corrupt a game. The deferred
+    tier is the day's LOG text, replay frames and invocation rows, and
+    a hard crash mid-day loses that day's worth of them. You lose the
+    animation and the transcript of a day, never the game.
+
+    ``SOC_BUFFERED_STORE=0`` is the way back, and the thing to try first
+    if a Snowflake season ever looks like it is missing history.
+    """
     return os.environ.get(
-        "SOC_BUFFERED_STORE", "0"
+        "SOC_BUFFERED_STORE", "1"
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -97,6 +117,9 @@ class BufferedSocStore:
         self._projections: List[Tuple[str, tuple]] = []
         # read caches
         self._session_cache: Dict[str, Optional[Mapping[str, Any]]] = {}
+        # Sessions this process has written, and so may answer from cache.
+        # See ``load_session`` for why a reader must not.
+        self._written: set[str] = set()
         self._log_durable: Dict[str, List[Dict[str, Any]]] = {}
         self._day_seen: Dict[str, int] = {}
         self._flushes = 0
@@ -130,13 +153,32 @@ class BufferedSocStore:
             # we just wrote, which is also what makes the §7 stale-read
             # impossible for a buffered reader.
             self._session_cache[sid] = row
+            self._written.add(sid)
             end_of_season = str(row.get("phase", "")) == "season_complete"
         if end_of_season:
             self.flush()
 
     def load_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Cached only for sessions *this* process is playing.
+
+        v1.43 — the cache has no expiry, so if it answered every read it
+        would pin a session at whatever this process last saw of it, for
+        the life of the process. That is fine for the writer, which is
+        the only one that can change it, and wrong for anyone else:
+        a server with a Snowflake game open while ``soc season`` advances
+        it in another terminal would show a frozen board and never
+        recover. The brief called this out at §T2 before the store
+        existed; making buffering the default is what made it reachable.
+
+        So the cache is scoped to sessions we have written. A pure reader
+        pays full price on every read, which is what it was paying before
+        buffering existed, and the turn loop keeps its saving because a
+        turn writes before it re-reads. Two processes *writing* one
+        session remains unsafe, but it was unsafe before this store too —
+        §V6's ``state_version`` is the fix for that, not a cache policy.
+        """
         with self._lock:
-            if session_id in self._session_cache:
+            if session_id in self._written and session_id in self._session_cache:
                 cached = self._session_cache[session_id]
                 return dict(cached) if cached is not None else None
         row = self._inner.load_session(session_id)

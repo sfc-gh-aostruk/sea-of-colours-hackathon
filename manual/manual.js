@@ -10409,7 +10409,7 @@
       },
       {
         label:  "3 · HARVESTER vs CHAFF",
-        body:   "Chaff is a 3-hour WHOLE-MAP jam (§4.9.5). Every seat's action for hours N, N+1, N+2 is `chaffed` — nothing moves anywhere. Costs 255 BLUE. Launcher is immune ONLY at hour N; self-jammed for the carry-over. Unlike EMP, chaff CAN cancel a pickup — which is why chaff is the only reliable way to DESTROY a harvester: cancel its pickup, Aurora rolls in, GRAVESTONE remains.",
+        body:   "Chaff is a 3-hour WHOLE-MAP jam (§4.9.5). Every seat's action for hours N, N+1, N+2 is `chaffed` — nothing moves anywhere. Costs 300 BLUE. Launcher is immune ONLY at hour N; self-jammed for the carry-over. Unlike EMP, chaff CAN cancel a pickup — which is why chaff is the only reliable way to DESTROY a harvester: cancel its pickup, Aurora rolls in, GRAVESTONE remains.",
         cite:   "§4.9.5 · chaff",
         status: "# stage 3 · chaff · the reliable kill",
         run:    stage3_chaff,
@@ -12084,7 +12084,7 @@
     //   C · KILL    — chaff cancels a PICKUP · harvester stays on
     //       the surface at Aurora · dawn destroys it · GRAVESTONE
     //       marks the spot · cargo lost. The ONLY reliable way to
-    //       destroy a harvester — the reason 255 BLUE is worth it.
+    //       destroy a harvester — the reason 300 BLUE is worth it.
     // ─────────────────────────────────────────────────────────
 
     // Whole-map scanline static burst (port of engine's
@@ -12432,7 +12432,7 @@
                         dropGravestoneAt(hCell);
                         wreckVault(p1col);
                         setSticker("† harvester DESTROYED · GRAVESTONE left · cargo gone", "is-crash");
-                        setVerdict("C · CHAFF KILL · only reliable way to destroy a harvester · 255 BLUE well spent", "is-chaff");
+                        setVerdict("C · CHAFF KILL · only reliable way to destroy a harvester · 300 BLUE well spent", "is-chaff");
                         pushLog("aurora", "† harvester destroyed at Aurora · gravestone at (10,5) · 2 RED cargo lost");
                         pushLog("aurora", "harv_lost_chaff · kill credited to P2 · this is why chaff exists");
                         if (state.autoPlay) timer(() => { if (!state.stopped) goStage(0); }, 5000);
@@ -13136,7 +13136,7 @@
     const STAGES = [
       {
         label:  "0 · EMP · SALVO PATTERNS",
-        body:   "EMP costs **200 BLUE purity + 250 credits** per warhead (paid in Orbit, drained in Nox). One warhead = one salvo = **3 missiles** fired simultaneously. Each missile spawns a Manhattan-radius-2 diamond cloud (13 cells) that lives **8 hours** (EMP_CLOUD_HOURS). Two salvo shapes: CLOSE (missiles cluster to lock a region) and SPREAD (missiles scatter to hit three targets).",
+        body:   "EMP costs **200 BLUE purity + 250 credits** per warhead (paid in Orbit, drained in Nox). One warhead = one salvo = **3 missiles** fired simultaneously. Each missile spawns a Manhattan-radius-2 diamond cloud (13 cells) that lives **8 hours** (EMP_CLOUD_HOURS). Two salvo shapes: CLOSE (missiles cluster to lock a region) and SPREAD (missiles scatter to hit three targets). **The rack is public and it has a ceiling (§4.9.8):** every seat reads the BLUE you have tied up in ordnance off your station, and **600** is as much as you may hold — three warheads, or two flares, or one of each. A buy that would break the ceiling is refused in Orbit and costs you nothing.",
         cite:   "§4.9.3 · emp · weapons.py:36",
         status: "# stage 0 · salvo patterns · close vs spread",
         run:    stage0_empBasics,
@@ -15032,7 +15032,7 @@
     //   C · KILL    — chaff cancels a PICKUP · harvester stays on
     //       the surface at Aurora · dawn destroys it · GRAVESTONE
     //       marks the spot · cargo lost. The ONLY reliable way to
-    //       destroy a harvester — the reason 255 BLUE is worth it.
+    //       destroy a harvester — the reason 300 BLUE is worth it.
     // ─────────────────────────────────────────────────────────
 
     // Whole-map scanline static burst (port of engine's
@@ -15380,7 +15380,7 @@
                         dropGravestoneAt(hCell);
                         wreckVault(p1col);
                         setSticker("† harvester DESTROYED · GRAVESTONE left · cargo gone", "is-crash");
-                        setVerdict("C · CHAFF KILL · only reliable way to destroy a harvester · 255 BLUE well spent", "is-chaff");
+                        setVerdict("C · CHAFF KILL · only reliable way to destroy a harvester · 300 BLUE well spent", "is-chaff");
                         pushLog("aurora", "† harvester destroyed at Aurora · gravestone at (10,5) · 2 RED cargo lost");
                         pushLog("aurora", "harv_lost_chaff · kill credited to P2 · this is why chaff exists");
                         if (state.autoPlay) timer(() => { if (!state.stopped) goStage(0); }, 5000);
@@ -16076,7 +16076,7 @@
     const STAGES = [
       {
         label:  "0 · CHAFF · BASICS",
-        body:   "**CHAFF** costs **255 BLUE purity** per flare (paid in Orbit, drained in Nox). At hour N the flare cancels **every seat's** action for hours **N, N+1, N+2** — chaff duration = 3 hours. Launcher is immune only at hour N and self-jams for the two carry-over hours. Two things chaff can do that nothing else can: **deny an H1 drop** (EMP can't — same-hour destruction still validates the drop per §3.9.8) and **strand an opponent harvester** (pickup is exempt from every other disable — only chaff can cancel it, and a stranded harvester burns at Aurora). **A launch is an action too (v1.14):** a flare or EMP queued into a jammed hour is cancelled, and the munition is **not** spent — it stays in stock. So chaff **cannot be chained** (a second flare inside your own window buys nothing but a burnt slot), and a flare **beats an EMP declared for the same hour**.",
+        body:   "**CHAFF** costs **300 BLUE purity** per flare (paid in Orbit, drained in Nox). At hour N the flare cancels **every seat's** action for hours **N, N+1, N+2** — chaff duration = 3 hours. Launcher is immune only at hour N and self-jams for the two carry-over hours. Two things chaff can do that nothing else can: **deny an H1 drop** (EMP can't — same-hour destruction still validates the drop per §3.9.8) and **strand an opponent harvester** (pickup is exempt from every other disable — only chaff can cancel it, and a stranded harvester burns at Aurora). **A launch is an action too (v1.14):** a flare or EMP queued into a jammed hour is cancelled, and the munition is **not** spent — it stays in stock. So chaff **cannot be chained** (a second flare inside your own window buys nothing but a burnt slot), and a flare **beats an EMP declared for the same hour**. **The rack is public and capped at 600 BLUE (§4.9.8)** — two flares is the most you can carry, and everyone can see the 600. What they cannot see, since v1.36, is that it is flares: at 100/200/300 for SNAP/EMP/chaff the public figure is an exact measure of how much ordnance you hold and a poor guide to which, because 600 is also three EMPs, or six SNAPs, or one of each.",
         cite:   "§4.9.5 · chaff · basics",
         status: "# stage 0 · chaff basics · deny H1 drop · strand harvester",
         run:    stage0_chaffBasics,
@@ -16090,7 +16090,7 @@
       },
       {
         label:  "2 · HARVESTER vs CHAFF",
-        body:   "**Chaff is a 3-hour WHOLE-MAP jam** (§4.9.5). Every seat's action for hours N, N+1, N+2 is `chaffed` — nothing moves anywhere. Costs 255 BLUE. Launcher is immune ONLY at hour N; self-jammed for the carry-over. Unlike EMP, chaff CAN cancel a pickup — which is why chaff is the only reliable way to **DESTROY a harvester**: cancel its pickup, Aurora rolls in, GRAVESTONE remains.",
+        body:   "**Chaff is a 3-hour WHOLE-MAP jam** (§4.9.5). Every seat's action for hours N, N+1, N+2 is `chaffed` — nothing moves anywhere. Costs 300 BLUE. Launcher is immune ONLY at hour N; self-jammed for the carry-over. Unlike EMP, chaff CAN cancel a pickup — which is why chaff is the only reliable way to **DESTROY a harvester**: cancel its pickup, Aurora rolls in, GRAVESTONE remains.",
         cite:   "§4.9.5 · chaff",
         status: "# stage 2 · chaff · the reliable kill",
         run:    stage3_chaff,
@@ -17765,7 +17765,7 @@
     //   C · KILL    — chaff cancels a PICKUP · harvester stays on
     //       the surface at Aurora · dawn destroys it · GRAVESTONE
     //       marks the spot · cargo lost. The ONLY reliable way to
-    //       destroy a harvester — the reason 255 BLUE is worth it.
+    //       destroy a harvester — the reason 300 BLUE is worth it.
     // ─────────────────────────────────────────────────────────
 
     // Whole-map scanline static burst (port of engine's
@@ -17827,7 +17827,7 @@
     //       drop is nullified. Chaff is the ONLY way to do this:
     //       an EMP fired at H1 to fry the enemy's probe would still
     //       validate the same-hour drop (§3.9.8 same-hour destroy
-    //       clause). Cost to the launcher: 255 BLUE + H1/H2/H3
+    //       clause). Cost to the launcher: 300 BLUE + H1/H2/H3
     //       (own actions jammed for the 2-hour carry-over).
     //     B · STRAND HARVESTER — enemy harvester on the seam with a
     //       pickup queued. Chaff at the pickup hour cancels it —
@@ -17884,7 +17884,7 @@
             "is-crash"
           );
           pushLog("aurora",
-            "H01/H02/H03 · every seat chaffed · nothing moves anywhere · chaff cost 255 BLUE");
+            "H01/H02/H03 · every seat chaffed · nothing moves anywhere · chaff cost 300 BLUE");
           if (state.autoPlay) timer(() => { if (!state.stopped) goStage(state.stageIdx + 1); }, 4000);
         });
       }, 900);
@@ -17974,7 +17974,7 @@
               markChaffed(p1List, 3);
               markChaffed(p2List, 3);
               setSticker("H03 · last chaff hour · seam untouched · P2 lost 3 slots and a drop", "is-chaff");
-              setVerdict("A · P1 paid 255 BLUE + 3 own slots · P2 lost 3 planned actions · seam UNTOUCHED", "is-chaff");
+              setVerdict("A · P1 paid 300 BLUE + 3 own slots · P2 lost 3 planned actions · seam UNTOUCHED", "is-chaff");
               pushLog("aurora", "A · complete · chaff denied an H1 drop · EMP could not have done this");
               timer(runChaffStrandHarvester, 3000);
             }, 1200);
@@ -18395,7 +18395,7 @@
                         dropGravestoneAt(hCell);
                         wreckVault(p1col);
                         setSticker("† harvester DESTROYED · GRAVESTONE left · cargo gone", "is-crash");
-                        setVerdict("C · CHAFF KILL · only reliable way to destroy a harvester · 255 BLUE well spent", "is-chaff");
+                        setVerdict("C · CHAFF KILL · only reliable way to destroy a harvester · 300 BLUE well spent", "is-chaff");
                         pushLog("aurora", "† harvester destroyed at Aurora · gravestone at (10,5) · 2 RED cargo lost");
                         pushLog("aurora", "harv_lost_chaff · kill credited to P2 · this is why chaff exists");
                         if (state.autoPlay) timer(() => { if (!state.stopped) goStage(0); }, 5000);

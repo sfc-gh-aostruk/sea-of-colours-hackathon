@@ -6,8 +6,8 @@ the intent rather than the code. Where the two disagree the code wins —
 see §9 for what actually landed and what is still open.
 
 Replaces the landing page's `Quick game` button with a `TUTORIAL` chooser
-offering three entries. Every entry runs on the memory backend and lasts
-three nights.
+offering three entries. Every entry runs on the memory backend. Basic and
+Quick last three nights; Advanced runs four (v1.36 — see §11).
 
 ---
 
@@ -479,17 +479,24 @@ effect that fails silently. The film still runs, the caption still says
 Basic teaches the machine — probe, drop, walk, lift, and the ways a night
 goes wrong on its own. **Advanced teaches the other House**: what you can
 read about them without seeing them, and what you can do to them without
-touching them. Same 24×16, same three nights, weapons and signs on.
+touching them. Same 24×16, weapons and signs on — and, since v1.36, one
+night longer than Basic, because three weapons do not fit in three
+nights (§11).
 
 ### The arc is the economy
 
 The seven films are one storyline and the spine of it is blue, because
 the numbers already force it: you start a season with **250 blue**, an
-EMP is **200**, and chaff is **255**. So the stipend buys exactly one
-weapon and never a flare, and everything after that is blue you went and
-dug up. Night one's hot drop onto the blue pocket is *literally* what
-pays for the EMP in orbit two and the chaff in orbit three. Nothing in
-the reels has to assert that; the prices do it.
+EMP is **200**, and chaff is **300** (v1.36, was 255). So the stipend
+buys exactly one weapon and never a flare, and everything after that is
+blue you went and dug up. Night one's hot drop onto the blue pocket is
+*literally* what pays for the EMP in orbit two and the chaff in orbit
+three. Nothing in the reels has to assert that; the prices do it.
+
+SNAP, at **100**, is the exception the ladder created: it is the one
+weapon the opening stipend leaves change from. It is also the reason the
+mode grew a fourth night — one weapon per orbit, fired the night after,
+and three of those do not fit in three nights.
 
 ### The board is pinned, and Basic's is not
 
@@ -512,13 +519,57 @@ than in a player's tutorial.
 
 ### What each turn teaches
 
+Re-laid for the fourth night in v1.36. **One weapon bought per orbit,
+fired the night after**, which is what made the extra night necessary
+once there were three of them.
+
 | Reel | Films | The point |
 |---|---|---|
 | `planning:1` | `adv_hotdrop` | The fog is not blank. A blue sign is static, season-old and vague; the hot drop commits a landing into a disk the probe has not cut yet. |
 | `orbit:2` | `adv_buy_emp` | Two currencies that do not convert. Credits arrive; blue is mined; only blue buys weapons. |
-| `planning:2` | `adv_redsign`, `adv_redsign_rival`, `adv_smash_grab`, `adv_blind_grab` | A pure seam mints a **public** beacon the moment anyone sees it, from both sides — then what to *do* about one. Smash-and-grab prices the greedy line and throws it away for certainty; blind-and-grab attacks the situation instead of the square. |
-| `orbit:3` | `adv_buy_chaff` | A second hull, and the weapon that costs more blue than a season hands you. |
-| `planning:3` | `adv_emp`, `adv_chaff` | EMP takes the clock, not the ore — and only if you wait for it. Chaff denies three hours, which is worth having; aimed at one hour it is a kill. |
+| `planning:2` | `adv_redsign`, `adv_redsign_rival` | A pure seam mints a **public** beacon the moment anyone sees it — from both sides, and anonymously. |
+| `orbit:3` | `adv_buy_snap` | The price ladder: 1 : 2 : 3 into a rack of six. SNAP is the only rung the EMP left you change for. |
+| `planning:3` | `adv_smash_grab`, `adv_blind_grab`, `adv_snap` | What to *do* about a beacon. Smash-and-grab prices the greedy line and throws it away for certainty; blind-and-grab attacks the situation instead of the square; SNAP refuses the whole exchange by arriving above the hour's vision note. |
+| `orbit:4` | `adv_buy_chaff`, `adv_arms_bar` | A second hull, and the weapon that costs more blue than a season hands you — then what buying it TELLS everybody. |
+| `planning:4` | `adv_emp`, `adv_chaff` | EMP takes the clock, not the ore — and only if you wait for it. Chaff denies three hours, which is worth having; aimed at one hour it is a kill. |
+
+Chapter load is `1 · 1 · 2 · 1 · 3 · 2 · 2`. Keep it flat: night two was
+four chapters before the split and was the heaviest turn in either
+tutorial.
+
+**The fourth night paid for itself twice over.** Beyond fitting SNAP, it
+repaired a mismatch nobody had noticed: `adv_chaff` is *shot* on night
+four, because the rival needs a whole night to land, work and be caught
+reaching for the lift — but on a three-night cap the reel had to play on
+night three, so the player was being shown a sequence their own game
+could no longer produce.
+
+**Both subsidies moved with it.** `TUTORIAL_BLUE_GRANT_WEAPON` now pays
+one SNAP at orbit 3 and one chaff at orbit 4, priced off the weapons
+rather than written as numbers. That also moved `adv_buy_chaff` and
+`adv_arms_bar` from rig turn 3 to turn 5 — at 300 blue and no subsidy,
+orbit 3 is an orbit on which the flare genuinely cannot be bought, so
+shooting it there would have filmed a purchase the seat could not make.
+
+**A film carries its day number, so moving a reel means re-shooting.**
+This is the trap the fourth night set, and it caught three films before
+anyone watched them. A film is a screen recording of a real session, so
+the game chrome inside it reads `# day 3 · orbit` and `NOX 03` in the
+player's own header font. Change `_ADV_TURN` and the *next* shoot is
+correct; the `.webm` already on disk is not, and nothing complains —
+the reel plays whatever file it is handed, and both tables read right
+in isolation. `adv_buy_chaff` was three generations stale this way
+(day 3, chaff at 255, and the pre-subsidy "if you cannot afford it this
+turn, that is not a mistake" line the grant had made false).
+
+Two things now guard it. `tests/test_tutorial_mode.py` compares each
+reel's day against its film's shoot turn, which catches the source half.
+The `.webm` half cannot be tested — it needs a shoot — so the rule is
+simply: **if you move a reel between days, re-shoot its films.** For
+`adv_emp` that meant more than re-running the camera, because the
+storyline did not leave a spendable EMP on night four; `_EMP_TAKES` in
+the rig is the three-branch detour that does (an unspent weapon, one
+hull, and a rival holding still).
 
 ### Things learned shooting these
 

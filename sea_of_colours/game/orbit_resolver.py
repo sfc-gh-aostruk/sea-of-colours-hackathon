@@ -39,6 +39,7 @@ from sea_of_colours.game.policy import (
     BuildEmpAction,
     BuildHarvesterAction,
     BuildProbeAction,
+    BuildSnapAction,
     OrbitAction,
     OrbitWasteAction,
     RepairAction,
@@ -154,6 +155,7 @@ class OrbitResolver:
         sess.log_info(f"[orbit] day {sess.day} — orbit settlement begins")
 
         sess.award_orbit_credits()
+        sess.award_tutorial_blue_topup()
 
         # v0.9.6 — derive seat list from the session so N-seat games
         # are first-class. The tuple is captured once at the top so
@@ -265,6 +267,10 @@ class OrbitResolver:
                 )
             elif isinstance(act, BuildChaffAction):
                 ok, msg = sess.apply_build_chaff(
+                    player, count=int(getattr(act, "count", 1) or 1),
+                )
+            elif isinstance(act, BuildSnapAction):
+                ok, msg = sess.apply_build_snap(
                     player, count=int(getattr(act, "count", 1) or 1),
                 )
             elif isinstance(act, RepairAction):

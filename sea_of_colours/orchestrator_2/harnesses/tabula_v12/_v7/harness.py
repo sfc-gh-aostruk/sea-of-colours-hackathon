@@ -691,7 +691,7 @@ def run(
                             if thinker_directive else "[thinker=no directive]"
                         ),
                         "ms_elapsed": thinker_ms,
-                        "prompt_excerpt": (thinker_prompt[:32_000]
+                        "prompt_excerpt": (thinker_prompt
                                            if thinker_used else ""),
                     }
                 ]
@@ -705,7 +705,7 @@ def run(
             # 32KB slice of the prompt — audit writer caps at
             # ``PROMPT_EXCERPT_CHAR_CAP`` (also 32KB) so this is a no-op
             # truncation for typical prompts (~25KB).
-            "prompt_excerpt": prompt_text[:32_000],
+            "prompt_excerpt": prompt_text,
         },
     }
 

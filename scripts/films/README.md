@@ -66,6 +66,29 @@ mismatch: a reel naming a film that is not on disk, and a film in
 `make_tutorial_films.py` that no reel shows anyone. `_fx_screening.py` checks
 that the index fills and the first film plays.
 
+Watching is still the check that matters, but there is one thing the eye is
+bad at and a script is good at: noticing that a fast effect never rendered
+at all. `ink_check.py` counts a weapon's colour frame by frame across a whole
+film, so "the missile is subtle" and "there is no missile" stop looking alike:
+
+```bash
+python scripts/films/ink_check.py server/static/films/adv_emp.webm  emp
+python scripts/films/ink_check.py server/static/films/adv_snap.webm snap
+```
+
+This is not paranoia. v1.36 shipped `adv_snap.webm` as a minute of narration
+over a strike that measured 61 px at its peak against the EMP's 12,000 — a
+film of nothing, passing every assertion the rig makes, because the rig
+asserts that the launch *resolved* and cannot see whether it was *drawn*.
+
+It is also how you tell a redraw apart from a regression. When SNAP's FX was
+redrawn flat in v1.40, the same count said 268 px against the old glowing
+cross's 323 — a picture that changed idiom without going quiet. Which is the
+other reason a film is a fan-out surface: an FX change re-teaches whatever
+film shows it. `adv_snap.webm` was re-shot for that redraw, because the
+shipped one was a minute of the game explaining a visual it had stopped
+drawing.
+
 ## What's here
 
 | file | what it is |
@@ -73,6 +96,7 @@ that the index fills and the first film plays.
 | `make_tutorial_films.py` | the rig. One function per film, plus the `Film` verb kit |
 | `make_hero_reel.py` | the landing page's hero loop — same rig, no captions, board-only framing |
 | `_fx_tutorial.py` | end-to-end browser check of the tutorial modal |
+| `ink_check.py` | counts a weapon's ink per frame — catches an FX that never drew |
 | `screening.html` | watch all sixteen on one page, with their card text |
 | `_fx_screening.py` | checks `screening.html` indexes every film and plays one |
 | `_fx_landing_tut.py` | the landing page's three-card TUTORIAL chooser |
@@ -80,14 +104,33 @@ that the index fills and the first film plays.
 | `_probe_advanced.py` | staged and debugged the Advanced storyline turn by turn |
 | `_probe_crash.py` | worked out what the engine actually does on a collision |
 | `_probe_redsign_card.py` | screenshots a reel's cards — the prose, which no film check reads |
+| `_probe_adv_arc.py` | walks Advanced's four days and checks each orbit can afford the weapon its own reel tells you to buy |
 
 The `_probe_*` scripts are one-shot investigations kept for the next person
 who has to ask the same question. They are not maintained and may not run
 against a much-changed engine — read them for the answer, not the code.
 
-`_probe_redsign_card.py` is the exception worth reaching for again: half of
+Two are worth reaching for again. `_probe_redsign_card.py`, because half of
 each reel is prose in `tutorial.js`, the films check none of it, and pointing
-it at another reel is a one-line edit.
+it at another reel is a one-line edit. And `_probe_adv_arc.py`, because the
+teaching subsidy is priced at one end and spent at a buy button at the other,
+with a day number in between — retune any of the three and the way you find
+out is an attendee stuck on a lesson they cannot pay for.
+
+## Films carry their own day number
+
+A film is a screen recording, so the game chrome inside it says `# day 3 ·
+orbit` and `NOX 03` in the same font as the header above the modal. **Moving
+a reel to a different day therefore means re-shooting its films**, and no
+test can tell you otherwise — the evidence is inside the video. Adding
+Advanced's fourth night caught three films this way; see issue 44.
+
+Checking it is quick, and worth doing after any reel shuffle:
+
+```bash
+ffmpeg -ss 7 -i server/static/films/adv_emp.webm -frames:v 1 \
+  -vf "crop=200:26:436:8,scale=800:-1:flags=neighbor" /tmp/hdr.png
+```
 
 ## The script is the deliverable
 

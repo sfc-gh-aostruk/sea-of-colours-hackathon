@@ -202,7 +202,23 @@ def _hydrate_from_snowflake(
     *,
     store: Optional[Any] = None,
 ) -> None:
-    """Best-effort load of prior memory entries from SOC_AGENT_MEMORY."""
+    """Best-effort load of prior memory entries from SOC_AGENT_MEMORY.
+
+    The ``arena:day`` filter is applied here rather than in SQL, and that
+    is not a style choice. ``SOC_AGENT_MEMORY`` is a hybrid table keyed
+    ``(session_id, player, kind)``, and adding a range predicate on the
+    trailing key column — ``kind LIKE 'arena:day%'``, or ``STARTSWITH``,
+    which it compiles to — makes the scan return rows belonging to the
+    *next player* as well. Verified against the standard-table backup of
+    the same rows: the equality-only query returns p1's seven entries,
+    the same query with the LIKE returns p1's seven and p2's seven.
+
+    That was silently feeding each agent its opponent's journal. Entries
+    are keyed by day on the way into the dict, so a rival's day-3 entry
+    simply overwrote your own, and the agent reflected on a night it had
+    never played. The seat is re-checked below because nothing in the
+    result can be trusted to satisfy a predicate the scan dropped.
+    """
     try:
         from sea_of_colours.snowpark.backend import snowpark_session_for
         session = snowpark_session_for(store)
@@ -210,14 +226,17 @@ def _hydrate_from_snowflake(
             return
         rows = session.sql(
             """
-            SELECT KIND, PAYLOAD FROM SOC_AGENT_MEMORY
+            SELECT PLAYER, KIND, PAYLOAD FROM SOC_AGENT_MEMORY
             WHERE session_id = ? AND player = ?
-              AND kind LIKE 'arena:day%'
             """,
             params=[session_id, player],
         ).collect()
         for r in rows:
+            if str(r["PLAYER"]) != str(player):
+                continue
             kind = str(r["KIND"])
+            if not kind.startswith("arena:day"):
+                continue
             payload = r["PAYLOAD"]
             if isinstance(payload, str):
                 try:

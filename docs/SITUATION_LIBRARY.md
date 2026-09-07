@@ -8,9 +8,52 @@ Companion to `docs/AGENT_LOOP_PLAN.md` (the tooling and the round trip)
 and `sea_of_colours/evals/battles/README.md` (the nine boards as built).
 This document proposes the next layer on top of both.
 
+> **The substrate this was designed on is deprecated (v1.42).** The
+> battles suite — `soc suite`, `soc why`, `soc diff`, and the
+> constructed boards underneath them — has been superseded by the **turn
+> lab** (`turnlab/`), which is how a fork is tested now. Start at
+> `turnlab/README.md`; `python run_web.py` then `/lab` (or the Turn Lab
+> button on the landing page), or `python scripts/soc.py lab` to see the
+> frozen turns and the castable forks without starting a server.
+>
+> The change goes to the root of §1's complaint, and mostly in the
+> direction this document argued for. Battles built its boards: a
+> `WorldBuilder` arranged a seam, a rival and a weapon rack into a
+> situation, ran it over five difficulty rungs and four weapon loadouts,
+> and returned a pass rate from predicates. The lab uses **frozen
+> turns** — a real turn out of a real season, snapshotted the instant
+> before a seat planned. You cast a fork into a seat, watch the night
+> resolve in the ordinary game UI, and open the divergence view to diff
+> your take against stock V12's frozen baseline on the same turn.
+>
+> Where it goes further than §1 asked: **the lab does not score at all.**
+> This document's remedy for a bad scalar was a better readout —
+> competences, foils, grouped results. The lab's remedy was to delete
+> the scalar and show the difference instead, on the grounds that "how
+> is my fork different from V12 here" is a question an attendee can act
+> on and "74%" is not. Much of §3–§7 below is therefore still live as
+> design thinking — the `teaches`/`foil` idea in particular is exactly
+> what `turnlab/boards.py`'s `NOTES` carries, split into a checkable
+> `state` and an editorial `why` — but the *predicates* it is built
+> around are not coming back in the lab.
+>
+> Nothing is deleted. The battles commands still run and print a notice
+> on stderr. `soc weapons` (a static scan of a fork's source, saying
+> which firing rung it is stuck on) and `soc league` (run every
+> submitted fork and rank them) have no lab equivalent yet, which is the
+> only reason the suite is still in the tree — treat those two as
+> current despite the notice they print.
+>
+> The rest of this document is left as written, including the parts the
+> lab has overtaken. Where a section describes the suite as the thing
+> being improved, read it as the reasoning that led to the lab.
+
 ---
 
 ## 1. The problem with the suite as built
+
+*(`soc suite` is deprecated as of v1.42 — see the note at the top. The
+diagnosis below is why, so it is kept in full.)*
 
 `soc suite` answers one question well: *is this fork better or worse than
 the last one?* It runs nine constructed redsign boards across a difficulty
@@ -29,6 +72,18 @@ cannot tell you **what to change**. Three failure modes it hides:
 
 The attendee reads "74%", has no idea which lever to pull, and pulls the
 one they were going to pull anyway.
+
+**How v1.42 resolved this.** Not with the readout in §7, but by removing
+the pass rate and putting a diff in its place: the lab shows a fork's
+orders, directive, reasoning and prompt against stock V12's on the same
+frozen turn, and says nothing about whether either is good. That answers
+all three failure modes above by construction — there is no scalar to
+average a quiet board into, no rate to stay flat while a competence
+regresses, and a hardcoded constant shows up as a fork playing the same
+way on six very different real nights. What it gives up is a verdict,
+which is a real loss and a deliberate one: ranking is the league's job,
+and the league should rank on wins over whole seasons (`soc season`)
+rather than on predicates over one constructed night.
 
 ## 2. Three blockers found while checking this
 
@@ -66,11 +121,43 @@ phase the suite never executes, so weapon *procurement* is unmeasurable
 and only weapon *firing* can be scored — from stock the harness handed
 out. **Fix:** short multi-night arcs, §5.
 
+Still true in the lab (v1.42), and for the same reason: a frozen turn is
+snapshotted the instant before a seat planned its night, and `arms.py`
+stamps a rack onto the clone directly rather than playing an orbit
+phase. So the lab asks "given a weapon, does this fork fire it?" and
+still cannot ask "would it have bought one?". The racks it offers are
+none, one of each weapon on its own, and one of everything — one of each
+at most, deliberately, because handing out pairs turns the run into a
+question about salvo economics when the question worth asking is
+simpler. The list is derived from `arms.py`'s `KINDS`, so it grew a SNAP
+rack in v1.36 without anyone editing it. Arcs remain the open idea for procurement; a headless season
+(`soc season`) is the blunt way to see it today.
+
 ## 3. The design: situations, not boards
 
 A **situation** is a board plus the competence it isolates plus the
 mistake it is built to catch. The nine existing boards become situations;
 the library grows past them.
+
+*(v1.42 — the half of this that survived. The lab's board library is ten
+named frozen nights: Vanilla Opener · day 1, Early Redsign Battle · day
+2 · dual discovery, Beaten to the Seam · day 3, Second Wind · day 4,
+After the Gold Rush · day 4, and Vetus Lantern · day 6 · late redsign
+race — plus, from v1.40, the four nights that can hold a SNAP: Sighted
+and Armed · day 6 · the blind chase, Both Eyes on the Same Pure · day 3
+· weapon poker, Two Ghosts, One Seam · day 2 · nobody can see it now,
+and The Late Reversal · day 6 · sight against the scoreboard. The four
+were cut from V12-vs-V12 seasons played at the 1:2:3 price ladder, which
+is what makes them the only boards whose economy prices the weapon; the
+older six predate it and correctly refuse a SNAP rack. Each carries a
+`tests` line saying what you would learn here that
+you would not learn anywhere else, a `state` claim that must be
+checkable against the saved session, and an editorial `why` — which is
+`teaches` and `foil` under other names, split so that a wrong number is
+a bug you can find rather than an opinion. What did not survive is
+`expect`: there are no predicates. Boards are discovered from the store
+rather than declared, so the library grows by minting or grabbing rather
+than by editing a list.)*
 
 Each situation declares four things:
 
@@ -144,6 +231,14 @@ it buy, did it fire, did the firing change the outcome. Arcs are slower
 
 ## 6. Cards, saved by default
 
+*(v1.42 — the lab takes a different route to the same end. It does not
+write cards; it keeps every clone it ever made under `turnlab/data/`,
+and a take is re-opened in the game UI rather than read as text. The
+divergence view is where the card's contents surface — the orders hour
+by hour, the directive behind them, the reasoning, and the prompt as
+sent, each diffed against V12's frozen take on the same turn. The
+paragraph below still describes what `soc suite` does.)*
+
 `soc suite --cards DIR` exists. It should be **on by default**, writing
 to `reports/cards/<agent>/<situation>/`, because the card is the artefact
 that turns a red check into an understood mistake.
@@ -157,9 +252,17 @@ generating.
 
 Diffing two runs of the same situation across an edit is the highest-value
 follow-on, and is the one item §5 of `AGENT_LOOP_PLAN.md` still lists as
-unbuilt.
+unbuilt. **Built in v1.42, against V12 rather than against your own last
+run** — which is the more useful axis for a fork, because it tells you
+what you changed *about the thing you forked* rather than what you
+changed since lunch.
 
 ## 7. The readout
+
+*(Not built, and v1.42 went the other way: the lab's "readout" is the
+night itself, played out in the game UI, plus the divergence view. The
+sketch below is kept because the instinct in its last line — always name
+the next command — is right regardless of what is being reported.)*
 
 Grouped by competence, worst first, with the foil quoted:
 
@@ -207,6 +310,12 @@ Written for the assistant as much as the human — a table an agent can
 grep is worth more than a chapter it has to summarise.
 
 ## 9. Build order
+
+*(Steps 2–6 were overtaken by the turn lab in v1.42 and are unlikely to
+be built as written: they all assume boards with predicates on them.
+Step 7, `PLAYBOOK.md`, is untouched by the change and is still the
+highest-value item left here — the lab shows a fork what it did
+differently, and a lever index is what turns that into an edit.)*
 
 1. ~~**Fork owns `plan_orbit_actions`** (§2.1).~~ ✅ done, v1.40.
 2. **`competence` / `teaches` / `foil` on the nine existing boards.** No

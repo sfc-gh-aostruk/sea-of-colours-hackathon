@@ -31,8 +31,9 @@ WISHLIST_TAGS = {
     "replace_harvester": "Harvester stock below 2 — the next orbit turn should build. Meanwhile play with what you have.",
     "conserve_probes": "Probe stock low (<= 1) — probe only if area_gain is high; save the shot for a targeted reveal.",
     "hot_drop_ready": "You have both a probe and a harvester in orbit AND an echo signal — a hot drop this night is on the table.",
-    "beware_emp": "Opponent likely has EMP stock (13-cell blast, 3 missiles per launch). EMP is a vision/landing-denial weapon — see DOCTRINE_BEWARE_EMP for the two mitigation flavors.",
-    "beware_chaff": "Opponent likely has chaff stock (cancels your actions for 3 consecutive hours). Avoid predictable pickup windows (hour 6-9, 12-16) and space multi-harvester pickups >=3 hours apart.",
+    "beware_emp": "Opponent HAS EMP stock (13-cell blast, 3 missiles per launch). EMP is a vision/landing-denial weapon — see DOCTRINE_BEWARE_EMP for the two mitigation flavors.",
+    "beware_chaff": "Opponent HAS chaff stock (cancels your actions for 3 consecutive hours). Avoid predictable pickup windows (hour 6-9, 12-16) and space multi-harvester pickups >=3 hours apart.",
+    "beware_snap": "Opponent COULD hold SNAP (100 blue, the cheapest weapon). One cell, resolved before that cell's vision snapshot: a probe there is destroyed BEFORE IT SEES, so a landing that depended on it is refused for want of vision. If the menu offers a PRSNAP* cover, that is a second probe seeing the same cell from a different one — worth considering when a landing rests on a single probe and you would be sorry to lose it, not worth a probe otherwise. SNAP gives no tell, so there is nothing else to plan around.",
 }
 
 
@@ -156,29 +157,52 @@ def compute_wishlist(
     # Opponent-weapon tags — priorities driven by weapon lethality:
     #   EMP (P1) — vision/landing denial: destroys probes + disables harvesters
     #   Chaff (P2) — pickup-killer: cancels 3 consecutive hours of your actions
+    #   SNAP (P1, v1.38) — one cell, taken first: refuses a landing outright
+    #     and destroys a probe before it sees. P1 alongside EMP because it
+    #     denies the same thing (the drop) for a third of the price.
     # (Mines are tracked by the estimator but doctrine + wishlist emission
     # are disabled — the current campaign design doesn't emphasize the
     # hidden-hazard case. Re-enable by uncommenting the mines block below.)
     if opponent_weapon_estimates:
-        emp_carriers: List[str] = []
-        chaff_carriers: List[str] = []
+        # v1.38 — each tag fires only for seats whose PUBLIC TOTAL admits
+        # a rack containing that weapon, which makes the minimum spend
+        # self-enforcing: a chaff costs 300, so no seat under 300 can
+        # raise beware_chaff. Previously read the per-weapon maxima
+        # directly, and SNAP had no maximum to read.
+        def _could(est: Any, kind: str) -> bool:
+            probe = getattr(est, "could_hold", None)
+            if callable(probe):
+                return bool(probe(kind))
+            stem = {"emp": "emps", "chaff": "chaff", "snap": "snap"}[kind]
+            return int(getattr(est, f"{stem}_max", 0) or 0) > 0
+
+        def _carried(est: Any, kind: str) -> str:
+            """``p2`` when the count is pinned, ``p2[1..3]`` when it is not."""
+            stem = {"emp": "emps", "chaff": "chaff", "snap": "snap"}[kind]
+            lo = int(getattr(est, f"{stem}_min", 0) or 0)
+            hi = int(getattr(est, f"{stem}_max", 0) or 0)
+            return "" if lo == hi else f"[{lo}..{hi}]"
+
+        carriers: Dict[str, List[str]] = {"emp": [], "chaff": [], "snap": []}
         for seat, est in opponent_weapon_estimates.items():
-            if getattr(est, "emps_max", 0) > 0:
-                emp_carriers.append(f"{seat}[{est.emps_min}..{est.emps_max}]")
-            if getattr(est, "chaff_max", 0) > 0:
-                chaff_carriers.append(f"{seat}[{est.chaff_min}..{est.chaff_max}]")
-        if emp_carriers:
-            entries.append(WishlistEntry(
-                tag="beware_emp",
-                priority=1,
-                rationale=WISHLIST_TAGS["beware_emp"] + f" (est: {', '.join(emp_carriers)})",
-            ))
-        if chaff_carriers:
-            entries.append(WishlistEntry(
-                tag="beware_chaff",
-                priority=2,
-                rationale=WISHLIST_TAGS["beware_chaff"] + f" (est: {', '.join(chaff_carriers)})",
-            ))
+            for kind in carriers:
+                if _could(est, kind):
+                    carriers[kind].append(f"{seat}{_carried(est, kind)}")
+
+        for kind, tag, priority in (
+            ("emp", "beware_emp", 1),
+            ("snap", "beware_snap", 1),
+            ("chaff", "beware_chaff", 2),
+        ):
+            if carriers[kind]:
+                entries.append(WishlistEntry(
+                    tag=tag,
+                    priority=priority,
+                    rationale=(
+                        WISHLIST_TAGS[tag]
+                        + f" (could be holding: {', '.join(carriers[kind])})"
+                    ),
+                ))
 
     # P2 tags — should-consider
     if _hoard_fullness(agent_view) > 0.7:

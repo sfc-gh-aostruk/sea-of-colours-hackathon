@@ -422,6 +422,13 @@ html, body {
   text-transform: uppercase;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
+  /* One of these cards is an <a> (the Turn Lab, which is a page rather
+     than a game to start, and should middle-click into a new tab like
+     the link it is). Everything else here is a <button>, so the two
+     defaults an anchor brings have to be turned off to keep the row
+     looking like one row. */
+  text-decoration: none;
+  line-height: normal;
 }
 .landing-btn-idx {
   font-size: 9px;

@@ -35,7 +35,11 @@ _MAX_CELLS = 3
 # of IDs. A night rarely needs more than a couple of patterns + a probe/chain.
 _MAX_PLAN_IDS = 6
 # Only these keys survive from the thinker's situational read (whitelist).
-_SITUATIONAL_KEYS = ("mine", "players", "chaff", "emp")
+# v1.38 added ``snap`` alongside the SITUATIONAL FACTS line and the
+# schema key. A whitelist is the right shape here, but it means a fact
+# the prompt asks for and the schema permits is still discarded unless
+# it is also named on this line — so all three move together.
+_SITUATIONAL_KEYS = ("mine", "players", "chaff", "emp", "snap")
 
 # Matches a ``DECISION:`` marker followed by a JSON object. Case-insensitive
 # on the label; the JSON itself is decoded with json.raw_decode so trailing
@@ -271,7 +275,7 @@ def _salvage_decision(raw: str) -> Optional[Directive]:
     sit_m = re.search(r'"situational"\s*:\s*\{([^}]*)', raw)
     if sit_m:
         seg = sit_m.group(1)
-        for key in ("mine", "chaff", "emp"):
+        for key in (k for k in _SITUATIONAL_KEYS if k != "players"):
             km = re.search(r'"' + key + r'"\s*:\s*(true|false)', seg)
             if km:
                 situational[key] = km.group(1) == "true"
@@ -360,8 +364,9 @@ def _coerce_ids(raw: Any) -> List[str]:
 def _coerce_situational(raw: Any) -> Dict[str, Any]:
     """Whitelist the thinker's structured situational read.
 
-    Keeps only ``mine`` (bool), ``players`` (int), ``chaff`` (bool),
-    ``emp`` (bool); ignores anything else. Missing keys are simply absent.
+    Keeps only :data:`_SITUATIONAL_KEYS` — ``players`` as an int, the
+    rest as bools; ignores anything else. Missing keys are simply
+    absent.
     """
     out: Dict[str, Any] = {}
     if not isinstance(raw, Mapping):
