@@ -8,9 +8,14 @@ hands the tool calls + final text back to the caller.
 
 Credentials lookup (first hit wins):
 
-* ``SNOWFLAKE_PAT`` environment variable.
-* ``pat=`` / ``access_token=`` entry in the Snowflake config file
-  (``SF_CONFIG_FILE``, defaults to ``~/.ssh/sf_config``).
+* ``SNOWFLAKE_PAT`` environment variable — still preferred, because a
+  token in the environment is a token not sitting in a file.
+* the resolved Snowflake connection (v1.45): ``token``, or ``password``
+  under a PAT authenticator, in the standard ``connections.toml`` /
+  ``config.toml``; ``pat=`` / ``access_token=`` in a legacy sf_config.
+
+The account comes from that same connection, so the REST path and the
+persistence path can never drift onto two different accounts.
 
 When the PAT is missing this module returns an explanatory error
 envelope rather than raising — the orchestrator can fall back to the
@@ -28,19 +33,15 @@ from typing import Any, Dict, List, Optional
 SNOWFLAKE_PAT_ENV = "SNOWFLAKE_PAT"
 
 
-def _load_sf_props(path: str) -> Dict[str, str]:
-    if not os.path.exists(path):
-        return {}
-    props: Dict[str, str] = {}
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                props[k.lower().strip()] = v.strip()
-    return props
+def _load_sf_props(path: Optional[str] = None) -> Dict[str, str]:
+    """Credentials, standard connection store first (v1.45).
+
+    A shim over :mod:`sea_of_colours.snowpark.sfconn`; the name stays
+    because V12 and the tests import it.
+    """
+    from sea_of_colours.snowpark import sfconn
+
+    return sfconn.load_props(path)
 
 
 class CortexAgentInvoker:
@@ -76,9 +77,9 @@ class CortexAgentInvoker:
         # Kept optional (defaults to None) so back-compat is preserved
         # for every existing agent — v2/v3/v4 still stream to their cap.
         self.text_completion_predicate = text_completion_predicate
-        self.config_file = config_file or os.environ.get(
-            "SF_CONFIG_FILE", os.path.expanduser("~/.ssh/sf_config"),
-        )
+        # v1.45 — None means "resolve normally" (standard connection store,
+        # then legacy). Only an explicitly passed file pins one.
+        self.config_file = config_file
         self.pat_token = pat_token or os.environ.get(SNOWFLAKE_PAT_ENV, "")
 
         props = _load_sf_props(self.config_file)

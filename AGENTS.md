@@ -65,13 +65,24 @@ pytest                   # tests/ (pythonpath=. via pytest.ini)
 
 - **Backend selection:** unset = **auto-detect**
   (`sea_of_colours/snowpark/backend.py`) — `snowflake` only when the
-  Snowpark extras *and* key-pair `sf_config` are both present, else
+  Snowpark extras *and* a key-pair Snowflake connection are both present, else
   `memory`. `SOC_BACKEND` overrides, and an explicit value is strict
   (the server exits rather than falling back). **Auto never resolves to
   a live backend under pytest** — detection keys off a config file most
   dev machines have, so that guard is what stops a test run writing to
   your account. Tests that need a specific store set `SOC_BACKEND`
   themselves.
+- **Credentials come from the standard Snowflake connection store
+  (v1.45).** `snowpark/sfconn.py` is the one place that resolves them:
+  `~/.snowflake/connections.toml` (then `config.toml`), the same file
+  the Snowflake CLI and VS Code extension read, with the legacy
+  `~/.ssh/sf_config` read last and deprecated. Pick a section with
+  `SOC_SNOWFLAKE_CONNECTION`; a name that doesn't exist is **refused,
+  not silently swapped**, because landing on the wrong account by typo
+  costs an afternoon. `soc doctor` prints the file and section it used.
+  Never read a credential file directly — call `sfconn.load_props()`, or
+  `sfconn.resolve_cortex()` for the PAT path (the token and account
+  travel together, since a PAT is scoped to the account that issued it).
 - **Backend is per *game*, not per process (v1.14).** `SOC_BACKEND` only
   sets the *default*; the New Game modal picks per game and
   `backend.store_for_session(id)` routes each session to its owner. Two

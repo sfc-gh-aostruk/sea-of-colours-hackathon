@@ -62,13 +62,33 @@ directly, same as the heuristic agents.
    ```sql
    GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE <your_role>;
    ```
-4. **Write a config file** at `~/.ssh/sf_config` (or point
-   `SF_CONFIG_FILE` at another path) with just your account identifier:
+4. **Name your account in a Snowflake connection.** This kit reads the
+   *standard* connection store (v1.45) — the same
+   `~/.snowflake/connections.toml` used by the Snowflake CLI, Cortex
+   Code and the VS Code extension — so if you have ever run
+   `snow connection add` you are already done and can skip to step 5.
+
+   Otherwise create `~/.snowflake/connections.toml`:
+   ```toml
+   [soc]
+   account = "<your_account_identifier>"
    ```
-   account=<your_account_identifier>
+   then either make it the default with
+   `default_connection_name = "soc"` in `~/.snowflake/config.toml`, or
+   point just this game at it:
+   ```bash
+   export SOC_SNOWFLAKE_CONNECTION=soc
    ```
    Find your account identifier in Snowsight's bottom-left account
    selector, or in the URL: `https://<account_identifier>.snowflakecomputing.com`.
+
+   `soc doctor` prints the exact file and section it resolved, which is
+   the fastest way to check you are pointed where you think.
+
+   > **Already have a `~/.ssh/sf_config`?** It still works and is read
+   > last, so nothing you have set up breaks. It is deprecated: it is not
+   > an SSH config despite living in `~/.ssh`, no other Snowflake tool
+   > reads it, and it makes you configure the same account twice.
 5. **Export the PAT** in the shell you'll run the game / scripts from:
    ```bash
    export SNOWFLAKE_PAT=<the token from step 2>
@@ -143,12 +163,17 @@ pip install -r requirements-snowflake.txt
    ```
    Getting `JWT token is invalid` later almost always means a stray
    newline or a header line survived this step.
-3. **Extend your `sf_config`** with the user and the *private* key path:
+3. **Extend your connection** with the user and the *private* key path:
+   ```toml
+   [soc]
+   account = "<your_account_identifier>"
+   user = "<your_username>"
+   private_key_file = "/path/to/your/rsa_key.p8"
    ```
-   account=<your_account_identifier>
-   user=<your_username>
-   private_key_file=/path/to/your/rsa_key.p8
-   ```
+   Key-pair auth is what selects the Snowflake storage backend — a PAT
+   alone never does, which is why finishing §1 cannot start writing to
+   your account.
+
    (Snowflake's own [key-pair auth docs](https://docs.snowflake.com/en/user-guide/key-pair-auth)
    cover rotation and encrypted keys if you want them.)
 4. Check where you're about to deploy. The defaults are hackathon-scoped
@@ -203,7 +228,7 @@ pip install -r requirements-snowflake.txt
 | ---- | ------ |
 | `--schema-only` | Stop after `soc_schema.sql`, `orchestrator_v2_schema.sql` and `soc_views.sql`. |
 | `--no-procs`    | Skip `soc_procedures.sql` (procedures will be missing). |
-| `--config FILE` | Use a different Snowflake config (default: `~/.ssh/sf_config`). |
+| `--config FILE` | Force a legacy key=value config file. Omit it to use your standard Snowflake connection; `SOC_SNOWFLAKE_CONNECTION` picks the section. |
 | `--dry-run`     | Print the resolved database / schema / warehouse and exit without connecting. |
 
 > **Deployed before v1.19?** Re-run the deploy. `SOC_AGENT_MEMORY` and
@@ -244,7 +269,9 @@ you. Archiving-before-wipe is deliberately deferred.
 
 | Symptom | Likely cause |
 | --- | --- |
-| `CortexChatInvoker(...).is_ready()` is `False` | `SNOWFLAKE_PAT` unset/empty, or `account=` missing/wrong in `sf_config`. |
+| `CortexChatInvoker(...).is_ready()` is `False` | `SNOWFLAKE_PAT` unset/empty, or no `account` on the resolved connection. Run `soc doctor` — it prints the file and section it read. |
+| `soc doctor` says `no connection named 'x'` | `SOC_SNOWFLAKE_CONNECTION` (or `SNOWFLAKE_DEFAULT_CONNECTION_NAME`) names a section that isn't in your `connections.toml`. It lists the ones that are. Deliberately refused rather than falling back, so you can't end up on someone else's account by typo. |
+| `soc doctor` reads a connection you didn't expect | Precedence is: `SF_CONFIG_FILE` if exported → `SOC_SNOWFLAKE_CONNECTION` → `SNOWFLAKE_DEFAULT_CONNECTION_NAME` → `default_connection_name` in the file → the only section → `[default]`. |
 | `401`/`403` from the chat-completions call | Role on the PAT doesn't have `SNOWFLAKE.CORTEX_USER` granted, or the PAT expired. |
 | Cortex call times out / V12 falls back to a shorter plan | Normal under load — V12's wall-clock cap intentionally truncates and falls back rather than stalling the game; see the harness's timeout constants if you want to tune it. |
 | `ModuleNotFoundError: snowflake.snowpark` | You set `SOC_BACKEND=snowflake` without `pip install -r requirements-snowflake.txt`. Unset it to auto-detect, or install the extras. Not needed for V12 / the PAT path above. |

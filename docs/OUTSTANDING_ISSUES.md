@@ -2219,3 +2219,49 @@ high in mover mode) is real and still shipped, and nothing else asserted it
 against v12's live assembler — the v12 tests pass `mode="thinker"` but never
 check what it does. Pointing them at `tabula_v12.prompt` preserved the
 coverage and removed the last reason the dead copy existed.
+
+## 49. ✅ (DONE, v1.45) Credentials came from a file no other Snowflake tool reads
+
+**Symptom.** An attendee with a working Snowflake setup — `snow connection
+add` run, Cortex Code connected, the VS Code extension happy — still had to
+configure the same account a second time, in a format nothing else
+understands, before this kit would talk to Snowflake.
+
+**Root cause.** The kit read a bespoke `key=value` file at `~/.ssh/sf_config`,
+inherited from an internal tool. Three separate modules re-implemented the
+same line-splitting parser and each hardwired that path. It was not broken —
+it was consistent, documented and worked — but it was disconnected from the
+Snowflake developer ecosystem: an existing named connection could not be
+selected, key paths were managed twice, and the location under `~/.ssh`
+implies an SSH config it is not. It also invited a PAT into a plaintext file
+that has no business holding one.
+
+**Fix.** `sea_of_colours/snowpark/sfconn.py` is now the single door to a
+credential, and it reads the standard store: `~/.snowflake/connections.toml`,
+then `config.toml`, honouring `SNOWFLAKE_HOME` and `default_connection_name`
+so we never disagree with `snow connection test`. `SOC_SNOWFLAKE_CONNECTION`
+picks a section for the game alone, leaving a shell default untouched. The
+legacy file still works, read last, deprecated rather than deleted — breaking
+an install the week of the event is worse than twenty lines of compatibility.
+
+Three things worth keeping in mind if this is ever revisited:
+
+- **A name that does not resolve is refused, not swapped.** Falling back to
+  a different connection when someone typos `SOC_SNOWFLAKE_CONNECTION` is how
+  you spend an afternoon debugging permissions on a warehouse you were never
+  pointed at. The error lists the names that do exist.
+- **The PAT resolves separately, and carries its account with it.** A
+  key-pair connection is complete and correct and still has no bearer token
+  in it, so the Cortex path falls through to the legacy file when the
+  resolved connection has none — which is exactly the shipped dev machine.
+  Account and token travel together because a PAT is scoped to the account
+  that issued it, and mixing them fails as an unexplained 401.
+- **`soc doctor` now names the file and section it read.** "No credentials"
+  and "the right file, the wrong one of five connections" used to print
+  identically, and they have completely different fixes.
+
+**Caught in passing.** The first draft of the test module let one case fall
+through to the developer's real `~/.ssh/sf_config`, and the failing assertion
+printed a live PAT into the terminal. The fixture now redirects the legacy
+path for every test in the module: a suite must not be able to read, let
+alone echo, a credential belonging to the machine it happens to run on.

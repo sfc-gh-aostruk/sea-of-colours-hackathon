@@ -764,7 +764,7 @@
 <pre><span class="s">$</span> python run_web.py
 <span class="o">[soc] FastAPI starting</span>
 <span class="o">[soc] store backend: memory — sessions will not persist</span>
-<span class="o">[soc]   auto-detected memory: no Snowflake config at ~/.ssh/sf_config</span>
+<span class="o">[soc]   auto-detected memory: no Snowflake connection configured</span>
 <span class="o">INFO:     Uvicorn running on http://127.0.0.1:8000</span></pre>
           </div>
           <p>
@@ -1061,14 +1061,31 @@
             <span class="gd-frame-title">Step 3 &middot; Point the game at your account</span>
           </div>
           <p>
-            Create <code>~/.ssh/sf_config</code> (or set
-            <code>SF_CONFIG_FILE</code> to another path):
+            The game reads your <strong>standard Snowflake connection</strong> &mdash;
+            the same <code>~/.snowflake/connections.toml</code> the Snowflake
+            CLI, Cortex Code and the VS Code extension use. If you have ever
+            run <code>snow connection add</code>, skip this step.
+          </p>
+          <p>Otherwise create <code>~/.snowflake/connections.toml</code>:</p>
+          <div class="gd-term">
+            <button class="gd-copy" type="button">[ COPY ]</button>
+<pre>[soc]
+account = "&lt;your_account_identifier&gt;"
+token = "&lt;the token from step 1&gt;"</pre>
+          </div>
+          <p>
+            Then point the game at it &mdash; this names one connection for
+            the game only, leaving your shell default alone:
           </p>
           <div class="gd-term">
             <button class="gd-copy" type="button">[ COPY ]</button>
-<pre>account=&lt;your_account_identifier&gt;
-pat=&lt;the token from step 1&gt;</pre>
+<pre>export SOC_SNOWFLAKE_CONNECTION=soc</pre>
           </div>
+          <p class="dim">
+            Prefer to keep the token out of a file? Set
+            <code>SNOWFLAKE_PAT</code> in your shell instead and leave
+            <code>token</code> out &mdash; the environment wins.
+          </p>
           <p class="dim">
             Your account identifier is in Snowsight's bottom-left account
             selector, or in the URL:
@@ -1142,7 +1159,7 @@ PY</pre>
           </div>
           <div class="gd-term">
             <button class="gd-copy" type="button">[ COPY ]</button>
-<pre><span class="c"># 3. add to ~/.ssh/sf_config:  user=... private_key_file=/path/rsa_key.p8</span>
+<pre><span class="c"># 3. add to your connection:  user = "..."  private_key_file = "/path/rsa_key.p8"</span>
 
 <span class="s">$</span> python scripts/deploy_soc_schema.py --dry-run
 <span class="o">Target: SOC_HACKATHON_DB.SEA_OF_COLOURS (warehouse SOC_HACKATHON_WH)</span>
@@ -1200,8 +1217,8 @@ PY</pre>
             </p>
           </div>
           <p class="dim">
-            Once key-pair auth is in <code>sf_config</code> the server picks
-            the Snowflake backend on its own &mdash; no env var. Set
+            Once <code>private_key_file</code> is on your connection the
+            server picks the Snowflake backend on its own &mdash; no env var. Set
             <code>SOC_BACKEND=snowflake</code> explicitly if you'd rather the
             server refuse to start than quietly fall back to
             <code>memory</code> when something's wrong.
@@ -1654,9 +1671,11 @@ PY</pre>
             <tr>
               <td><code>ready: False</code> in the smoke test</td>
               <td>
-                <code>sf_config</code> is missing, in the wrong place, or has no
-                <code>account=</code> line. Check <code>SF_CONFIG_FILE</code> if
-                you moved it.
+                No PAT, or no <code>account</code> on the connection that got
+                resolved. Run <code>python scripts/soc.py doctor</code> &mdash;
+                it prints the exact file and section it read, which settles
+                &ldquo;no credentials&rdquo; versus &ldquo;the wrong one of
+                my five connections&rdquo;.
               </td>
             </tr>
             <tr>

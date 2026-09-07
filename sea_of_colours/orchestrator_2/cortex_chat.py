@@ -35,7 +35,8 @@ SSE parsing. The return envelope mirrors
 swap between the two paths with no downstream changes.
 
 Credentials: same lookup as the Agents client — ``SNOWFLAKE_PAT`` env, else
-``pat=`` / ``access_token=`` in ``SF_CONFIG_FILE`` (default ``~/.ssh/sf_config``).
+the PAT on the resolved Snowflake connection (standard ``connections.toml``
+/ ``config.toml``, legacy sf_config last). See ``snowpark.sfconn``.
 """
 
 from __future__ import annotations
@@ -76,14 +77,22 @@ class CortexChatInvoker:
         self.max_completion_tokens = (
             max_completion_tokens or self.DEFAULT_MAX_COMPLETION_TOKENS
         )
-        self.config_file = config_file or os.environ.get(
-            "SF_CONFIG_FILE", os.path.expanduser("~/.ssh/sf_config"),
-        )
-        self.pat_token = pat_token or os.environ.get(SNOWFLAKE_PAT_ENV, "")
-        props = _load_sf_props(self.config_file)
-        self.account = props.get("account", "")
-        if not self.pat_token:
-            self.pat_token = props.get("pat", "") or props.get("access_token", "")
+        # v1.45 — None means "resolve normally"; see snowpark.sfconn.
+        self.config_file = config_file
+        if config_file:
+            props = _load_sf_props(config_file)
+            self.account = props.get("account", "")
+            self.pat_token = pat_token or os.environ.get(SNOWFLAKE_PAT_ENV, "") or (
+                props.get("pat", "") or props.get("access_token", "")
+            )
+            self.cred_source = config_file
+        else:
+            from sea_of_colours.snowpark import sfconn
+
+            account, token, where = sfconn.resolve_cortex()
+            self.account = account
+            self.pat_token = pat_token or token
+            self.cred_source = where
         account_clean = (self.account or "").lower().replace("_", "-")
         self.api_base = (
             f"https://{account_clean}.snowflakecomputing.com" if account_clean else ""
@@ -226,15 +235,20 @@ def credentials_status() -> tuple[bool, str]:
     probe = CortexChatInvoker()
     if probe.is_ready():
         return True, ""
+    # v1.45 — name the connection we actually looked at. Telling someone
+    # to "add a token to the config file" is useless advice when they
+    # have five connections and we will not say which one we read.
+    where = getattr(probe, "cred_source", "") or str(probe.config_file)
     missing = []
     if not probe.pat_token:
         missing.append(
             f"a PAT (set the {SNOWFLAKE_PAT_ENV} env var, or add "
-            f"'pat=<token>' to {probe.config_file})"
+            f"token = \"<pat>\" to your Snowflake connection — "
+            f"resolved: {where})"
         )
     if not probe.account:
         missing.append(
-            f"a Snowflake account (add 'account=<account>' to "
-            f"{probe.config_file})"
+            f"a Snowflake account (add account = \"<account>\" to your "
+            f"Snowflake connection — resolved: {where})"
         )
     return False, " and ".join(missing)

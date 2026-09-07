@@ -19,8 +19,10 @@ Snowflake deploy step — see docs/SNOWFLAKE_SETUP.md.
 Flags:
   --schema-only   Stop after soc_schema.sql + soc_views.sql.
   --no-procs      Skip soc_procedures.sql.
-  --config FILE   Path to Snowflake config (defaults to ~/.ssh/sf_config or
-                  whatever SF_CONFIG_FILE points to).
+  --config FILE   Force a legacy key=value config file. Omit it and the
+                  standard connection store is used (v1.45) — the same
+                  ~/.snowflake/connections.toml the Snowflake CLI reads;
+                  SOC_SNOWFLAKE_CONNECTION picks the section.
 
 Target objects (database / schema / warehouse) come from
 ``sea_of_colours/snowpark/naming.py`` — override with ``SOC_DATABASE``,
@@ -63,39 +65,43 @@ SNOWFLAKE_DIR = HERE / "snowflake"
 ORCHESTRATOR_SQL_DIR = HERE / "sea_of_colours" / "orchestrator_2" / "snowflake"
 
 
-def _load_sf_props(path: str) -> dict:
-    """Parse the same key=value config that AA4 uses."""
-    props: dict[str, str] = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                k, v = line.split("=", 1)
-                props[k.lower().strip()] = v.strip()
-    return props
+def _load_sf_props(path: str | None = None) -> dict:
+    """Credentials, standard ``connections.toml`` first (v1.45).
+
+    Kept as a thin shim because half a dozen modules import this name;
+    the resolution itself now lives in :mod:`sea_of_colours.snowpark.sfconn`
+    so the game reads the same connection store as the Snowflake CLI.
+    """
+    from sea_of_colours.snowpark import sfconn
+
+    return sfconn.load_props(path)
 
 
-def create_snowpark_session(config_file: str, *, with_context: bool = True):
-    """Build a Snowpark session from a sf_config-style file.
+def create_snowpark_session(config_file: str | None = None, *, with_context: bool = True):
+    """Build a Snowpark session from the resolved Snowflake connection.
 
     ``with_context=False`` connects without pinning database / schema.
     The deploy path needs that: on a fresh account the database does not
     exist yet, and Snowflake refuses the connection if you name a
     missing database up front.
+
+    v1.45 — ``config_file`` is now optional and only forces a specific
+    legacy file. Pass nothing and the standard connection store wins.
     """
     from snowflake.snowpark import Session
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.backends import default_backend
-
-    if not os.path.exists(config_file):
-        raise FileNotFoundError(f"Snowflake config not found: {config_file}")
+    from sea_of_colours.snowpark import sfconn
 
     props = _load_sf_props(config_file)
+    if not props:
+        _, where = sfconn.resolve_source()
+        raise FileNotFoundError(f"No Snowflake connection: {where}")
     if "private_key_file" not in props:
+        _, where = sfconn.resolve_source()
         raise KeyError(
-            f"{config_file} missing 'private_key_file=' entry"
+            f"{where} has no private_key_file — key-pair auth is what the "
+            "persistence path needs; see docs/SNOWFLAKE_SETUP.md §2"
         )
 
     key_path = props["private_key_file"]
@@ -118,6 +124,11 @@ def create_snowpark_session(config_file: str, *, with_context: bool = True):
         "private_key": private_key_bytes,
         "warehouse": props.get("warehouse", naming.warehouse()),
     }
+    # v1.45 — a standard connection usually names a role, and omitting it
+    # silently lands you on the user's default, which is the sort of
+    # difference that only shows up as a permissions error much later.
+    if props.get("role"):
+        cfg["role"] = props["role"]
     if with_context:
         cfg["database"] = props.get("database", naming.database())
         cfg["schema"] = props.get("schema", naming.schema())
@@ -281,11 +292,13 @@ def main() -> int:
     )
     ap.add_argument(
         "--config",
-        default=os.environ.get(
-            "SF_CONFIG_FILE",
-            os.path.expanduser("~/.ssh/sf_config"),
+        default=None,
+        help=(
+            "Force a legacy key=value config file. Omit this and the "
+            "standard Snowflake connection store is used "
+            "(~/.snowflake/connections.toml; pick a section with "
+            "SOC_SNOWFLAKE_CONNECTION)."
         ),
-        help="Snowflake config file (key=value lines).",
     )
     ap.add_argument(
         "--schema-only",
