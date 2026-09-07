@@ -6455,8 +6455,8 @@ window.AG_DATA = {
   "dir": "sea_of_colours/orchestrator_2/harnesses/tabula_v12",
   "modules": {
    "agency.py": {
-    "lines": 1402,
-    "defs": 40
+    "lines": 1472,
+    "defs": 41
    },
    "card.py": {
     "lines": 278,
@@ -6483,15 +6483,15 @@ window.AG_DATA = {
     "defs": 0
    },
    "frontier.py": {
-    "lines": 358,
+    "lines": 355,
     "defs": 13
    },
    "harness.py": {
-    "lines": 1121,
+    "lines": 1125,
     "defs": 9
    },
    "hazard_memory.py": {
-    "lines": 299,
+    "lines": 293,
     "defs": 11
    },
    "hint_dispersion.py": {
@@ -6499,7 +6499,7 @@ window.AG_DATA = {
     "defs": 12
    },
    "journal.py": {
-    "lines": 160,
+    "lines": 183,
     "defs": 6
    },
    "last_night.py": {
@@ -6507,12 +6507,16 @@ window.AG_DATA = {
     "defs": 29
    },
    "option_economics.py": {
-    "lines": 1248,
-    "defs": 38
+    "lines": 1380,
+    "defs": 43
    },
    "orbit.py": {
-    "lines": 168,
+    "lines": 175,
     "defs": 3
+   },
+   "orbit_policy.py": {
+    "lines": 368,
+    "defs": 8
    },
    "out_of_grid.py": {
     "lines": 405,
@@ -6523,7 +6527,7 @@ window.AG_DATA = {
     "defs": 32
    },
    "prompt.py": {
-    "lines": 1215,
+    "lines": 1218,
     "defs": 22
    },
    "rules.py": {
@@ -6543,7 +6547,7 @@ window.AG_DATA = {
     "defs": 5
    },
    "value_pyramid.py": {
-    "lines": 510,
+    "lines": 557,
     "defs": 9
    },
    "world_view.py": {
@@ -6551,7 +6555,7 @@ window.AG_DATA = {
     "defs": 4
    }
   },
-  "total_lines": 14394,
-  "total_defs": 327
+  "total_lines": 15039,
+  "total_defs": 341
  }
 };

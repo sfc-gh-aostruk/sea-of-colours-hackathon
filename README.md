@@ -19,17 +19,31 @@ accept, and an eval loop to prove you improved something.
 
 ## Your hackathon, in order
 
-Six steps. Each one works before the next, so nobody is blocked on setup
-they haven't reached yet.
+Seven steps. Each one works before the next, so nobody is blocked on
+setup they haven't reached yet.
 
 ### 1 · Play a game — two minutes
 
 Python 3.10+. No Snowflake account, no config, no build step.
 
+**Fork the repo on GitHub before you clone it**, and clone the copy that
+lands in your own account. You work in your fork all day and push only
+there; at the end an organiser gathers everyone's forks into the league.
+Cloning this repo directly is the one setup mistake that works
+perfectly right up until you publish.
+
 ```bash
+git clone https://github.com/<you>/sea-of-colours-hackathon.git
+cd sea-of-colours-hackathon
+git remote add upstream https://github.com/sfc-gh-lgalan/sea-of-colours-hackathon.git
+
 pip install -r requirements.txt
 python run_web.py
 ```
+
+`upstream` is how you take kit fixes during the day (`git pull upstream
+main`); you never push to it. `python scripts/soc.py doctor` prints
+which remote you are publishing to, so run it early if you are unsure.
 
 > **Start the server in your own terminal — not through an AI coding
 > agent.** A server an agent launches is a child of that agent's shell
@@ -105,13 +119,16 @@ the intended order.
 ### 5 · Mint your own agent
 
 ```bash
-python scripts/new_agent.py --team redwatch --name reaper
+python scripts/soc.py new --team redwatch --name reaper \
+    --participants "Ada Lovelace, Grace Hopper"
 ```
 
-One command forks V12 into your own registered agent, renames its
-identity so your turns are attributed to you, and puts it in the New
-Game dropdown. Restart the server and you can play your fork against the
-original.
+One command copies V12 into a directory of your own, renames its
+identity so your turns are attributed to you, and writes the
+`agent.json` that registers it. Restart the server and you can play your
+fork against the original. There is no shared registry to edit — the kit
+finds agents by scanning for manifests, so minting touches nothing
+outside your own folder.
 
 **Don't edit V12 directly.** It is the control in your experiment —
 without it you cannot tell whether you improved anything, and matches
@@ -137,6 +154,24 @@ SOC_CARD_DUMP_DIR=/tmp/cards python run_web.py
 ```
 
 Start here: [`harnesses/tabula_v12/README.md`](sea_of_colours/orchestrator_2/harnesses/tabula_v12/README.md).
+For one team's worked attempt at the first gap, including why the
+obvious approach does not work, read
+[`harnesses/emp_harvest_test/README.md`](sea_of_colours/orchestrator_2/harnesses/emp_harvest_test/README.md).
+
+### 7 · Publish it
+
+```bash
+python scripts/soc.py push
+```
+
+Commits your agent's directory and nothing else, then pushes to your
+fork. Push early and often — whatever is on your fork when the organiser
+collects is what plays. To hand work in progress to a teammate without
+publishing, `soc share` writes your agent to one file and they run `soc
+grab` on it.
+
+Full detail, including how the league is assembled out of everyone's
+forks: [`docs/HACKATHON_AGENTS.md`](docs/HACKATHON_AGENTS.md).
 
 ---
 
@@ -241,8 +276,12 @@ built to reward reading the gradient.
 be refused, eats hold space, and every parcel still held at season end
 is **−100**.
 
-**BLUE funds violence.** EMPs and chaff. Rivals can jam your egress and
-disable your harvesters, and you find out from the wreckage.
+**BLUE funds violence.** SNAP, EMPs and chaff — 100, 200 and 300 blue,
+into an arsenal cap of 600. Rivals can jam your egress and disable your
+harvesters, and you find out from the wreckage. What you *don't* find
+out from the wreckage is the rack: every seat's weaponised blue is
+public to the exact number, so you always know how much ordnance is
+pointed at you, and at those prices usually not what kind.
 
 Full rules: [RULEBOOK.md](RULEBOOK.md), or `manual/index.html` for the
 interactive version.
@@ -310,9 +349,12 @@ def run(*, store, session_id, player, view) -> dict:
     ...
 ```
 
-Register it in `binding_registry.py` and it is immediately playable from
-the menu and runnable in the eval suite. That is the whole plug-in
-surface — see [`orchestrator_2/README.md`](sea_of_colours/orchestrator_2/README.md).
+Drop an `agent.json` beside it declaring the team, name and
+participants, and it is immediately playable from the menu and runnable
+in the eval suite — discovery scans for manifests at import, so there is
+no shared registry to edit. `soc new` writes both for you. That is the
+whole plug-in surface — see
+[`orchestrator_2/README.md`](sea_of_colours/orchestrator_2/README.md).
 
 ### The one thing to understand about V12
 
