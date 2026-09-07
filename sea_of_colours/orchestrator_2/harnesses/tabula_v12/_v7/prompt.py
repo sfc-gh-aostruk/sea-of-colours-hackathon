@@ -1,30 +1,35 @@
-"""Prompt assembly for tabula.
+"""Board-fact formatters — the computation layer V12 reuses verbatim.
 
-Combines four blocks into one prompt:
+V12 forked v7's *feeding* layer (how a prompt is assembled into sections)
+but kept its *computation* layer: the pure functions that turn an agent
+view into text. That split is the whole reason this file exists inside a
+harness named for a different version, and it is a deliberate one — these
+formatters are battle-tested and the assembler above them is not the thing
+that needed rewriting.
 
-1. RULES_SUMMARY (from :mod:`.rules`, static)
-2. YOUR STATE — day, vault_score (shipped), hoard_red_value (held/unshipped),
-   harvesters_alive, probes_alive, visible RED cells
-3. YOUR MEMORY — last 3 memory entries formatted as prose
-4. HEURISTIC SUGGESTIONS — top-3 chain hints from :mod:`.heuristic_chains`
-5. ACTION SCHEMA — strict JSON output contract
+What lives here is only what ``tabula_v12/prompt.py`` still imports:
 
-Phase 1 output schema (v5 with predict/reflect):
-{
-  "reflection_on_last_night": {                 -- null on night 1
-    "predicted": "high|medium|low",
-    "actual": <int>,
-    "gap_reason": "one sentence"
-  } | null,
-  "plan_this_turn": "one sentence",
-  "rationale": "one line on WHY",
-  "predicted_outcome": {
-    "banked_pts_estimate": "high|medium|low",
-    "what_could_go_wrong": "one sentence"
-  },
-  "moves": [ ... wire-format moves ... ],
-  "memory_note": "one sentence, past tense, what I did"
-}
+  * ``format_state_block``, ``format_drop_legal_block``,
+    ``format_fog_and_echo_block``, ``format_opponent_weapons_block``,
+    ``format_supersede_hints_block``, ``format_setup_night_advisory``
+  * ``format_reflect_block`` / ``format_last_night_block``, which v12
+    wraps rather than replaces
+  * ``_my_jam_events`` / ``_format_combat_event``, the combat-feed reads
+  * ``_THINKER_SCHEMA``, the two-call output contract
+
+v1.40 removed ~470 lines this file no longer answered for: its own
+``build_prompt`` (superseded when v10 wrote the sectioned assembler) and
+the standalone hint formatters (retired when v11 made the option menu the
+single source of truth for actionable plays). None of it was reachable,
+and all of it was misleading — the dead ``build_prompt`` still carried an
+ungated EMP/chaff weapons check that predates the SNAP work and the
+self-enforcing ``could_hold`` gate, so a grep for "where does the EMP
+doctrine get attached" found the wrong answer first. Every attendee fork
+copies this file, so a stale answer in a plausible place is expensive.
+
+**Nothing here builds a prompt.** The assembler is
+``tabula_v12/prompt.py``; if you are looking for section order, doctrine
+gating or the mode switch, it is there.
 """
 
 from __future__ import annotations
@@ -32,69 +37,13 @@ from __future__ import annotations
 import math
 from typing import Any, List, Mapping, Sequence
 
-from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7.rules import (
-    RULES_SUMMARY,
-)
-from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7.strategies import (
-    STRATEGIES_CORE,
-    DOCTRINE_BLUE,
-    DOCTRINE_REDSIGN,
-    DOCTRINE_LASTDAY_SUPERSEDE,
-    DOCTRINE_BEWARE_EMP,
-    DOCTRINE_BEWARE_CHAFF,
-)
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7.probe_hints import (
-    _redsign_centers,
     _enemy_probe_cells,
 )
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7.validators import (
     _synthetic_green_cells,
     _green_hazard_cells,
 )
-from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7.orbit_wishlist import (
-    Wishlist,
-)
-
-
-_ACTION_SCHEMA = """\
-ACTION SCHEMA — output ONE JSON object starting with the open-brace
-character. NO prose before the JSON. Fields:
-
-  reflection_on_last_night: null ONLY on night 1; otherwise REQUIRED — an
-    object with:
-    predicted: "high" | "medium" | "low"   (what you said last night)
-    actual: integer   (the EXACT pts the engine banked — copy it from the
-                       REFLECT ON LAST NIGHT block; do not estimate)
-    gap_reason: "one sentence — if banked < predicted, name the cause
-                 (chaff/EMP/crush/crash/thin seam) from the REFLECT block"
-
-  plan_this_turn: string, one sentence.
-
-  rationale: string, one line — WHY this plan beats alternatives.
-
-  predicted_outcome:
-    banked_pts_estimate: "high" | "medium" | "low"
-      high   ≈ ≥ 1500 points banked this night
-      medium ≈ 500–1500 points banked
-      low    ≈ < 500 points OR high-uncertainty chain
-    what_could_go_wrong: "one sentence naming the biggest risk"
-
-  moves: list of wire-format actions. Each is one of:
-    {"a":"drop",   "unit":"harvester_p1", "at":[x,y]}
-    {"a":"step",   "unit":"harvester_p1", "to":[x,y]}
-    {"a":"pickup", "unit":"harvester_p1"}
-    {"a":"probe",  "at":[x,y]}
-  Chain grammar: drop → step* → pickup PER harvester. Probes anywhere.
-
-  step "to" MUST be Manhattan-1 from the harvester's CURRENT cell:
-  exactly ONE of (x+1,y), (x-1,y), (x,y+1), (x,y-1). NO diagonals.
-  NO multi-cell jumps. Every illegal step is silently canceled by the
-  engine and cascades into a crashed harvester at dawn — cargo AND
-  stock lost. To travel further, list each intermediate cell as its
-  own step. Path from (19,12) to (16,10) = 5 steps, not 1.
-
-  memory_note: string, one sentence past tense, what you did this turn.
-"""
 
 
 _THINKER_SCHEMA = """\
@@ -192,78 +141,6 @@ def format_state_block(
         f"  harvesters_alive: {harvesters}\n"
         f"  probes_alive: {probes}\n"
     )
-
-
-def format_visible_red_block(agent_view: Mapping[str, Any]) -> str:
-    """Compact list of RED cells you can currently see, with purity+tier."""
-    world = agent_view.get("world") or {}
-    rows: List[str] = []
-    sg_rows: List[str] = []
-    for row in (world.get("live") or []):
-        if not isinstance(row, Mapping):
-            continue
-        tile = str(row.get("tile") or "")
-        try:
-            x, y = int(row["x"]), int(row["y"])
-        except (TypeError, KeyError, ValueError):
-            continue
-        if tile == "RED":
-            p = int(row.get("purity") or 0)
-            tier = _tier(p)
-            rows.append(f"    ({x},{y}) {tier} purity={p}")
-        elif tile == "GREEN" and row.get("lineage") == "synthetic":
-            sg_rows.append(f"({x},{y})")
-    if not rows and not sg_rows and isinstance(world.get("grid"), list):
-        for y, r in enumerate(world["grid"]):
-            if not isinstance(r, list):
-                continue
-            for x, cell in enumerate(r):
-                if not isinstance(cell, Mapping):
-                    continue
-                if str(cell.get("tile") or "") == "RED":
-                    p = int(cell.get("purity") or 0)
-                    rows.append(f"    ({x},{y}) {_tier(p)} purity={p}")
-                elif str(cell.get("tile") or "") == "GREEN" and cell.get("synthetic"):
-                    sg_rows.append(f"({x},{y})")
-    body = "VISIBLE RED CELLS:\n"
-    body += ("\n".join(rows) if rows else "    (none in current LOS)") + "\n"
-    body += "SYNTHETIC-GREEN (do not step): " + (
-        ", ".join(sg_rows) if sg_rows else "(none)"
-    ) + "\n"
-    return body
-
-
-def _tier(purity: int) -> str:
-    # Canonical engine bands — must match sea_of_colours/game/orbit_resolver.py::_tier_label
-    # and sea_of_colours/agent/heuristic_agent.py:143. ONLY purity==255 is pure.
-    p = int(purity or 0)
-    if p >= 255:
-        return "pure"
-    if p >= 151:
-        return "mass"
-    if p >= 51:
-        return "vein"
-    return "trace"
-
-
-def format_chain_hints_block(hints: Sequence[Mapping[str, Any]]) -> str:
-    """Render the heuristic chain hints WITHOUT numeric scores."""
-    if not hints:
-        return "HEURISTIC SUGGESTIONS: (compiler produced no chains this turn)\n"
-    lines = ["HEURISTIC SUGGESTIONS (starting points — pick, alter, or ignore):"]
-    for i, h in enumerate(hints):
-        unit = h.get("unit")
-        cells = h.get("cells") or []
-        tiers = h.get("tiers") or []
-        purities = h.get("purities") or []
-        cell_summary = ", ".join(
-            f"({c[0]},{c[1]}) {tiers[j] if j < len(tiers) else '?'} "
-            f"p={purities[j] if j < len(purities) else '?'}"
-            for j, c in enumerate(cells)
-        )
-        lines.append(f"  Chain {chr(ord('A')+i)}: unit={unit} cells=[{cell_summary}]")
-    lines.append("  (YOU compute EV using the tier table in RULES; scores are NOT provided.)")
-    return "\n".join(lines) + "\n"
 
 
 def format_setup_night_advisory(
@@ -551,93 +428,6 @@ def format_fog_and_echo_block(agent_view: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def format_probe_hints_block(hints: Sequence[Mapping[str, Any]]) -> str:
-    """Render probe-placement candidates the LLM can consider.
-
-    Two ints per candidate: ``area_gain`` (new fog cells the disk would
-    reveal) and ``edge_promise`` (purity-weighted seam-extension signal
-    plus any echo cells inside the disk). NO combined score — the LLM
-    picks its own tradeoff between raw territory gain and seam extension.
-    """
-    if not hints:
-        return "PROBE PLACEMENT HINTS: (no fog to un-cover — probes not useful this turn)\n"
-    lines = ["PROBE PLACEMENT HINTS (candidates — you may alter, reorder, or ignore):"]
-    for i, h in enumerate(hints):
-        at = h.get("at") or [None, None]
-        lines.append(
-            f"  Probe {chr(ord('A')+i)}: at=({at[0]},{at[1]}) "
-            f"area_gain={h.get('area_gain')} "
-            f"edge_promise={h.get('edge_promise')} "
-            f"seed={h.get('extends_from')}"
-        )
-    lines.append(
-        "  (area_gain = new cells revealed. edge_promise = purity-weighted "
-        "seam extension + echo inside disk. YOU trade them off.)"
-    )
-    return "\n".join(lines) + "\n"
-
-
-def format_hot_drop_hints_block(hints: Sequence[Mapping[str, Any]]) -> str:
-    """Render probe-then-drop pairings that can execute in ONE night.
-
-    Empty when the compiler found no bluesign / redsign signals + probe
-    stock + harvester. Rendered as its own block after PROBE PLACEMENT
-    HINTS so the LLM sees it as a distinct option, not a sub-case.
-
-    Signal-type-first ordering: redsign hints (pure-red hunt, essential)
-    render before bluesign hints (blue fallback, wishlist-gated).
-    """
-    if not hints:
-        return ""
-    lines = ["HOT DROP HINTS (probe hour K, then drop harvester at hour K+1 onto target):"]
-    for i, h in enumerate(hints):
-        pat = h.get("probe_at") or [None, None]
-        dat = h.get("drop_at") or [None, None]
-        sig = h.get("signal_type", "?")
-        intensity = h.get("signal_intensity", 0)
-        signal_label = (
-            f"REDSIGN broadcast (pure(255) here — race the opponent)"
-            if sig == "redsign"
-            else f"bluesign intensity={intensity:.2f} (dense blue somewhere in this cluster)"
-        )
-        fog_note = (
-            " [beacon is in FOG — the hot drop is the ONLY way to reach it "
-            "this night]"
-            if h.get("target_in_fog")
-            else " [beacon already VISIBLE — you may skip the probe and drop "
-            "directly if a live disk already covers it]"
-        )
-        lines.append(
-            f"  Combo {chr(ord('A')+i)}: {signal_label}{fog_note}"
-        )
-        lines.append(
-            f"    probe at=({pat[0]},{pat[1]}) hour=1, then "
-            f"drop {h.get('unit')} at=({dat[0]},{dat[1]}) hour=2  "
-            f"(area_gain={h.get('area_gain')})"
-        )
-        comb = h.get("comb_path") or []
-        if comb:
-            comb_str = " -> ".join(f"({c[0]},{c[1]})" for c in comb)
-            lines.append(
-                f"    READY COMB (copy these steps after the drop, then "
-                f"pickup): {comb_str}"
-            )
-        note = str(h.get("note") or "")
-        if note:
-            lines.append(f"    note: {note}")
-    lines.append(
-        "  (Probe move MUST come BEFORE the drop in moves[]. The drop_at "
-        "above is deliberately NOT the probe centre — landing on the "
-        "centre would crush the probe you just paid for. The READY COMB is "
-        "a blind serpentine over the fresh disk (a hot drop is blind — you "
-        "commit all steps up front): copy it verbatim as your step chain, "
-        "then pickup. Do NOT shorten it to 1-3 steps — a hot drop that "
-        "walks only 2 cells wastes both the probe and the harvester's "
-        "night. Shorten ONLY if a BEWARE_EMP/CHAFF block is live.)"
-    )
-    return "\n".join(lines) + "\n"
-
-
 def format_supersede_hints_block(hints: Sequence[Mapping[str, Any]]) -> str:
     """FINAL-NIGHT ONLY — enemy probe cells worth superseding with spare
     probe stock. Caller passes [] on non-final nights."""
@@ -654,62 +444,6 @@ def format_supersede_hints_block(hints: Sequence[Mapping[str, Any]]) -> str:
             f"  Target {chr(ord('A')+i)}: probe at=({at[0]},{at[1]}) "
             f"— supersedes an enemy probe (seen day {h.get('day_seen', '?')})"
         )
-    return "\n".join(lines) + "\n"
-
-
-def format_blue_hints_block(hints: Sequence[Mapping[str, Any]]) -> str:
-    """Render blue-harvest chain hints. Caller decides when to include."""
-    if not hints:
-        return ""
-    lines = ["BLUE HARVEST HINTS (secondary priority — funds orbit weapons/repairs):"]
-    for i, h in enumerate(hints):
-        cells = h.get("cells") or []
-        purities = h.get("purities") or []
-        cell_summary = ", ".join(
-            f"({c[0]},{c[1]}) blue p={purities[j] if j < len(purities) else '?'}"
-            for j, c in enumerate(cells)
-        )
-        lines.append(f"  Blue Chain {chr(ord('A')+i)}: unit={h.get('unit')} cells=[{cell_summary}]")
-    return "\n".join(lines) + "\n"
-
-
-def format_opponent_block(agent_view: Mapping[str, Any]) -> str:
-    """Show what the opponent did / is doing. Empty on solo scenarios."""
-    ci = agent_view.get("competitor_intel") or {}
-    new_events = list(ci.get("new_this_day") or [])
-    persistent = list(ci.get("persistent_echoes") or [])
-    opponents = ((agent_view.get("station_intel") or {}).get("opponents") or {})
-
-    if not new_events and not persistent and not opponents:
-        return ""
-
-    lines = ["OPPONENT INTEL (what they revealed to you — you don't see their queue):"]
-    if new_events:
-        lines.append(f"  new_this_day ({len(new_events)} events):")
-        for ev in new_events[:5]:
-            if not isinstance(ev, Mapping):
-                continue
-            kind = ev.get("kind") or ev.get("type") or "event"
-            at = ev.get("at") or ev.get("pos") or ""
-            hour = ev.get("hour")
-            hour_s = f" hour={hour}" if hour is not None else ""
-            lines.append(f"    - {kind}{hour_s} at={at}")
-    if persistent:
-        lines.append(f"  persistent_echoes ({len(persistent)}): still hearing prior activity")
-    if isinstance(opponents, Mapping) and opponents:
-        # station_intel.opponents is a dict keyed by seat id.
-        for seat, info in list(opponents.items())[:2]:
-            if not isinstance(info, Mapping):
-                continue
-            blue = (info.get("blue") or {}).get("total", "?")
-            green = (info.get("green") or {}).get("total", "?")
-            act = info.get("activity") or {}
-            probes = act.get("probes", "?")
-            dropped = act.get("dropped", "?")
-            lines.append(
-                f"  {seat}: blue_banked={blue} green_banked={green} "
-                f"probes_launched={probes} harvesters_dropped={dropped}"
-            )
     return "\n".join(lines) + "\n"
 
 
@@ -813,8 +547,9 @@ def _format_combat_event(ev: Mapping[str, Any]) -> str:
 
     Renders the event types that actually reach the agent view
     (:func:`snowpark.view._last_night_recap`): the VICTIM-private
-    ``chaff_jam`` / ``emp_hit`` (these mean YOU were hit) and the PUBLIC
-    ``chaff`` flare / ``emp`` salvo. Anything else is shown as-is.
+    ``chaff_jam`` / ``emp_hit`` / ``snap_hit`` (these mean YOU were hit)
+    and the PUBLIC ``chaff`` flare / ``emp`` salvo / ``snap`` strike.
+    Anything else is shown as-is.
     """
     if not isinstance(ev, Mapping):
         return str(ev)
@@ -839,6 +574,33 @@ def _format_combat_event(ev: Mapping[str, Any]) -> str:
             f"YOU WERE EMP'd{who}{at_txt}{hrs} — a unit was disabled ~8h "
             f"(it keeps its haul; only a dawn crash kills it)."
         )
+    # v1.38 — SNAP's two halves. Without these the events fell through
+    # to the raw-dict branch below and the model was handed a Python
+    # repr where every other weapon gets a sentence.
+    if etype == "snap_hit":
+        by = ev.get("by") or []
+        who = f" by {list(by)}" if by else ""
+        unit = ev.get("unit")
+        unit_txt = f" ({unit})" if unit else ""
+        if str(ev.get("outcome") or "") == "landing_aborted":
+            return (
+                f"YOUR LANDING WAS REFUSED{who}{hrs}{unit_txt} — a SNAP had "
+                f"the square first. The harvester is STILL IN ORBIT and "
+                f"DAMAGED; its outing was NOT spent, so it can go again, "
+                f"but a damaged hull cannot harvest until repaired (500c)."
+            )
+        return (
+            f"YOU WERE SNAPPED{who}{hrs}{unit_txt} — the harvester is "
+            f"DAMAGED on the surface and harvested NOTHING that night "
+            f"(no auto-harvest either). Repair costs 500c."
+        )
+    if etype == "snap":
+        at = ev.get("at") or []
+        at_txt = f" at ({at[0]},{at[1]})" if at and at[0] is not None else ""
+        return (
+            f"SNAP fired by {ev.get('owner','?')}{at_txt}{hrs} (public) — "
+            f"that cell was taken before anything else resolved on it."
+        )
     if etype == "chaff":
         return f"chaff flare by {ev.get('owner','?')}{hrs} (public)."
     if etype == "emp":
@@ -846,18 +608,26 @@ def _format_combat_event(ev: Mapping[str, Any]) -> str:
     return f"{etype} {dict(ev)}"
 
 
+#: The victim-private half of each weapon's combat feed — the events
+#: that mean "this landed on ME", as opposed to the public flare saying
+#: someone fired. v1.38 added ``snap_hit``; without it a seat could be
+#: SNAPped every night and never react, because this list was the only
+#: thing telling the prompt it had been hit.
+_HIT_ME = ("chaff_jam", "emp_hit", "snap_hit")
+
+
 def _my_jam_events(agent_view: Mapping[str, Any]) -> List[Mapping[str, Any]]:
-    """Last-night events that actually HIT me (chaff_jam / emp_hit).
+    """Last-night events that actually HIT me.
 
     combat_events is already victim-filtered by the view builder, so the
-    presence of a chaff_jam / emp_hit here means I was the victim. Used to
-    force the relevant BEWARE doctrine + a concrete pickup-window warning
-    even when the inference tracker is cold.
+    presence of one of :data:`_HIT_ME` here means I was the victim. Used
+    to force the relevant BEWARE doctrine + a concrete warning even when
+    the inference tracker is cold.
     """
     out: List[Mapping[str, Any]] = []
     ln = agent_view.get("last_night") or {}
     for ev in (ln.get("combat_events") or []):
-        if isinstance(ev, Mapping) and str(ev.get("type") or "") in ("chaff_jam", "emp_hit"):
+        if isinstance(ev, Mapping) and str(ev.get("type") or "") in _HIT_ME:
             out.append(ev)
     return out
 
@@ -956,237 +726,116 @@ def format_reflect_block(
     return "\n".join(lines) + "\n"
 
 
-def format_wishlist_block(wishlist: Wishlist) -> str:
-    """Render the deterministic orbit → tactical hand-off wishlist."""
-    if not wishlist.entries:
-        return ""
-    return "\n".join(wishlist.as_prompt_lines()) + "\n"
-
-
 def format_opponent_weapons_block(
     estimates: "Mapping[str, Any] | None",
 ) -> str:
-    """Render the per-opponent weapon-stock uncertainty ranges.
+    """Render what each opponent is holding.
 
-    Only shows opponents where EMP or CHAFF ``max > 0``.
+    Shows every opponent holding ANY ordnance.
 
     v1.31 — this used to filter out a third, mine row that the estimator
     tracked but the doctrine never acted on. The estimator no longer
     tracks it, so the filter here is just "is there anything to warn
     about", not a curation of what to hide.
 
-    Each estimate carries an ``inferences`` audit trail (last few
-    entries) so the LLM can see WHY we think they're armed.
+    v1.34 — these stopped being estimates. The engine broadcasts every
+    seat's weaponised blue (§4.9.8), so the header no longer claims
+    inference.
+
+    v1.38 — the block was giving the model a false picture in two ways,
+    both of which came from rendering the per-weapon marginals.
+
+    The filter asked for ``emps_max > 0 or chaff_max > 0``, so a seat
+    holding 100 blue — a lone SNAP, and SNAP is the weapon that takes a
+    square out from under a landing — was dropped from the prompt
+    entirely and read as unarmed.
+
+    Worse, the line itself read ``emp=[0..3] chaff=[0..2]`` for a seat at
+    600, which is two independent ranges printed side by side. Nothing in
+    that string says they are alternatives, so the natural reading is
+    "up to three EMPs *and* up to two chaff" — a 1200-blue rack under a
+    600-blue cap. It is not a rounding error, it is double the truth, and
+    it is the reading that makes an agent cower. The seven racks that
+    actually fit 600 include exactly one holding both an EMP and a chaff.
+
+    So the block now states the total, the ladder that prices it and the
+    racks themselves, with the exclusivity said out loud. The list is
+    short by construction — at the shipped 1-2-3 prices a total admits at
+    most seven racks — so there is no reason to compress a handful of
+    true answers into a box of mostly impossible ones.
     """
     if not estimates:
         return ""
-    # Only render seats where we have an actionable weapon (EMP or chaff).
-    interesting = [
-        est for est in estimates.values()
-        if getattr(est, "emps_max", 0) > 0 or getattr(est, "chaff_max", 0) > 0
-    ]
+    interesting = []
+    for est in estimates.values():
+        has_any = getattr(est, "has_any", None)
+        if callable(has_any):
+            if has_any():
+                interesting.append(est)
+        elif (  # pragma: no cover — a fork's own estimate shape
+            getattr(est, "emps_max", 0) > 0
+            or getattr(est, "chaff_max", 0) > 0
+        ):
+            interesting.append(est)
     if not interesting:
         return ""
     lines = [
-        "OPPONENT WEAPON ESTIMATES (inferred from station_intel + activity — [min..max] ranges):",
+        "OPPONENT ARSENALS (public — the engine broadcasts every seat's "
+        "weaponised blue exactly; these are read, not guessed):",
     ]
+    ladder = _price_ladder_line(interesting)
+    if ladder:
+        lines.append(f"  {ladder}")
     for est in interesting:
-        lines.append(
-            f"  {est.seat}: "
-            f"emp=[{est.emps_min}..{est.emps_max}] "
-            f"chaff=[{est.chaff_min}..{est.chaff_max}]"
-        )
+        summary = getattr(est, "summary", None)
+        if callable(summary):
+            lines.append(f"  {summary()}")
+        else:  # pragma: no cover — a fork's own estimate shape
+            lines.append(
+                f"  {est.seat}: "
+                f"emp=[{est.emps_min}..{est.emps_max}] "
+                f"chaff=[{est.chaff_min}..{est.chaff_max}]"
+            )
         audit = list(getattr(est, "inferences", []) or [])
         for a in audit[-2:]:
             lines.append(f"    · {a}")
+    if any(not _is_exact(est) for est in interesting):
+        lines.append(
+            "  READ THIS RIGHT: where a seat lists several racks it holds "
+            "EXACTLY ONE of them — they are alternatives, not a shopping "
+            "list. The blue total is exact and the cap is hard, so adding "
+            "two of the listed racks together describes something no seat "
+            "can own. Plan against the racks that would actually hurt your "
+            "plan, and note which weapons appear in NONE of them: those "
+            "the seat provably does not have."
+        )
     return "\n".join(lines) + "\n"
 
 
-def build_prompt(
-    *,
-    agent_view: Mapping[str, Any],
-    day: int,
-    day_cap: int,
-    vault_score: int,
-    memory_replay: str,
-    chain_hints: Sequence[Mapping[str, Any]],
-    probe_hints: Sequence[Mapping[str, Any]] = (),
-    hot_drop_hints: Sequence[Mapping[str, Any]] = (),
-    blue_hints: Sequence[Mapping[str, Any]] = (),
-    supersede_hints: Sequence[Mapping[str, Any]] = (),
-    wishlist: "Wishlist | None" = None,
-    opponent_weapon_estimates: "Mapping[str, Any] | None" = None,
-    prior_day_entry: "Mapping[str, Any] | None" = None,
-    mode: str = "mover",
-    strategist_directive_block: str = "",
-) -> str:
-    """Assemble the full Tabula v7 prompt.
+def _is_exact(est: Any) -> bool:
+    probe = getattr(est, "is_exact", None)
+    return bool(probe()) if callable(probe) else True
 
-    ``mode`` selects the closing contract (the board-fact blocks are shared):
-      * ``"mover"``   — the default v6 contract: emit the moves-first JSON
-        object. When ``strategist_directive_block`` is non-empty it is injected
-        high in the prompt as top-priority guidance (the v7 two-call split).
-      * ``"thinker"`` — the reasoning pass: reason on the page, then FINISH
-        with a single ``DECISION:`` line. No moves are emitted.
 
-    Order of blocks (top to bottom):
-      1. SETUP NIGHT advisory (only when the agent has zero vision)
-      2. RULES (engine mechanics — physics)
-      3. STRATEGIES — lean CORE always shown, plus STATE-TRIGGERED
-         appendices appended only when the situation calls for them:
-           * REDSIGN doctrine  — a pure-RED beacon is broadcast.
-           * BLUE doctrine     — setup night OR wishlist raised grab_blue.
-           * BEWARE_EMP / BEWARE_CHAFF — the weapon tracker flags stock.
-      4. YOUR STATE
-      5. VISIBLE RED
-      6. DROP-LEGAL ZONES (explicit list of where drops are legal)
-      7. FOG + ECHO
-      8. LAST NIGHT (what the engine recorded)
-      9. OPPONENT INTEL (what they revealed to you)
-     10. TACTICAL PRIORITY FROM ORBIT (wishlist)
-     11. YOUR MEMORY (agent-authored narrative from prior nights)
-     12. HEURISTIC RED chain hints
-     13. PROBE placement hints
-     14. HOT DROP hints (probe+drop pairings)
-     15. BLUE chain hints (only when wishlist asks for it)
-     16. ACTION SCHEMA + prompt-to-emit
+def _price_ladder_line(estimates: Sequence[Any]) -> str:
+    """State what each weapon costs, so the totals above can be reasoned on.
+
+    v1.38 — without this the model is shown a blue figure and a list of
+    racks and has no way to check one against the other, or to work out
+    what a seat could still buy. Read off the estimate's own ``prices``,
+    which is the table the board was played on rather than today's
+    dials, so a legacy season is explained with its own ladder.
     """
-    setup_advisory = format_setup_night_advisory(agent_view, day, day_cap)
-    wl = wishlist if wishlist is not None else Wishlist()
-
-    # ── STATE-TRIGGERED doctrine assembly ──────────────────────────────
-    # The always-on CORE stays lean; each situational appendix is added
-    # ONLY when the live state makes it actionable, so haiku never burns
-    # attention on doctrine it can't use tonight.
-    strategies_text = STRATEGIES_CORE
-
-    # REDSIGN — a pure-RED beacon is public. Fire when the view carries a
-    # redsign broadcast OR the compiler surfaced a redsign hot-drop combo.
-    redsign_present = bool(agent_view.get("redsign")) or any(
-        isinstance(h, Mapping) and h.get("signal_type") == "redsign"
-        for h in (hot_drop_hints or ())
+    prices: Mapping[str, int] = {}
+    cap = 0
+    for est in estimates:
+        prices = getattr(est, "prices", None) or prices
+        cap = max(cap, int(getattr(est, "cap", 0) or 0))
+    if not prices:
+        return ""
+    ladder = ", ".join(
+        f"{kind} {cost}"
+        for kind, cost in sorted(prices.items(), key=lambda kv: kv[1])
     )
-    if redsign_present:
-        centers = _redsign_centers(agent_view)
-        if centers:
-            coord_str = ", ".join(f"(~{cx},~{cy})" for cx, cy in centers[:4])
-            concrete = (
-                f"REDSIGN LIVE near {coord_str} — a pure(255) RED seam is "
-                f"PUBLIC (every seat sees it). Check VISIBLE RED for any "
-                f"unfogged pure/mass cells near there FIRST (chain them "
-                f"directly if drop-legal); otherwise use the redsign HOT "
-                f"DROP hints to race it. Then apply:\n"
-            )
-            strategies_text += "\n\n" + concrete + DOCTRINE_REDSIGN
-        else:
-            strategies_text += "\n\n" + DOCTRINE_REDSIGN
-
-    # BLUE — the agent never decides its own blue-need. Fire on setup
-    # night (zero vision → the advisory is non-empty) OR when the orbit
-    # wishlist raised a ``grab_blue`` priority.
-    is_setup_night = bool(setup_advisory.strip())
-    want_blue = any(
-        getattr(e, "tag", "") == "grab_blue" for e in (wl.entries or [])
-    )
-    if is_setup_night or want_blue:
-        strategies_text += "\n\n" + DOCTRINE_BLUE
-
-    # BEWARE_EMP / BEWARE_CHAFF — gated on the opponent-weapon tracker OR
-    # on a jam that ACTUALLY hit us last night. The tracker infers likely
-    # stock; but if we were demonstrably chaffed/EMP'd we must react even
-    # when the tracker is cold (it previously never fired on a real jam).
-    jam_events = _my_jam_events(agent_view)
-    was_chaffed = any(str(e.get("type")) == "chaff_jam" for e in jam_events)
-    was_empd = any(str(e.get("type")) == "emp_hit" for e in jam_events)
-    if jam_events:
-        # Concrete, unmissable warning with the exact hours to avoid.
-        jam_lines = "; ".join(
-            _format_combat_event(e) for e in jam_events[:3]
-        )
-        strategies_text += (
-            "\n\nTHREAT LAST NIGHT (react NOW): " + jam_lines +
-            " Do NOT schedule a pickup in the jammed hours again — the "
-            "opponent blind-fires the same predictable window. Pick up "
-            "EARLY (hour <=4) or shift the window."
-        )
-    opp_has_emp = opp_has_chaff = False
-    if opponent_weapon_estimates:
-        opp_has_emp = any(
-            getattr(e, "emps_max", 0) > 0
-            for e in opponent_weapon_estimates.values()
-        )
-        opp_has_chaff = any(
-            getattr(e, "chaff_max", 0) > 0
-            for e in opponent_weapon_estimates.values()
-        )
-    if opp_has_emp or was_empd:
-        strategies_text += "\n\n" + DOCTRINE_BEWARE_EMP
-    if opp_has_chaff or was_chaffed:
-        strategies_text += "\n\n" + DOCTRINE_BEWARE_CHAFF
-
-    # FINAL NIGHT — supersede enemy probes. Only when it's the last day
-    # AND we actually have enemy-probe targets + spare stock to act on.
-    is_last_day = int(day) >= int(day_cap)
-    if is_last_day and supersede_hints:
-        strategies_text += "\n\n" + DOCTRINE_LASTDAY_SUPERSEDE
-
-    # Two-call split: the strategist directive (from call 1) rides high in
-    # the mover prompt, right after doctrine, so it frames everything below.
-    directive_part = (
-        ("\n" + strategist_directive_block + "\n")
-        if (mode == "mover" and strategist_directive_block)
-        else ""
-    )
-
-    parts: List[str] = [
-        setup_advisory,
-        RULES_SUMMARY,
-        "\n",
-        strategies_text,
-        "\n",
-        directive_part,
-        format_state_block(agent_view, day=day, day_cap=day_cap, vault_score=vault_score),
-        "\n",
-        format_visible_red_block(agent_view),
-        "\n",
-        format_drop_legal_block(agent_view),
-        "\n",
-        format_fog_and_echo_block(agent_view),
-        "\n",
-        format_last_night_block(agent_view),
-        "\n" if format_last_night_block(agent_view) else "",
-        format_reflect_block(agent_view, prior_day_entry, day),
-        "\n" if format_reflect_block(agent_view, prior_day_entry, day) else "",
-        format_opponent_block(agent_view),
-        "\n" if format_opponent_block(agent_view) else "",
-        format_opponent_weapons_block(opponent_weapon_estimates),
-        "\n" if format_opponent_weapons_block(opponent_weapon_estimates) else "",
-        format_wishlist_block(wl),
-        "\n" if format_wishlist_block(wl) else "",
-        f"YOUR MEMORY (agent-authored, oldest first):\n{memory_replay}\n\n",
-        format_chain_hints_block(chain_hints),
-        "\n",
-        format_probe_hints_block(probe_hints),
-        "\n",
-        format_hot_drop_hints_block(hot_drop_hints),
-        "\n" if format_hot_drop_hints_block(hot_drop_hints) else "",
-        format_blue_hints_block(blue_hints),
-        "\n" if format_blue_hints_block(blue_hints) else "",
-        format_supersede_hints_block(supersede_hints if is_last_day else ()),
-        "\n" if (is_last_day and supersede_hints) else "",
-    ]
-
-    if mode == "thinker":
-        parts.append(_THINKER_SCHEMA)
-        parts.append(
-            "\nOUTPUT ONE JSON OBJECT NOW — DECISION FIRST (\"posture\" is the "
-            "first key), a SHORT \"reasoning\" LAST. Start with the open-brace "
-            "character. GO:\n"
-        )
-    else:
-        parts.append(_ACTION_SCHEMA)
-        parts.append(
-            "\nOUTPUT THE JSON OBJECT NOW. Start with the open-brace "
-            "character. GO:\n"
-        )
-    return "".join(parts)
+    cap_txt = f"; no seat may hold more than {cap} blue of it" if cap else ""
+    return f"prices in blue: {ladder}{cap_txt}."

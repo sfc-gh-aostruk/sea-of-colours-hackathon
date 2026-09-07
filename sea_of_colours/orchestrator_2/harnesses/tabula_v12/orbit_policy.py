@@ -82,8 +82,14 @@ class OrbitDials:
     harvester_cap: int = 3
     emp_blue_cost: int = 200
     emp_credit_cost: int = 0
-    chaff_blue_cost: int = 255
+    chaff_blue_cost: int = 300  # v1.36 — was 255
     chaff_credit_cost: int = 0
+    #: Fallback for ``meta.rules.weapon_blue_cap`` (RULEBOOK §4.9.8) —
+    #: the most blue-worth of ordnance a seat may hold. Unlike the dials
+    #: above this is not doctrine and retuning it buys you nothing: the
+    #: engine refuses the build regardless. It is here so the policy can
+    #: decline gracefully instead of proposing an order it will lose.
+    weapon_blue_cap: int = 600
 
 
 #: The shipped economy. Fork-local, so retuning it cannot affect a rival.
@@ -247,13 +253,58 @@ def plan_orbit_actions(
     # Priority 3: weapons, tiered on rolled-up BLUE. Chaff leads the
     # always-build band because an empty rack loses the egress jam, and
     # the jam is the cheapest denial in the game.
+    # v1.34 — the arsenal ceiling (RULEBOOK §4.9.8). Threaded through the
+    # affordability helpers so every branch below inherits it, rather
+    # than bolted onto each one. At most one weapon is queued per orbit,
+    # so the held figure does not need to move mid-plan.
+    weapon_blue_cap = int(
+        ((view.get("meta") or {}).get("rules") or {}).get(
+            "weapon_blue_cap", dials.weapon_blue_cap
+        )
+    )
+    # v1.38 — sum EVERY kind the game prices, not the two this policy
+    # happens to buy. It used to be ``emp_stock * emp + chaff_stock *
+    # chaff``, which stopped being the seat's arsenal the moment a third
+    # weapon existed: a seat holding two SNAPs read as 0 of 600, so the
+    # policy would cheerfully propose a build the engine then refused at
+    # the cap — the exact failure the descriptor below exists to avoid.
+    # Nothing is bought here that is not already bought below; this is
+    # only the arithmetic of what is already held.
+    held_weapon_blue = 0
+    for kind, price in (weapon_prices or {}).items():
+        if not isinstance(price, Mapping):
+            continue
+        held_weapon_blue += (
+            int(weapon_stock.get(kind, 0) or 0) * int(price.get("blue", 0) or 0)
+        )
+
+    def _room_for(blue_cost: int) -> bool:
+        return held_weapon_blue + blue_cost <= weapon_blue_cap
+
     def _afford_emp() -> bool:
-        return blue_total >= emp_blue_cost and remaining >= emp_credit_cost
+        return (
+            blue_total >= emp_blue_cost
+            and remaining >= emp_credit_cost
+            and _room_for(emp_blue_cost)
+        )
 
     def _afford_chaff() -> bool:
-        return blue_total >= chaff_blue_cost and remaining >= chaff_credit_cost
+        return (
+            blue_total >= chaff_blue_cost
+            and remaining >= chaff_credit_cost
+            and _room_for(chaff_blue_cost)
+        )
 
-    if weapons_enabled and blue_total > dials.blue_always_build:
+    if weapons_enabled and not _room_for(min(emp_blue_cost, chaff_blue_cost)):
+        # Say the cap out loud rather than letting it read as "cannot
+        # afford" — an agent at the ceiling with a full wallet is a
+        # different situation, and the descriptor is what a fork reads
+        # when it wonders why its build never fired.
+        descriptors.append(
+            f"weapon build skipped (holding {held_weapon_blue} of the "
+            f"{weapon_blue_cap} blue arsenal cap)"
+        )
+    elif weapons_enabled and blue_total > dials.blue_always_build:
         if chaff_stock < dials.chaff_stockpile_cap and _afford_chaff():
             actions.append({"a": "build_chaff", "count": 1})
             remaining -= chaff_credit_cost

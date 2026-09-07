@@ -61,6 +61,7 @@ from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import (
     move_sanitizer,
     opponent_weapons,
     probe_hints as probe_hints_mod,
+    snap_cover as snap_cover_mod,
     recorder,
 )
 from sea_of_colours.orchestrator_2.harnesses.tabula_v12._v7 import (
@@ -523,6 +524,17 @@ def run(
         if want_blue else []
     )
     harvesters_alive = len(probe_hints_mod._orbit_harvester_ids(agent_view))
+    # v1.40 — SNAP cover. Needs the estimates (is anyone even able to hold a
+    # SNAP) and the menu's landings (is there anything worth insuring), so it
+    # runs after both and before the registry that offers it. Returns [] on an
+    # ordinary night, and returns [] for good on a board that never prices
+    # SNAP — retiring the weapon retires this with it.
+    snap_cover_hints = snap_cover_mod.cover_hints(
+        agent_view,
+        seam_patterns=seam_patterns,
+        hot_drop_hints=hot_drop_hints,
+        estimates=weapon_estimates,
+    )
     option_registry = agency_mod.build_registry(
         agent_view=agent_view,
         seam_patterns=seam_patterns,
@@ -530,6 +542,7 @@ def run(
         probe_hints=probe_hints,
         chain_hints=chain_hints,
         supersede_hints=supersede_hints,
+        snap_cover_hints=snap_cover_hints,
         blue_requested=want_blue,
         harvesters_alive=harvesters_alive,
         hazard_cells=hazard_cells,
