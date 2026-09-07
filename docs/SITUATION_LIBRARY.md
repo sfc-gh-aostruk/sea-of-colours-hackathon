@@ -125,11 +125,12 @@ Still true in the lab (v1.42), and for the same reason: a frozen turn is
 snapshotted the instant before a seat planned its night, and `arms.py`
 stamps a rack onto the clone directly rather than playing an orbit
 phase. So the lab asks "given a weapon, does this fork fire it?" and
-still cannot ask "would it have bought one?". The four racks it offers
-are none, one chaff, one EMP, or one EMP and one chaff — one of each at
-most, deliberately, because handing out pairs turns the run into a
+still cannot ask "would it have bought one?". The racks it offers are
+none, one of each weapon on its own, and one of everything — one of each
+at most, deliberately, because handing out pairs turns the run into a
 question about salvo economics when the question worth asking is
-simpler. Arcs remain the open idea for procurement; a headless season
+simpler. The list is derived from `arms.py`'s `KINDS`, so it grew a SNAP
+rack in v1.36 without anyone editing it. Arcs remain the open idea for procurement; a headless season
 (`soc season`) is the blunt way to see it today.
 
 ## 3. The design: situations, not boards
@@ -138,11 +139,18 @@ A **situation** is a board plus the competence it isolates plus the
 mistake it is built to catch. The nine existing boards become situations;
 the library grows past them.
 
-*(v1.42 — the half of this that survived. The lab's board library is six
+*(v1.42 — the half of this that survived. The lab's board library is ten
 named frozen nights: Vanilla Opener · day 1, Early Redsign Battle · day
 2 · dual discovery, Beaten to the Seam · day 3, Second Wind · day 4,
 After the Gold Rush · day 4, and Vetus Lantern · day 6 · late redsign
-race. Each carries a `tests` line saying what you would learn here that
+race — plus, from v1.40, the four nights that can hold a SNAP: Sighted
+and Armed · day 6 · the blind chase, Both Eyes on the Same Pure · day 3
+· weapon poker, Two Ghosts, One Seam · day 2 · nobody can see it now,
+and The Late Reversal · day 6 · sight against the scoreboard. The four
+were cut from V12-vs-V12 seasons played at the 1:2:3 price ladder, which
+is what makes them the only boards whose economy prices the weapon; the
+older six predate it and correctly refuse a SNAP rack. Each carries a
+`tests` line saying what you would learn here that
 you would not learn anywhere else, a `state` claim that must be
 checkable against the saved session, and an editorial `why` — which is
 `teaches` and `foil` under other names, split so that a wrong number is

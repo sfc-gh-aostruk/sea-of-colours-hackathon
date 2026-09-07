@@ -185,18 +185,14 @@ def plan_only(
             store=store,
         )
 
-        # And what everyone is holding. Inference needs a previous night
-        # to difference against; a frozen turn has none, so the arsenal
-        # is stated rather than left to be guessed at.
-        try:
-            row = store.load_session(scratch)
-            blob = row.get("json_state")
-            while isinstance(blob, str):
-                blob = json.loads(blob)
-            lab_arms.disclose(scratch, agent, blob)
-        except Exception:
-            # A missing disclosure costs accuracy, not the turn.
-            pass
+        # What everyone is holding needs no help from here any more.
+        # ``arms.disclose`` used to seed each fork's estimator directly,
+        # because a rival's rack was private and a frozen turn gave the
+        # inference nothing to work from. Since v1.34 the engine
+        # broadcasts weaponised blue off ``weapon_stock`` (§4.9.8) — the
+        # field ``arms.arm`` stamped at open time — so the ordinary
+        # percept already carries it, for the lab exactly as for a real
+        # season.
 
         env = dispatch.play_turn(store, scratch, seat, agent) or {}
         moves = list((store.list_policies(scratch, day) or {}).get(seat) or [])

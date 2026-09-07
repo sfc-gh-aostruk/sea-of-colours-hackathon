@@ -15,6 +15,7 @@ dropped in v1.1. The rest are the launcher's supporting cast.
 
 from __future__ import annotations
 
+import json
 import pathlib
 from typing import Any, Mapping
 
@@ -162,11 +163,28 @@ def api_lab_baseline(board: str = Query(""), seat: str = Query("p1")) -> dict[st
 
 
 @router.get("/api/lab/racks")
-def api_lab_racks() -> dict[str, Any]:
-    """The ordnance a seat can be handed when a board is opened."""
+def api_lab_racks(board: str = "") -> dict[str, Any]:
+    """The ordnance a seat can be handed when a board is opened.
+
+    ``board`` is optional and worth passing: with it, each rack says
+    whether that particular frozen turn can hold it. A season frozen
+    before SNAP existed cannot (v1.36), and the picker should say so
+    rather than offer a choice ``arm()`` will refuse.
+    """
     from . import arms as lab_arms
 
-    return {"racks": lab_arms.catalogue(), "default": lab_arms.DEFAULT}
+    blob = None
+    if board:
+        row = lab_store.store().load_session(board) or {}
+        raw = row.get("json_state")
+        while isinstance(raw, (str, bytes)):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = None
+                break
+        blob = raw if isinstance(raw, dict) else None
+    return {"racks": lab_arms.catalogue(blob), "default": lab_arms.DEFAULT}
 
 
 @router.post("/api/lab/open")

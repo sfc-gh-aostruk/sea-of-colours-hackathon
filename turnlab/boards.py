@@ -326,6 +326,131 @@ NOTES: Mapping[str, Note] = {
         # frozen turn is a position, and a position with a seat missing
         # resolves a night nobody would have played.
     ),
+    # ── the SNAP set (v1.40) ────────────────────────────────────────
+    #
+    # Four nights cut from three V12-vs-V12 seasons played at the 1:2:3
+    # price ladder, which makes them the first boards in the library whose
+    # economy prices a SNAP — every older one predates the weapon and the
+    # lab correctly refuses to stock one on them (issue 42). They were
+    # picked out of 21 candidate nights by hand for one quality: the
+    # information is lopsided in an interesting way, which is the only
+    # condition under which a one-square denial is worth 100 blue.
+    #
+    # ``[[double brackets]]`` mark the load-bearing clause. The launcher
+    # renders those in yellow, because the fact that decides how a night
+    # is played reads exactly like the scene-setting around it otherwise.
+    "83e44557_d6": Note(
+        name="Sighted and Armed · day 6 · the blind chase",
+        tests="one seat can see the seam and holds the only weapon; the other is nearly blind and has the only money",
+        state=(
+            "Day 6 of 7, and the game is close: p1 leads 1743 to 1544 with "
+            "three redsigns still live. Both seats field two harvesters and "
+            "hold 4 probes, so neither is short of fleet. What separates "
+            "them is sight. [[p1 has live vision of 98 cells and the pure at "
+            "(22,11); p2 can see 17 cells and no pure at all]], working off "
+            "205 echoes it remembers rather than anything it can currently "
+            "watch. p1 also holds [[the only ordnance on the board — 300 "
+            "published blue, which at this ladder can only be a chaff]]. p2 "
+            "has no weapon and 250 blue to buy one with; p1 has spent to "
+            "zero and cannot answer in kind."
+        ),
+        why=(
+            "The attack/defence split you get when one seat knows where the "
+            "value is and the other only knows roughly where it was. p1 is "
+            "defending a narrow lead over ground it can actually see, with "
+            "a chaff in hand and no cash; p2 is chasing on memory with a "
+            "full wallet and an empty rack. Cast p1 to ask whether a fork "
+            "protects a sighted grab when the rival is visibly unarmed — "
+            "the arsenal figure says p2 cannot be holding anything, so "
+            "spending a probe on cover here would be a mistake, and a fork "
+            "that spends it anyway is reading the total wrong. Cast p2 for "
+            "the opposite: near-blind, solvent, one orbit from being armed."
+        ),
+    ),
+    "fad99794_d3": Note(
+        name="Both Eyes on the Same Pure · day 3 · weapon poker",
+        tests="both seats see the same pure, both are armed, and each can read exactly what the other is holding",
+        state=(
+            "A single redsign, 30 cells, centred near (~12,~10) — and "
+            "[[both seats have live vision of the same pure at (11,11)]], p1 "
+            "across 115 cells and p2 across 119. Neither has any secret "
+            "about the target. Neither has one about the other's rack "
+            "either: [[p1's published arsenal is 300 blue (a chaff) and p2's "
+            "is 200 (an EMP)]], and each reads the other's total off the "
+            "station. p1 leads 516 to 241. The fleets are the asymmetry — "
+            "[[p1 runs two harvesters, p2 runs one]] — and so is the "
+            "treasury, exactly backwards: p1 has no credits and no probes "
+            "left, while p2 holds 750 credits and 2 probes."
+        ),
+        why=(
+            "The purest weapon-poker night in the library, because every "
+            "input is public. Both seats can see the prize, both know what "
+            "the other could fire, and the only private thing left is "
+            "nerve. It is also the sharpest test of the arsenal read the "
+            "agents were rebuilt around: 300 and 200 are unambiguous "
+            "totals, so a fork that hedges against 'maybe an EMP, maybe a "
+            "chaff' is failing to use information it was handed. Cast p1 "
+            "to run two harvesters into a contested pure knowing an EMP is "
+            "pointed at it; cast p2 to spend one harvester and a real "
+            "budget against a seat that outnumbers it two to one."
+        ),
+    ),
+    "30890438_d2": Note(
+        name="Two Ghosts, One Seam · day 2 · nobody can see it now",
+        tests="the seam is remembered by both seats and watched by neither — a fight decided entirely on stale intel",
+        state=(
+            "A 33-cell redsign near (~10,~8), and the odd thing about this "
+            "night is that [[neither seat has live sight of a single pure "
+            "cell]]. Both are down to 49 cells of vision. What each has "
+            "instead is an echo of night 1: [[p1 remembers 5 pure cells, one "
+            "of them at (9,8) right on the redsign's centre; p2 remembers 9, "
+            "in a different cluster to the south]]. So both are looking at "
+            "the same seam through different, day-old memories. Everything "
+            "else is symmetric — 500 credits, 250 blue, 2 probes and one "
+            "harvester each, and [[no weapon anywhere on the board]]. p1 has "
+            "shipped 103; p2 is on minus 105, having already been charged "
+            "for stripped ground."
+        ),
+        why=(
+            "A deliberately awkward board, and worth keeping for exactly "
+            "that. There is no live target to attack and no rack to fear, "
+            "so a fork cannot fall back on either of its usual reflexes — "
+            "it has to decide how much a day-old echo is worth and whether "
+            "to spend a probe confirming it or a harvester trusting it. "
+            "Being the one night here with no weapon in play, it is also "
+            "the control: whatever a fork does differently on the other "
+            "three, this is what it does when ordnance is not the answer. "
+            "The two seats remember different halves of the same seam, so "
+            "cast both — they are not the same problem."
+        ),
+    ),
+    "30890438_d6": Note(
+        name="The Late Reversal · day 6 · sight against the scoreboard",
+        tests="the trailing seat can see the pure and the leader cannot, with full fleets on both sides",
+        state=(
+            "The closest finish in the set: [[p2 leads by 122, 2170 to "
+            "2048]], with one night left after this one. Both seats run two "
+            "harvesters and have scouted hard — 4 probes down for p1, 5 for "
+            "p2 — and two redsigns are live. The sight has gone the way of "
+            "the scoreboard: [[p2 sees 239 cells including a live pure at "
+            "(24,2); p1 sees 176 and no live pure at all]], only 24 "
+            "remembered ones. Against that, [[p1 holds the only weapon — 300 "
+            "published blue]] and p2 holds none, with 250 blue banked to "
+            "change that at the next orbit."
+        ),
+        why=(
+            "The mirror of day 6 on seed 7301, and that is why both are "
+            "here: same late-game shape, but this time the seat that can "
+            "see is the seat that is ahead, and the weapon belongs to the "
+            "one chasing. p1 is behind, half-blind and armed; p2 is ahead, "
+            "sighted and defenceless. It is the best board in the library "
+            "for asking what a fork does with one weapon and one night — "
+            "and the only one where a rival's published zero is about to "
+            "stop being zero, since p2 can afford ordnance at the very next "
+            "orbit. Cast both: the attack only means anything if the seat "
+            "being attacked is also playing its night."
+        ),
+    ),
 }
 
 

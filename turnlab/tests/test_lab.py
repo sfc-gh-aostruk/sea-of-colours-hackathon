@@ -357,8 +357,21 @@ def test_arming_a_seat_does_not_also_make_it_richer():
     """
     from turnlab import arms
 
+    from sea_of_colours.game.weapons import (
+        BLUE_COST_BY_KIND,
+        WEAPONISED_BLUE_CAP,
+    )
+
     def opened(rack_id):
-        blob = {"weapon_stock": {}, "hoard_squares": {"p1": [{"site_id": "kept"}]}}
+        # Stamped with today's economy, because an UNstamped blob is a
+        # pre-v1.36 board and ``arm`` rightly refuses to pose a weapon
+        # that board's season never sold (v1.36).
+        blob = {
+            "weapon_stock": {},
+            "hoard_squares": {"p1": [{"site_id": "kept"}]},
+            "weapon_blue_costs": dict(BLUE_COST_BY_KIND),
+            "weapon_blue_cap": WEAPONISED_BLUE_CAP,
+        }
         arms.arm(blob, "p1", rack_id)
         return blob["hoard_squares"]["p1"]
 
@@ -1413,45 +1426,132 @@ def test_a_clone_reads_last_nights_frames_off_its_board(tmp_path, monkeypatch):
 def test_a_frozen_turn_states_the_arsenal_instead_of_making_it_guessable():
     """Arming a seat has to be visible to the seats it threatens.
 
-    V12 infers a rival's stock from that rival's blue band dropping
-    between nights. A frozen turn has no previous night to difference
-    against, and a rack is granted rather than bought, so there is no
-    spend to notice either way: you could hand a seat an EMP and every
-    agent on the board would still read ``emp: none observed`` and plan
-    a night that was not the night.
+    The lab used to guarantee this itself, by reaching past the engine
+    and seeding each fork's estimator (``arms.disclose``). Since v1.34 it
+    does not have to: the engine broadcasts weaponised blue off
+    ``weapon_stock`` (§4.9.8), which is the field ``arm()`` writes. So
+    the property is unchanged and the mechanism is now the real one —
+    which is what this test pins. If it fails, a frozen turn has gone
+    back to posing a rack nobody can see.
     """
-    from turnlab import arms, recall
+    from sea_of_colours.game.session import GameSession
+    from turnlab import arms
+
+    sess = GameSession.new(width=12, height=8, seed=7)
+    blob = sess.to_dict()
+
+    arms.arm(blob, "p2", "both")
+    revived = GameSession.from_dict(blob)
+
+    # Survives the round trip the lab actually performs — arm() writes a
+    # blob, open_board saves it, plan_only clones and hydrates it. The
+    # counters are dense over the game's price list, so ask about the
+    # two kinds "both" arms rather than the whole dict.
+    assert revived.weapon_stock["p2"]["emp"] == 1
+    assert revived.weapon_stock["p2"]["chaff"] == 1
+
+    # And the rival reading is a number, not a grade. Priced off the
+    # game's own table (v1.36) rather than a literal, because the point
+    # of the assertion is that the broadcast happens at all — not what
+    # this week's chaff costs.
+    from sea_of_colours.game.weapons import weaponised_blue
+
+    expected = weaponised_blue({"emp": 1, "chaff": 1}, revived.weapon_prices())
+    seen_by_p1 = revived._station_observation("p2", fuzzy=True)
+    assert seen_by_p1["arms"]["blue"] == expected
+    assert "total" not in seen_by_p1["blue"], (
+        "the vault stays a silhouette — only the arsenal went public"
+    )
+
+    # An unarmed seat reads as holding nothing, rather than as unknown.
+    assert revived._station_observation("p1", fuzzy=True)["arms"]["blue"] == 0
+
+
+def test_the_lab_cannot_pose_a_rack_the_engine_could_never_hold():
+    """A rack over the arsenal cap is a position no season can reach."""
+    from sea_of_colours.game.weapons import WEAPONISED_BLUE_CAP, weaponised_blue
+    from turnlab import arms
+
+    for rack in arms.RACKS:
+        held = weaponised_blue({"emp": rack.emp, "chaff": rack.chaff})
+        assert held <= WEAPONISED_BLUE_CAP, (
+            f"{rack.id} is {held} blue of ordnance, over the cap"
+        )
+
+    # And the guard bites if someone adds one that is not.
+    monkey = arms.Rack("overloaded", emp=3, chaff=3)
+    arms.BY_ID[monkey.id] = monkey
+    try:
+        with pytest.raises(ValueError) as exc:
+            arms.arm({}, "p1", "overloaded")
+        assert "arsenal cap" in str(exc.value)
+    finally:
+        arms.BY_ID.pop(monkey.id, None)
+
+
+def test_a_fork_reads_the_rack_off_the_public_percept():
+    """The estimator decodes the broadcast total back to a loadout.
+
+    This is the half ``disclose`` used to fake. It runs against the
+    fork's own module, because a fork may replace it — and if it does,
+    this is the seam that tells the attendee their replacement still
+    answers the question the lab asks.
+
+    v1.36 — the assertion is that the true rack lies inside the reported
+    bounds, NOT that the bounds are tight. At 1-2-3 pricing a total can
+    name several loadouts, and an estimator that collapses one of them
+    to a single confident answer is the failure mode, not the goal.
+    """
+    from sea_of_colours.game.weapons import weaponised_blue
+    from turnlab import recall
 
     mod = recall.fork_module("tabula_v12", "_v7.opponent_weapons")
     mod.clear_store()
+    try:
+        armed = weaponised_blue({"emp": 1, "chaff": 1})
+        view = {
+            "station_intel": {
+                "opponents": [
+                    {"seat": "p2", "arms": {"blue": armed, "cap": 600}},
+                    {"seat": "p3", "arms": {"blue": 0, "cap": 600}},
+                ]
+            }
+        }
+        seen = mod.update_estimates("LABRUN_arsenal", "p1", view)
 
-    blob = {
-        "players": ["p1", "p2", "p3"],
-        "weapon_stock": {"p1": {"emp": 0, "chaff": 0}, "p3": {"emp": 1, "chaff": 1}},
-    }
-    assert arms.disclose("LABRUN_arsenal", "tabula_v12", blob) == 2
+        assert seen["p2"].emps_min <= 1 <= seen["p2"].emps_max
+        assert seen["p2"].chaff_min <= 1 <= seen["p2"].chaff_max
+        assert seen["p2"].has_any()
+        assert not seen["p3"].has_any()
+        assert "not inferred" in " ".join(seen["p2"].inferences), (
+            "the agent should be able to tell a stated fact from a deduced one"
+        )
+    finally:
+        mod.clear_store()
 
-    seen = mod.load_estimates("LABRUN_arsenal", "p2")
-    assert set(seen) == {"p3"}, "only seats actually holding something are named"
-    assert (seen["p3"].emps_min, seen["p3"].emps_max) == (1, 1)
-    assert (seen["p3"].chaff_min, seen["p3"].chaff_max) == (1, 1)
-    assert seen["p3"].has_any()
-    assert "not inferred" in " ".join(seen["p3"].inferences), (
-        "the agent should be able to tell a stated fact from a deduced one"
-    )
 
-    # A seat is never told about its own stock through this channel —
-    # that is YOUR STATE's job, and listing yourself as a rival reads as
-    # a threat from nowhere.
-    assert "p3" not in mod.load_estimates("LABRUN_arsenal", "p3")
+def test_the_estimator_prices_a_rack_at_the_games_own_table():
+    """v1.36 — prices are stamped per game, and the view publishes the
+    stamp. A fork reading an archived season must decode against the
+    prices that season was played at, or it invents ordnance: 455 blue
+    is a real rack under the old table and impossible under the new one,
+    which would read as "holding nothing" rather than as a mistake."""
+    from turnlab import recall
 
-    # An unarmed board seeds nothing rather than seeding zeroes, so an
-    # agent cannot mistake "nobody is armed" for "I checked and it is
-    # safe" on a board where nothing was stated at all.
+    mod = recall.fork_module("tabula_v12", "_v7.opponent_weapons")
     mod.clear_store()
-    assert arms.disclose("LABRUN_bare", "tabula_v12", {"players": ["p1", "p2"]}) == 0
-    assert mod.load_estimates("LABRUN_bare", "p1") == {}
-    mod.clear_store()
+    try:
+        view = {
+            "meta": {"rules": {"weapon_blue_costs": {"emp": 200, "chaff": 255}}},
+            "station_intel": {
+                "opponents": [{"seat": "p2", "arms": {"blue": 455, "cap": 600}}]
+            },
+        }
+        seen = mod.update_estimates("LABRUN_legacy", "p1", view)
+        assert (seen["p2"].emps_min, seen["p2"].emps_max) == (1, 1)
+        assert (seen["p2"].chaff_min, seen["p2"].chaff_max) == (1, 1)
+    finally:
+        mod.clear_store()
 
 
 def test_a_rack_is_one_of_each_at_most():
@@ -1460,18 +1560,82 @@ def test_a_rack_is_one_of_each_at_most():
     The question the lab asks is simpler — given a weapon, does this
     agent fire it? A second round only lets a fork look decisive by
     spending twice.
+
+    v1.36 — spelled as the rule rather than as the list of racks, so
+    adding a weapon means adding a rack, not editing this test into
+    agreeing with whatever was added.
     """
     from turnlab import arms
 
-    assert {r.id for r in arms.RACKS} == {"empty", "chaff", "emp", "both"}
     for rack in arms.RACKS:
-        assert rack.emp <= 1 and rack.chaff <= 1, f"{rack.id} hands out a pair"
+        for kind, n in rack.counts.items():
+            assert n <= 1, f"{rack.id} hands out a pair of {kind}"
+
+    # One rack per single weapon, so every weapon can be asked about on
+    # its own — that is the comparison the lab exists for.
+    singles = {
+        next(k for k, n in r.counts.items() if n)
+        for r in arms.RACKS if sum(r.counts.values()) == 1
+    }
+    assert singles == set(arms.KINDS), (
+        "every weapon needs a rack that hands out only that weapon"
+    )
+
+
+def test_the_picker_never_offers_a_rack_the_board_would_refuse():
+    """v1.36 — a menu whose items are traps is worse than a short menu.
+
+    ``arm()`` refuses a weapon the board's own season does not price,
+    which is right: a night frozen before SNAP existed has no SNAP in
+    its economy. But every board shipped today predates SNAP, so
+    without this the launcher offered two racks that always failed.
+
+    Marked unavailable rather than filtered out, deliberately. "That
+    weapon is younger than this board" is worth telling an attendee; a
+    list that is quietly shorter on some boards than others reads as a
+    bug in the lab.
+    """
+    from turnlab import arms
+    from sea_of_colours.game.weapons import (
+        BLUE_COST_BY_KIND, WEAPONISED_BLUE_CAP,
+    )
+
+    legacy = arms.catalogue({})
+    modern = arms.catalogue({
+        "weapon_blue_costs": dict(BLUE_COST_BY_KIND),
+        "weapon_blue_cap": WEAPONISED_BLUE_CAP,
+    })
+
+    # Whatever a board says is available must actually arm, and whatever
+    # it says is not must actually refuse. That equivalence is the point;
+    # the specific weapon that happens to be new is not.
+    for board_blob, listing in (({}, legacy),
+                                ({"weapon_blue_costs": dict(BLUE_COST_BY_KIND),
+                                  "weapon_blue_cap": WEAPONISED_BLUE_CAP},
+                                 modern)):
+        for entry in listing:
+            blob = dict(board_blob)
+            if entry["available"]:
+                arms.arm(blob, "p1", entry["id"])
+            else:
+                with pytest.raises(ValueError):
+                    arms.arm(blob, "p1", entry["id"])
+                assert entry["unavailable_because"], (
+                    f"{entry['id']} is refused with no reason given"
+                )
+
+    # And no board is ever left with nothing to pick.
+    assert any(e["available"] for e in legacy)
+
+    # Asked without a board, nothing is marked unavailable — the caller
+    # has not said which board, so the lab must not guess.
+    assert all(e["available"] for e in arms.catalogue())
 
     # The default still opens a board exactly as it was frozen. Anything
     # else would arm every board by default and quietly diff an armed
     # fork against the unarmed V12 baseline.
     assert arms.DEFAULT == "empty"
-    assert arms.get(arms.DEFAULT).emp == 0 and arms.get(arms.DEFAULT).chaff == 0
+    assert not any(arms.get(arms.DEFAULT).counts.values())
 
 
 # ── the divergence view's diff ────────────────────────────────────────
@@ -1598,6 +1762,33 @@ def test_every_night_in_the_library_says_what_it_is_for():
             )
         # Every seat-row of one night must describe the same night.
         assert len({b.note.name for b in group}) == 1
+
+
+def test_a_highlight_that_never_closes_would_reach_the_reader_as_brackets():
+    """``[[key phrase]]`` marks the load-bearing clause of a note.
+
+    The launcher escapes a note and *then* turns the markers into
+    ``<mark>``, which is what stops a blurb smuggling in markup. The cost
+    of that ordering is that an unbalanced marker degrades silently: the
+    regex simply does not match, and the reader gets literal brackets in
+    the middle of a sentence. Nothing else in the stack would notice, so
+    it is checked here, where the prose actually lives.
+    """
+    import re
+
+    for key, note in boards.NOTES.items():
+        for field in ("name", "tests", "state", "why"):
+            text = getattr(note, field, "") or ""
+            opens, closes = text.count("[["), text.count("]]")
+            assert opens == closes, (
+                f"{key}.{field} has {opens} '[[' and {closes} ']]' — an "
+                f"unclosed highlight reaches the reader as brackets"
+            )
+            # Balanced but interleaved ("[[a]] b]] c[[") counts as broken
+            # too: the pairs have to nest the way the regex reads them.
+            assert len(re.findall(r"\[\[(.+?)\]\]", text)) == opens, (
+                f"{key}.{field} has highlight markers that do not pair up"
+            )
 
 
 def test_seat_count_and_seed_are_read_not_written():

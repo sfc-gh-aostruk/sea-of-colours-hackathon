@@ -22,6 +22,16 @@ from dataclasses import dataclass
 from typing import Any, MutableMapping
 
 
+#: The weapon kinds a rack can name, in the order they read best. Named
+#: here rather than derived from ``BLUE_COST_BY_KIND`` because a rack is
+#: a fixed editorial choice — "one EMP" — and a weapon added to the
+#: engine should not silently appear in the lab's pickers with no rack
+#: author having thought about what it is for. :func:`arm` still
+#: validates against the board's own price table, so the two cannot
+#: drift into offering something a board cannot hold.
+KINDS: tuple[str, ...] = ("emp", "chaff", "snap")
+
+
 @dataclass(frozen=True)
 class Rack:
     """Ordnance handed to one seat, plus the BLUE to build more."""
@@ -29,11 +39,22 @@ class Rack:
     id: str
     emp: int = 0
     chaff: int = 0
+    snap: int = 0
     #: Weapon-build fuel, as hoard purity. Zero on every shipped rack —
     #: see :data:`RACKS`. Kept because closing the procurement gap would
     #: want it back, and ``_give_blue`` is not code worth rediscovering.
     blue: int = 0
     note: str = ""
+
+    @property
+    def counts(self) -> dict[str, int]:
+        """Ordnance by kind, in the shape ``weapon_stock`` uses.
+
+        Everything downstream reads this rather than the fields, so
+        adding a weapon is a field and a rack entry — not an edit to
+        ``arm``, ``stock_of`` and ``catalogue`` as well.
+        """
+        return {kind: int(getattr(self, kind, 0)) for kind in KINDS}
 
 
 #: One of each, at most. The ladder handed out pairs, which turned every
@@ -62,6 +83,17 @@ RACKS: tuple[Rack, ...] = (
          note="one EMP: can deny ground for eight hours and time a walk-in"),
     Rack("both", emp=1, chaff=1,
          note="one of each — if the play does not change, nothing was learned"),
+    # v1.36. SNAP asks a narrower question than the other two, because it
+    # is a guess rather than an area: the fork has to name the ONE square
+    # it thinks the night turns on, an hour before it turns. A fork that
+    # fires it at the middle of the map has told you as much as one that
+    # does not fire it at all.
+    Rack("snap", snap=1,
+         note="one SNAP: denies a single square for a single hour — "
+              "beacon, landing or walk-in, but you must pick the square"),
+    Rack("arsenal", emp=1, chaff=1, snap=1,
+         note="one of all three, which is exactly the 600 cap — the most "
+              "ordnance any seat can be holding when a night opens"),
 )
 
 BY_ID: dict[str, Rack] = {r.id: r for r in RACKS}
@@ -84,10 +116,50 @@ def arm(blob: MutableMapping[str, Any], seat: str, rack_id: str) -> Rack:
     Writes the stockpile directly rather than running an orbit phase,
     which is the same shortcut the eval builder takes: the point is to
     watch an agent *use* a weapon, not to make it buy one first.
+
+    The shortcut skips ``_apply_build_weapon``, and with it the arsenal
+    cap (RULEBOOK §4.9.8) — so the check is repeated here. Not because
+    any shipped rack is over the ceiling (``arsenal`` sits exactly on
+    it), but because a rack that quietly exceeded it would hand every
+    agent on the board a public arsenal figure the engine could never
+    have produced, and the lab's one job is to pose real positions.
+
+    v1.36 — both the cap and the prices come off THIS BOARD's stamp
+    rather than today's constants, and a kind the board does not price
+    is refused rather than stamped. A season frozen before SNAP existed
+    has no SNAP in its economy; writing one into its stockpile would
+    pose a rack that board's own engine would refuse to sell, which is
+    the same dishonesty the cap check exists to prevent.
     """
+    from sea_of_colours.game.weapons import (
+        LEGACY_BLUE_COST_BY_KIND,
+        LEGACY_WEAPONISED_BLUE_CAP,
+        weaponised_blue,
+    )
+
     rack = get(rack_id)
+    counts = {k: n for k, n in rack.counts.items() if n}
+
+    prices = blob.get("weapon_blue_costs") or dict(LEGACY_BLUE_COST_BY_KIND)
+    cap = int(blob.get("weapon_blue_cap") or LEGACY_WEAPONISED_BLUE_CAP)
+
+    unpriced = sorted(set(counts) - set(prices))
+    if unpriced:
+        raise ValueError(
+            f"rack {rack.id!r} needs {', '.join(unpriced)}, which this "
+            "board's season does not stock — pick a rack the board could "
+            "actually have been holding"
+        )
+
+    held = weaponised_blue(counts, prices)
+    if held > cap:
+        raise ValueError(
+            f"rack {rack.id!r} is {held} blue of ordnance, over the "
+            f"{cap} arsenal cap — no seat can hold it, so "
+            "no frozen turn should pose it"
+        )
     stock = blob.setdefault("weapon_stock", {})
-    stock[str(seat)] = {"emp": int(rack.emp), "chaff": int(rack.chaff)}
+    stock[str(seat)] = {kind: int(rack.counts.get(kind, 0)) for kind in prices}
     if rack.blue:
         _give_blue(blob, str(seat), rack.blue)
     return rack
@@ -130,95 +202,86 @@ def stock_of(blob: Any) -> dict[str, dict[str, int]]:
     for seat, held in (blob.get("weapon_stock") or {}).items():
         if not isinstance(held, dict):
             continue
-        emp, chaff = int(held.get("emp") or 0), int(held.get("chaff") or 0)
-        if emp or chaff:
-            out[str(seat)] = {"emp": emp, "chaff": chaff}
+        counts = {k: int(held.get(k) or 0) for k in KINDS}
+        if any(counts.values()):
+            out[str(seat)] = counts
     return out
 
 
-def disclose(session_id: str, agent: str, blob: Any) -> int:
-    """Tell each seat what the others are *actually* holding.
+# ``disclose()`` lived here until v1.34, and its removal is the whole
+# point of that change rather than a tidy-up.
+#
+# It existed because a rival's stock used to be private. V12 inferred it
+# by watching that rival's blue-purity band drop between nights, which
+# was useless here twice over: a frozen turn has no previous night to
+# difference against, and a rack is granted rather than bought, so there
+# was no spend to notice even if it had. You could hand a seat an EMP and
+# every agent on the board would still read ``emp: none observed``. So
+# the lab reached past the engine and seeded the estimator directly.
+#
+# That was mimicry, and it was the lab's least honest moment: agents in
+# here were handed something no agent in a real season could get, which
+# made "does arming change the play?" a question about the lab's own
+# scaffolding as much as about the fork.
+#
+# Since v1.34 the engine broadcasts every seat's weaponised blue
+# (RULEBOOK §4.9.8), computed from ``weapon_stock`` — the very field
+# ``arm()`` above writes. A stamped rack and a bought one now produce an
+# identical public reading, because nothing in the observation asks how
+# the stock got there. The lab needs no special channel: it sets the
+# state, and the ordinary percept carries it.
 
-    V12 does not know a rival's stock; it infers it, by watching that
-    rival's blue-purity band drop between nights and reasoning about what
-    could have been built with the difference. That is a good mechanic
-    and it is useless here twice over. A frozen turn has no previous
-    night to difference against, so the estimator has no anchor; and a
-    rack is granted outright rather than bought, so there is no blue
-    spend to notice even if it did. The result was a board where you
-    armed a seat with an EMP and every agent on it still read
-    ``emp: none observed`` — planning a night that was not the night.
 
-    So the lab states the arsenal instead of making it guessable. The
-    estimator is seeded with exact ranges (``min == max == stock``)
-    before the harness runs, and ``update_estimates`` folds this turn's
-    observations onto that footing rather than onto nothing.
+def stockable(blob: Any) -> set[str]:
+    """The weapon kinds a given board's season actually prices (v1.36).
 
-    This is deliberately more than a real seat would know, and that is
-    the trade the lab exists to make: the question here is "given an
-    accurate picture, does this agent behave differently?", not "can it
-    infer a rack from two nights of pip arithmetic?". A fork tested
-    against a rival it cannot see is not being tested.
-
-    Seeded per invocation against the throwaway clone's id, so it cannot
-    reach a live season's estimates.
+    Reads the board rather than today's constants, for the reason
+    :func:`arm` does: a night frozen before SNAP existed has no SNAP in
+    its economy.
     """
-    from . import recall
+    from sea_of_colours.game.weapons import LEGACY_BLUE_COST_BY_KIND
 
-    mod = recall.fork_module(agent, "_v7.opponent_weapons")
-    if mod is None:
-        return 0
-
-    stock = stock_of(blob)
-    if not stock:
-        return 0
-
-    seats = [str(s) for s in (blob.get("players") or [])] or list(stock)
-    seeded = 0
-    for viewer in seats:
-        estimates = {}
-        for seat, held in stock.items():
-            if seat == viewer:
-                continue
-            estimates[seat] = mod.WeaponEstimate(
-                seat=seat,
-                emps_min=held["emp"], emps_max=held["emp"],
-                chaff_min=held["chaff"], chaff_max=held["chaff"],
-                inferences=[
-                    f"lab: {seat} is holding "
-                    + " + ".join(
-                        part for part in (
-                            f"{held['emp']} EMP" if held["emp"] else "",
-                            f"{held['chaff']} chaff" if held["chaff"] else "",
-                        ) if part
-                    )
-                    + " (stated by the board, not inferred)"
-                ],
-            )
-        if estimates:
-            mod.store_estimates(session_id, viewer, estimates)
-            seeded += len(estimates)
-    return seeded
+    prices = (blob or {}).get("weapon_blue_costs") or LEGACY_BLUE_COST_BY_KIND
+    return set(prices)
 
 
-def catalogue() -> list[dict[str, Any]]:
-    """The racks, for the launcher's pickers."""
-    return [
-        {
+def catalogue(blob: Any = None) -> list[dict[str, Any]]:
+    """The racks, for the launcher's pickers.
+
+    Pass a board's session blob and each rack comes back marked with
+    whether that board can hold it. Every shipped board predates SNAP,
+    so without this the picker offers two racks (``snap``, ``arsenal``)
+    that :func:`arm` then refuses — a menu whose items are traps. The
+    rack list stays whole rather than being filtered, because "this
+    board is too old for that weapon" is worth telling an attendee; a
+    silently shorter menu on some boards than others just reads as a
+    bug.
+    """
+    labels = {"emp": "EMP", "chaff": "chaff", "snap": "SNAP"}
+    priced = stockable(blob) if blob is not None else None
+    out = []
+    for r in RACKS:
+        needs = sorted(k for k, n in r.counts.items() if n)
+        missing = sorted(set(needs) - priced) if priced is not None else []
+        out.append({
             "id": r.id,
-            "emp": r.emp,
-            "chaff": r.chaff,
+            **r.counts,
             "blue": r.blue,
             "note": r.note,
             "label": (
-                "no weapons" if r.id == "empty"
+                "no weapons" if not any(r.counts.values())
                 else " + ".join(
-                    part for part in (
-                        f"{r.emp} EMP" if r.emp else "",
-                        f"{r.chaff} chaff" if r.chaff else "",
-                    ) if part
+                    f"{n} {labels.get(kind, kind)}"
+                    for kind, n in r.counts.items() if n
                 )
             ),
-        }
-        for r in RACKS
-    ]
+            "available": not missing,
+            "unavailable_because": (
+                ""
+                if not missing
+                else "this board was frozen before "
+                     + "/".join(labels.get(k, k) for k in missing)
+                     + " existed, so its season cannot stock one"
+            ),
+        })
+    return out
