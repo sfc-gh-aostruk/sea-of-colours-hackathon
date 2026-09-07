@@ -683,6 +683,26 @@ def cmd_doctor(args) -> int:
     if not ready and missing:
         print(f"                   needs {missing}")
 
+    # Checked here as well as in `soc push` because the whole value is in
+    # finding out at 09:30 rather than at 16:45. Nothing about a wrong
+    # remote shows up while you work — you only meet it when you publish.
+    origin = _git("remote", "get-url", "origin")
+    if not origin:
+        print("  publishing to    nowhere — this checkout has no 'origin'")
+        problems.append(
+            "no 'origin' remote, so there is nothing to push your agent to. "
+            "Fork the repo on GitHub and clone your fork."
+        )
+    else:
+        theirs = _pushing_at_someone_elses_repo("origin")
+        print(f"  publishing to    {origin}")
+        if theirs:
+            problems.append(
+                f"'origin' is {theirs}, which is not your fork — you cloned "
+                f"the upstream repo. Everything works until you push. Run "
+                f"`soc push` for the two commands that fix it."
+            )
+
     if problems:
         print("\n  PROBLEMS")
         for p in problems:
@@ -695,18 +715,71 @@ def cmd_doctor(args) -> int:
 # ── push ────────────────────────────────────────────────────────────
 
 
+def _pushing_at_someone_elses_repo(remote: str) -> str | None:
+    """``owner/name`` if this remote is not yours, else None.
+
+    The mistake this exists to catch: cloning the upstream repo instead
+    of forking it. Everything works — you play, you mint, you improve —
+    right up to the push, which fails on permissions with an hour left.
+    Best-effort by design: without `gh` we cannot know who you are, and a
+    check that cannot run must not be a check that blocks.
+    """
+    from sea_of_colours.orchestrator_2 import fork_collect
+
+    url = _git("remote", "get-url", remote)
+    if not url:
+        return None
+    try:
+        repo = fork_collect.upstream_of(url)
+    except fork_collect.CollectError:
+        return None
+    done = subprocess.run(
+        ["gh", "api", "user", "--jq", ".login"],
+        capture_output=True, text=True, check=False,
+    )
+    if done.returncode != 0:
+        return None
+    me = (done.stdout or "").strip().lower()
+    owner = repo.split("/", 1)[0].lower()
+    return None if not me or owner == me else repo
+
+
 def cmd_push(args) -> int:
-    """Publish your agent — your folder, and nothing else.
+    """Publish your agent to your own fork — your folder, and nothing else.
 
-    The guarantee this enforces is what makes a shared repo survive a
-    room of forty: if everyone's diff is confined to their own
-    directory, nobody's push can break anybody else's agent, and the
-    end-of-day collation is a merge that cannot conflict.
+    Two rules, and they are the same rule seen from either end. You push
+    to *your* fork, so nobody else's push can break your agent and yours
+    cannot break theirs. And your diff stays inside your own directory,
+    so `soc collect` can lift it out at the end of the day and drop it
+    beside thirty-nine others without a single conflict to resolve.
 
-    It is a check rather than an instruction because instructions do not
+    Pushing is not entering. Your fork is where your agent lives; the
+    league is assembled from the forks by an organiser. Saying so at the
+    end matters — "it is now in the league" was a lie the moment the day
+    moved to forks, and the kind that is only discovered at scoring.
+
+    They are checks rather than instructions because instructions do not
     survive a deadline.
     """
     from sea_of_colours.orchestrator_2 import agent_manifest
+
+    theirs = _pushing_at_someone_elses_repo(args.remote)
+    if theirs and not args.force:
+        _die(
+            f"'{args.remote}' points at {theirs}, which is not yours.\n"
+            f"\n  You cloned the upstream repo instead of forking it. That "
+            f"is the\n  one setup mistake that works perfectly until the "
+            f"moment you push.\n"
+            f"\n  Your work is fine and none of it is lost. Make your fork "
+            f"and point\n  this clone at it:\n"
+            f"\n    gh repo fork {theirs} --remote=false\n"
+            f"    git remote set-url {args.remote} "
+            f"https://github.com/<you>/{theirs.split('/', 1)[1]}.git\n"
+            f"    git remote add upstream https://github.com/{theirs}.git\n"
+            f"    python scripts/soc.py push\n"
+            f"\n  Then `git pull upstream main` is how you take kit updates, "
+            f"and\n  `soc push` always goes to your fork."
+        )
 
     found, problems = agent_manifest.discover()
     if problems:
@@ -723,9 +796,13 @@ def cmd_push(args) -> int:
         for f in stray[:20]:
             print(f"  {f}", file=sys.stderr)
         print(
-            "\n  Your agent must be self-contained so the whole room can "
-            "share one\n  repo. Move what you need into your own directory, "
-            "revert the rest\n  (git checkout -- <path>), and push again.\n"
+            "\n  Your agent has to be self-contained, because at the end of "
+            "the day\n  only this directory is lifted out of your fork and "
+            "into the league.\n  A change outside it will not travel — it "
+            "will simply be missing, and\n  your agent will behave "
+            "differently there than it does here.\n"
+            "\n  Move what you need into your own directory, revert the rest"
+            "\n  (git checkout -- <path>), and push again.\n"
             "\n  If a change outside really is necessary, it is a change to "
             "the kit\n  rather than to your agent — raise it, do not "
             "--force it in.",
@@ -750,27 +827,33 @@ def cmd_push(args) -> int:
 
 
 def _push_with_rebase(remote: str, branch: str, label: str, rel: str) -> int:
-    """Push, and if the room got there first, rebase and try again.
+    """Push, and if the branch moved under us, rebase and try again.
 
-    Forty teams pushing to one branch means most pushes are racing
-    somebody. Git rejects the loser as non-fast-forward, which is correct
-    and — without this — surfaced as a CalledProcessError traceback at
-    the exact moment an attendee least wants to read one.
+    On a fork you are not racing the room any more, but you can still be
+    rejected as non-fast-forward: a teammate sharing the fork pushed, or
+    you pulled upstream on the other laptop. Git is right to refuse, and
+    without this it surfaces as a CalledProcessError traceback at the
+    exact moment an attendee least wants to read one.
 
-    Rebasing is safe *because* of the one-directory rule: two teams never
-    write the same file, so their histories interleave with nothing to
-    resolve. That is the rule paying for itself, and it is why this
-    retries rather than asking. If a rebase does conflict, something
-    outside your folder changed and the answer is a human, not a flag.
+    Rebasing is safe *because* of the one-directory rule: the only
+    commits that can be in flight touch different directories, so the
+    histories interleave with nothing to resolve. That is the rule paying
+    for itself, and it is why this retries rather than asking. If a
+    rebase does conflict, something outside your folder moved and the
+    answer is a human, not a flag.
     """
     for attempt in (1, 2, 3):
         done = subprocess.run(["git", "push", remote, branch], cwd=_REPO)
         if done.returncode == 0:
-            print(f"\n  pushed {label}. It is now in the league.")
+            print(f"\n  pushed {label} to {remote}/{branch}.")
+            print(f"\n  That is your fork, which is where your agent lives. "
+                  f"An organiser\n  collects the forks to build the league, "
+                  f"so keep pushing as you go —\n  whatever is on your fork "
+                  f"at collection time is what plays.")
             return 0
         if attempt == 3:
             break
-        print(f"\n  someone else pushed first — rebasing onto {remote}/"
+        print(f"\n  the branch moved — rebasing onto {remote}/"
               f"{branch} and retrying ({attempt}/2)")
         pulled = subprocess.run(
             ["git", "pull", "--rebase", remote, branch], cwd=_REPO,
@@ -926,6 +1009,103 @@ def cmd_grab(args) -> int:
           f"    python run_web.py                # and it is in the New Game "
           f"menu")
     return 0
+
+
+# ── collect ─────────────────────────────────────────────────────────
+
+
+def cmd_collect(args) -> int:
+    """Organiser-side: assemble the field out of everyone's forks.
+
+    The one thing to understand before running it is that the field is
+    built somewhere else. Attendees push to their own forks all day and
+    keep pulling from upstream; dropping forty entrants onto the repo
+    they are all pulling from would hand the whole room a merge
+    conflict at the worst possible moment. So collection clones a
+    disposable staging area and assembles there, and this repo is never
+    written to.
+    """
+    from sea_of_colours.orchestrator_2 import fork_collect
+
+    into = Path(args.into).expanduser().resolve()
+
+    # The guard that makes the docstring true rather than aspirational.
+    # `--into .` is the obvious typo and it is the one that hurts.
+    if into == _REPO or _REPO in into.parents:
+        _die(
+            f"refusing to collect into {into}, which is inside the repo you "
+            f"are running from.\n"
+            f"  The field is assembled in a throwaway checkout so that "
+            f"nobody's fork has to merge it.\n"
+            f"  fix: --into ../soc-league (the default), or any path outside "
+            f"this repo"
+        )
+
+    try:
+        repo = fork_collect.resolve_repo(_REPO, args.repo)
+    except fork_collect.CollectError as exc:
+        _die(str(exc))
+
+    print(f"\n  collecting the forks of {repo}")
+
+    try:
+        forks = fork_collect.forks_of(repo)
+    except fork_collect.CollectError as exc:
+        _die(str(exc))
+
+    if not forks:
+        print("\n  no forks yet — nobody has published an agent.")
+        print("  Attendees publish with `soc push`, which goes to their")
+        print("  own fork; check they have forked rather than cloned.\n")
+        return 0
+
+    print(f"  {len(forks)} fork(s) to look at")
+
+    if args.dry_run:
+        # Dry runs answer "who is in the field", which needs no checkout
+        # at all — so they do not build a staging area either. Making a
+        # rehearsal create a 300MB clone would stop anyone rehearsing.
+        report = fork_collect.Report()
+        for fork in forks:
+            report.skipped.append(fork_collect.Skipped(
+                fork.full_name, "(whole fork)", "dry run — not fetched",
+            ))
+        for line in _collect_lines(report, forks):
+            print(line)
+        print("\n  drop --dry-run to actually assemble the field.\n")
+        return 0
+
+    try:
+        root = fork_collect.prepare_staging(into, repo)
+    except fork_collect.CollectError as exc:
+        _die(str(exc))
+
+    print(f"  staging area {root}")
+
+    report = fork_collect.collect(
+        root, forks, skip_owners=args.skip_owner or ()
+    )
+    roster = fork_collect.write_roster(root, report, repo)
+
+    print(f"\n  IN THE FIELD ({len(report.taken)})")
+    for t in sorted(report.taken, key=lambda x: x.label):
+        who = ", ".join(t.participants) or "unnamed"
+        print(f"    {t.label:<28} {t.fork}")
+        print(f"    {'':<28} {who}")
+
+    if report.skipped:
+        print(f"\n  NOT COLLECTED ({len(report.skipped)})")
+        for s in report.skipped:
+            print(f"    {s.fork} — {s.what}: {s.why}")
+
+    print(f"\n  roster written to {roster}")
+    print(f"\n  run the league there, not here:")
+    print(f"    cd {root} && python scripts/soc.py league\n")
+    return 0 if report.ok else 1
+
+
+def _collect_lines(report, forks) -> list[str]:
+    return [f"    {f.full_name}" for f in forks]
 
 
 # ── weapons ─────────────────────────────────────────────────────────
@@ -1102,7 +1282,18 @@ def build_parser() -> argparse.ArgumentParser:
     wp.add_argument("--agent", default=None)
     wp.set_defaults(fn=cmd_weapons)
 
-    pu = sub.add_parser("push", help="publish your agent (your folder only)")
+    pu = sub.add_parser(
+        "push",
+        help="publish your agent to your fork (your folder only)",
+        description=(
+            "Commit your agent's directory — and nothing else — and push it "
+            "to your own GitHub fork. Push as often as you like; whatever is "
+            "on your fork when an organiser runs `soc collect` is what plays "
+            "in the league. It refuses if 'origin' is not yours, which is "
+            "what cloning the upstream repo instead of forking it looks "
+            "like, and prints how to fix it without losing work."
+        ),
+    )
     pu.add_argument("--agent", default=None)
     pu.add_argument("-m", "--message", default=None)
     pu.add_argument("--remote", default="origin")
@@ -1146,6 +1337,29 @@ def build_parser() -> argparse.ArgumentParser:
     gr.add_argument("--as-name", default=None,
                     help="install under a different name, alongside yours")
     gr.set_defaults(fn=cmd_grab)
+
+    co = sub.add_parser(
+        "collect",
+        help="organisers: gather every fork's agent into a staging area",
+        description=(
+            "Find every fork of this repo, take the agent out of each one, "
+            "and assemble them all in a separate checkout ready for the "
+            "league. This repo is not written to: attendees are still "
+            "pulling from it, and the field is disposable. Each agent goes "
+            "on living in the fork it came from — the staging area is "
+            "where the league runs, not where anyone's work is kept."
+        ),
+    )
+    co.add_argument("--into", default="../soc-league",
+                    help="where to assemble the field (default ../soc-league)")
+    co.add_argument("--repo", default=None,
+                    help="owner/name to collect the forks of "
+                         "(default: whatever origin points at)")
+    co.add_argument("--dry-run", action="store_true",
+                    help="list the forks without fetching anything")
+    co.add_argument("--skip-owner", action="append", default=[],
+                    help="ignore this GitHub user (repeatable)")
+    co.set_defaults(fn=cmd_collect)
 
     lg = sub.add_parser("league", help="run every submitted agent and rank them")
     lg.add_argument("--board", default="all")

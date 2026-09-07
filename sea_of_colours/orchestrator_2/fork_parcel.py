@@ -1,13 +1,14 @@
 """Packing a fork into one file, and unpacking it again.
 
 v1.43. Two people on a team improving one agent had no way to hand it
-between them. ``soc push`` publishes to the shared repo, which is the
-end-of-day move and far too heavy for "try this, does it still crash on
-Vetus Lantern?" — it commits, it races forty other teams for the branch,
-and it makes a half-finished idea part of the public record. Git is the
-other obvious answer and it is worse: attendees are on their own clones,
-most are driving this through a coding assistant, and "add my laptop as
-a remote" is not a thing to be doing at hour four.
+between them. ``soc push`` publishes to your GitHub fork, which is the
+move that puts you in the league and far too heavy for "try this, does
+it still crash on Vetus Lantern?" — it commits, and it makes a
+half-finished idea part of what gets collected. Git is the other obvious
+answer and it is worse: each attendee is on their own fork, so a
+teammate's work is a remote you do not have, most are driving this
+through a coding assistant, and "add my laptop as a remote" is not a
+thing to be doing at hour four.
 
 A fork is already the right unit. It is one self-contained directory
 whose entire footprint is that directory (see :mod:`agent_manifest` for

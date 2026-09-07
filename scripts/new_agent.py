@@ -11,8 +11,9 @@ imports, and writes an ``agent.json`` declaring it. Restart the server and
 **Your agent is one directory.** Registration is discovery over
 ``agent.json`` (v1.39), so nothing outside your fork is touched when it
 is created and nothing outside it needs to change again. That is what
-lets forty teams push to one repo without conflicting, and what makes
-the end-of-day league a directory scan instead of forty merges.
+lets forty teams work at once without treading on each other, and what
+lets the end-of-day collection lift each agent out of its own fork and
+set it beside the others with nothing to merge.
 
 **Why fork instead of editing V12 in place.** V12 is the baseline you are
 trying to beat. Edit it directly and you lose the control: "better than
@@ -63,6 +64,31 @@ def _validate(part: str, field: str) -> str:
     return part
 
 
+# v1.44 — the copied README is V12's, and V12's opens by telling you not
+# to edit the directory you are reading. Unbannered, the minter's own
+# "now read your README" step points at a document instructing you to
+# undo the mint. The banner is prepended rather than surgical because
+# V12's README is edited often and any patch keyed to its wording would
+# rot silently; a preamble stays true whatever the body says.
+_FORK_README_BANNER = """\
+> ### This directory is yours — {label}
+>
+> Everything below this line was written about V12 and still describes
+> your code accurately, because you have not changed it yet. Two things
+> to read past:
+>
+> - **"Don't edit this directory"** applies to `harnesses/tabula_v12/`,
+>   the pristine baseline you are scored against. It does not apply here.
+>   Edit anything in this directory you like — that is the exercise.
+> - **The fork instructions** are how you got here. You do not need them
+>   again unless you want a second agent.
+>
+> Rewrite this README as the description below stops being true. What you
+> changed and why is what the league reads.
+
+"""
+
+
 def _copy_harness(dest: Path, label: str, *, dry_run: bool) -> int:
     """Copy V12 and repoint its self-imports at the new package."""
     files = [
@@ -92,6 +118,8 @@ def _copy_harness(dest: Path, label: str, *, dry_run: bool) -> int:
         # forks on one machine can be tuned independently.
         text = text.replace(_SOURCE_NAME, label)
         text = text.replace(_SOURCE_NAME.upper(), label.upper())
+        if rel.name == "README.md":
+            text = _FORK_README_BANNER.format(label=label.upper()) + text
         out.write_text(text, encoding="utf-8")
     return len(files)
 
@@ -142,10 +170,11 @@ def _write_manifest(dest: Path, team: str, name: str, menu_label: str,
     """Declare the fork inside its own directory.
 
     This is the whole of registration (v1.39). Nothing shared is edited,
-    which is what makes forty teams pushing to one repo work: two agents
-    can never touch the same file, so two agents can never conflict. It
-    is also what makes the end-of-day league collation a directory scan
-    rather than a merge.
+    which is what makes forty teams working at once possible: two agents
+    can never touch the same file, so two agents can never conflict.
+    It is also what makes collection cheap — an entrant is a directory
+    with a manifest in it, so gathering the field out of forty forks is
+    forty checkouts and no merges.
     """
     if dry_run:
         return
@@ -165,7 +194,7 @@ def _write_manifest(dest: Path, team: str, name: str, menu_label: str,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="new_agent",
-        description="Fork the V12 harness into your own registered agent.",
+        description="Copy the V12 harness into an agent of your own.",
     )
     ap.add_argument("--team", required=True, help="Your team name, e.g. redwatch")
     ap.add_argument("--name", required=True, help="Your agent name, e.g. reaper")
@@ -221,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Everything your agent is lives in that one directory. Nothing")
     print("outside it was touched, and nothing outside it needs to be —")
-    print("that is what lets the whole room push to one repo.")
+    print("that one directory is all that travels to the league.")
     print()
     print("next:")
     print("  1. restart the server (python run_web.py)")
@@ -243,14 +272,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"    python -m pytest {rel}")
     print()
     # Working in a pair is the normal shape, and the alternative people
-    # reach for otherwise is pushing half-finished work to the shared
-    # branch so their partner can pull it (v1.43).
+    # reach for otherwise is pushing half-finished work somewhere their
+    # partner can pull it from (v1.43).
     print("  hand it to a teammate (one file, nothing published):")
     print(f"    python scripts/soc.py share --agent {label}")
     print("    ...they run: python scripts/soc.py grab <that file>")
     print()
-    print("  publish it (your folder only):")
+    print("  publish it to your fork (your folder only):")
     print(f"    python scripts/soc.py push")
+    print()
+    print("  that pushes to YOUR fork, which is where your agent lives.")
+    print("  an organiser collects the forks to build the league, so push")
+    print("  as you go — what is on your fork at collection time plays.")
+    print("  not sure your remote is right?  python scripts/soc.py doctor")
     return 0
 
 

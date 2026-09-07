@@ -17,7 +17,7 @@ python run_web.py          # restart; REDWATCH_REAPER is now in NEW GAME
 
 That forks V12 — the shipped LLM agent — into
 `harnesses/redwatch_reaper/`, renames its identity so its turns are
-attributed to you, and registers it. Then open
+attributed to you, and writes the `agent.json` that registers it. Then open
 `harnesses/redwatch_reaper/README.md`: it explains the pipeline and
 points at the two deliberate gaps that are the exercise.
 
@@ -91,22 +91,34 @@ other three gate *when* blue is even offered (`prompt.py`, `harness.py`,
 
 ## Registering by hand
 
-The scaffold just automates two edits to `binding_registry.py`. If you
-wrote a harness from scratch, do them yourself:
+**Do not edit `binding_registry.py`.** Since v1.39 registration is
+discovery: any directory under `harnesses/` holding a valid `agent.json`
+is found at import and bound automatically. That is what lets a room of
+teams register agents simultaneously without a shared file to queue
+behind, and what lets an organiser collect forty forks without a merge.
 
-```python
-# 1. KNOWN_AGENT_BINDINGS — the binding itself
-"SOC_REDWATCH_REAPER": AgentBinding(
-    kind="harness_in_process",
-    locator="sea_of_colours.orchestrator_2.harnesses.redwatch_reaper.harness:run",
-    agent_label="REDWATCH_REAPER",
-    menu_label="REDWATCH_REAPER — redwatch's agent",
-    needs_llm=True,     # fail loudly at game creation if no PAT
-),
+`scripts/new_agent.py` writes the manifest for you. If you wrote a
+harness from scratch, write it yourself — it goes beside your
+`harness.py`:
 
-# 2. AGENT_LABEL_BINDINGS — makes it selectable
-"redwatch_reaper": KNOWN_AGENT_BINDINGS["SOC_REDWATCH_REAPER"],
+```json
+{
+  "team": "redwatch",
+  "name": "reaper",
+  "participants": ["Ada Lovelace", "Grace Hopper"],
+  "entry": "harness:run",
+  "menu_label": "REDWATCH_REAPER — redwatch's agent",
+  "needs_llm": true
+}
 ```
+
+The directory name must be `<team>_<name>`, because that is the import
+path — a manifest that disagrees with its own folder is rejected at load
+rather than surfacing later as a seat silently falling back to the
+heuristic. `participants` is required: the league is the day's public
+record, and an entry naming nobody cannot be credited or chased.
+`needs_llm` fails loudly at game creation if there is no PAT, which is
+better than a mid-game stall.
 
 That is the whole registration. The New Game dropdown is built from
 `selectable_agents()` and served at `/api/meta/agents`, so your agent
@@ -202,7 +214,9 @@ PYTHONPATH=. python -m sea_of_colours.orchestrator_2.evals.cli \
 orchestrator_2/
 ├── runtime.py            public run_agent_turn + heuristic safety net
 ├── dispatcher.py         switch over binding.kind; imports harnesses
-├── binding_registry.py   labels → AgentBinding. Register here.
+├── binding_registry.py   labels → AgentBinding. Shipped agents only —
+│                         forks register via agent.json, not here.
+├── agent_manifest.py     agent.json discovery. This is registration.
 ├── envelope.py           universal STATE brief (agent-agnostic)
 ├── cortex_chat.py        Cortex inference over REST with a PAT
 ├── cortex_invoker.py     shared SSE/PAT transport + per-agent caps

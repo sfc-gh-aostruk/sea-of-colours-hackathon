@@ -69,7 +69,8 @@ reasoning behind it.
 | Verdict after an edit | `soc suite` | deprecated (v1.42) — built, 45 turns in ~1s against the heuristic. Use the lab |
 | "Why did it do that" | `soc why <board> [agent]` | deprecated (v1.42) — the lab's divergence view answers it against a turn that was actually played |
 | Per-run cards | `soc suite --cards DIR` | built, deprecated with the suite |
-| Submission | `soc push` | built — enforces agent-only diffs |
+| Submission | `soc push` | built — enforces agent-only diffs, and (v1.44) pushes to the attendee's own fork, refusing if `origin` is upstream |
+| Collation | `soc collect` | built (v1.44) — gathers each fork's agent into a separate staging checkout; needed once the day moved to forks, since the league stopped being a scan of one tree |
 | League | `soc league` | built — entrants are discovered, fallback runs flagged. **No lab equivalent yet**, so this and `soc weapons` are why battles survives |
 
 **Time-to-verdict, measured:** ~1s for the whole suite against the
@@ -246,8 +247,10 @@ than a first read suggests:
 
 - **Minting works.** `scripts/new_agent.py --team redwatch --name reaper`
   copies the harness, rewrites `tabula_v12` → `redwatch_reaper` through
-  imports/identity/env-var namespaces, and inserts two entries into
-  `binding_registry.py`. It rolls back on failure. The fork appears in
+  imports/identity/env-var namespaces, and writes an `agent.json`
+  declaring it. (This inventory predates v1.39: it used to insert two
+  entries into `binding_registry.py`, and moving off that shared file is
+  the first of the three changes listed above.) It rolls back on failure. The fork appears in
   the New Game modal on the next server start with no frontend edit,
   because the modal reads `/api/meta/agents` off `selectable_agents()`.
 - **The card is excellent.** `SOC_CARD_DUMP_DIR=/tmp/cards` writes one
@@ -588,6 +591,21 @@ Items 5–8 make it pleasant. Item 9 makes it a competition.
    asked. `turnlab/boards.py` holds the editorial note for each, which
    is the one hand-written part of a board; everything else is read off
    the saved session.
+
+   **Four more in v1.40, for the same reason and by the same method.**
+   None of the six could hold a SNAP — they were frozen before the
+   weapon was priced, so the lab correctly refuses the rack on them, and
+   a doctrine nobody can test is a doctrine nobody should trust. Three
+   V12-vs-V12 seasons were played at the 1:2:3 ladder and four of their
+   twenty-one nights kept: *Sighted and Armed · day 6 · the blind
+   chase*, *Both Eyes on the Same Pure · day 3 · weapon poker*, *Two
+   Ghosts, One Seam · day 2 · nobody can see it now* and *The Late
+   Reversal · day 6 · sight against the scoreboard*. Each isolates a
+   different shape of the only question a one-square denial answers —
+   who can see the seam, and who knows what the other could fire: sight
+   and the weapon on one side, both on both sides, neither on either,
+   and the two split across the seats. The seventeen that were not kept
+   were deleted, because a library is a set of nights somebody chose.
 3. Do we score the leaderboard on one battery or best-of-N submissions?
    Best-of-N rewards resubmitting; one battery rewards being ready.
 4. `two_seams_choose_one` currently fails in CI (a known regression, see

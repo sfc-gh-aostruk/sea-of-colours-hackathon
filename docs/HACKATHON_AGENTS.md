@@ -6,6 +6,33 @@ gets you into the league.
 
 ---
 
+## 0. Fork first, then clone your fork
+
+<a id="fork-first"></a>
+
+Before anything else. On GitHub, press **Fork** on the repo. Clone the
+copy that lands in your own account — not the original:
+
+```bash
+git clone https://github.com/<you>/sea-of-colours-hackathon.git
+cd sea-of-colours-hackathon
+git remote add upstream https://github.com/sfc-gh-lgalan/sea-of-colours-hackathon.git
+```
+
+You work in your fork all day. `origin` is yours and is the only place
+you push; `upstream` is where kit fixes come from and you never push to
+it. Nobody has write access to the repo the event runs from, which is
+the point — one team's work cannot land in another's.
+
+**Cloning the original by mistake is the expensive error**, because
+nothing goes wrong until you publish: you can install, play, mint an
+agent and improve it for six hours against the wrong remote and only
+find out at the deadline. `soc doctor` tells you in one line, so run it
+early. If you have already done it, `soc push` prints the fix and your
+work comes across intact.
+
+---
+
 ## 1. Mint your agent
 
 ```bash
@@ -26,9 +53,14 @@ nicknames, whatever you answer to. You can edit the list in your
 
 **Your agent is one directory.** Nothing outside it was touched, and
 nothing outside it needs to change again — not a registry, not a config,
-not the UI. That is deliberate: it is what lets the whole room push to
-one repo without conflicting, and what makes the end-of-day league a
-directory scan rather than forty merges.
+not the UI. The `agent.json` written inside it *is* the registration:
+the kit finds agents by scanning for those files, so there is no shared
+list for you to add yourself to and no queue to join.
+
+That one-directory rule is what the rest of the day rests on. It is why
+forty teams can work at once without treading on each other, and it is
+why the organiser can lift your agent out of your fork at the end and
+drop it beside everyone else's without a single conflict to resolve.
 
 Restart the server and your agent is in the New Game dropdown.
 
@@ -372,68 +404,130 @@ Parcels are gitignored, so one sitting in your repo will not upset
 
 ## 7. Publishing your agent
 
-**Push early and push often.** The league at the end of the day is built
-from whatever is in the repo, so an agent that only exists on your
-laptop does not compete.
+**You work in your own fork.** You forked the repo before you cloned it
+([§0](#0-fork-first-then-clone-your-fork)), so `origin` is *your* copy
+on GitHub and you are the only person
+who can write to it. Nobody pushes to the repo the event runs from —
+not you, not the other teams, not the organisers during the day.
+
+**Push early and push often.** An agent that only exists on your laptop
+does not compete.
 
 ```bash
 python scripts/soc.py push
 ```
 
-That commits **your agent's directory and nothing else**, then pushes.
-Run it as many times as you like — every improvement, every hour, it
-does not matter. There is no submission deadline ritual and no form to
-fill in; the last thing you pushed is what plays.
+That commits **your agent's directory and nothing else**, then pushes to
+your fork. Run it as many times as you like — every improvement, every
+hour, it does not matter. There is no submission deadline ritual and no
+form to fill in; whatever is on your fork when the organiser collects is
+what plays.
 
-**Racing another team is normal and handled.** Forty people push to one
-branch, so most pushes lose a race with somebody. When that happens
-`soc push` rebases onto whatever landed first and pushes again, and says
-so while it does it. You do not need to `git pull` yourself, and you
-must never `--force`: your commit is never at risk, because the rebase
-cannot conflict — two teams never write the same file. That is the
-one-directory rule paying for itself rather than just being a rule.
+**Pushing is not entering.** Your fork is where your agent lives. The
+league is assembled separately, out of everyone's forks, by an organiser
+running `soc collect` (§8). This is worth holding onto because it
+explains the two things that surprise people: your push cannot break
+anyone else's agent, and your agent does not appear in anybody's repo
+but your own until collection.
+
+### Taking kit updates
+
+Fixes to the engine or the harness land upstream during the day. Pull
+them into your fork whenever you like:
+
+```bash
+git pull upstream main
+```
+
+That is the only thing `upstream` is for. If you do not have that remote,
+you skipped a line in §1:
+
+```bash
+git remote add upstream https://github.com/sfc-gh-lgalan/sea-of-colours-hackathon.git
+```
 
 ### Why it refuses sometimes
 
-If you have changed files outside your own folder, `push` stops and
-lists them:
+**"origin is not yours."** You cloned the original repo instead of
+forking it first. Everything works up to this point, which is why it is
+worth checking early — `soc doctor` reports it. Nothing is lost: `soc
+push` prints the two commands that repoint this clone at your own fork,
+and your work comes with it.
+
+**"changes outside <your folder>."** If you have changed files elsewhere,
+`push` stops and lists them:
 
 ```
 error: changes outside sea_of_colours/orchestrator_2/harnesses/redwatch_reaper/:
   server/static/app.js
 ```
 
-This is the one rule the day depends on. Forty teams share this repo; if
-everyone's changes stay inside their own directory then nobody's push
-can break anybody else's agent, and no two pushes can conflict. Move
-what you need into your folder, revert the rest with
-`git checkout -- <path>`, and push again.
+This is the one rule the day depends on, and the reason is collection.
+Only your own directory is lifted out of your fork and into the league,
+so a change outside it does not travel — it is silently absent there,
+and your agent behaves differently in the league than it does at your
+desk. That is a miserable thing to debug at 17:00. Move what you need
+into your folder, revert the rest with `git checkout -- <path>`, and
+push again.
 
 If you genuinely need a change outside your folder, that is a change to
 the *kit* rather than to your agent — flag it to an organiser rather
-than forcing it in.
+than forcing it in, so everyone gets it.
 
 ### Checking you are in
 
 ```bash
-python scripts/soc.py list      # your agent should be under AGENTS
-python scripts/soc.py doctor    # and report no problems
+python scripts/soc.py doctor    # remote, credentials, discovery — all of it
 ```
+
+`doctor` prints what `origin` points at. If that is not your fork, fix it
+now rather than at the deadline.
 
 ---
 
 ## 8. The league
 
-At the end of the day every discovered agent is run over the same boards
-at the same rungs:
+### How the field is assembled
+
+Your agent is in your fork; thirty-nine others are in theirs. An
+organiser gathers them:
 
 ```bash
+python scripts/soc.py collect          # --dry-run first to see who is out there
+```
+
+That finds every fork of the repo, takes the agent directory out of each
+one, and assembles them all in a **separate checkout** — `../soc-league`
+by default. The repo everybody is pulling from is never written to, and
+neither is anybody's fork. Each agent goes on living in the fork it came
+from; the staging area is only where the league is *run*.
+
+Collection is a snapshot, not an accumulation: it resets to upstream and
+re-fetches everyone each time, so re-running always gives a true picture
+of the forks as they stand. It writes an `ENTRANTS.md` naming every agent
+collected, the fork it came from and who is on the team.
+
+Two things it will not do. It will not take a fork's copy of
+`tabula_v12` — the baseline has to come from upstream or it means
+nothing, and every fork carries a copy. And it will not silently pick a
+winner when two forks claim the same agent name: the clash is reported
+and both are held back, because that is two teams' work and guessing is
+the one outcome nobody wants. Distinct `--team` names make this a
+non-event.
+
+### Then the league runs
+
+Over the same boards at the same rungs, in the staging area:
+
+```bash
+cd ../soc-league
 python scripts/soc.py league --runs 3 --up-to siege --cards reports/league
 ```
 
-The entrant list is simply every directory with an `agent.json`, which
-is exactly why registration stopped being a shared file: nobody can be
-left out because a merge went wrong.
+The entrant list there is simply every directory with an `agent.json` —
+which is exactly why registration is a file in your own folder and not a
+line in a shared one. Nobody can be left out because a merge went wrong,
+because there are no merges.
 
 A broken entrant cannot take the league down with it. A manifest that
 will not parse is skipped with a warning naming the file and the error;
@@ -459,8 +553,14 @@ is partly the safety net's.
 | `soc doctor` | check the kit before blaming your agent |
 | `soc share` | pack your fork into one file for a teammate |
 | `soc grab F` | install a fork a teammate shared with you |
-| `soc push` | publish your agent (your folder only) |
-| `soc league` | run every submitted agent and rank them |
+| `soc push` | publish your agent to your GitHub fork (your folder only) |
+| `soc league` | run every collected agent and rank them |
+
+Organisers only:
+
+| command | what it does |
+|---|---|
+| `soc collect` | gather every fork's agent into a staging area for the league |
 
 Testing a fork happens in the lab rather than at the command line —
 `python run_web.py`, then `/lab`, or the **Turn Lab** button on the
