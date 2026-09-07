@@ -710,6 +710,9 @@
    *  status refresh while ``phase === "orbit"``. */
   /** @type {any} */
   let lastOrbitView = null;
+  /** Damaged-harvester tally from the last orbit-panel render, so a queue
+   *  change can redo the affordability pass without one. */
+  let _lastDamagedCount = 0;
   /** v0.9.x — latest static blue-sign overlay (list of fuzzy radiative
    *  regions), refreshed on every live /view poll. Orbit-wide and
    *  fog-independent: identical for every seat, painted over the
@@ -3842,7 +3845,8 @@
    *  up to three missiles) and therefore one unit of stock. */
   function _ordersQueuedCounts() {
     const c = {
-      probe: 0, emp_launch: 0, mine_lay: 0, chaff_flare: 0, wait: 0,
+      probe: 0, emp_launch: 0, snap_launch: 0, mine_lay: 0,
+      chaff_flare: 0, wait: 0,
     };
     for (const m of soloQueue) {
       if (m && m.a && Object.prototype.hasOwnProperty.call(c, m.a)) {
@@ -4209,6 +4213,16 @@
           + (Number.isFinite(empR) ? ` radius-${empR}` : "")
           + " cloud. Disables harvesters and destroys probes "
           + "caught in it \u2014 including yours.",
+      },
+      {
+        key: "snap", action: "snap_launch", label: "SNAP", icon: "snap",
+        weapon: true,
+        stock: Math.max(0, Number(ws.snap || 0)), queued: qc.snap_launch,
+        title: "One missile, one square, one hour \u2014 and it lands "
+          + "FIRST. Kills a probe there before the hour's vision is "
+          + "read, so a landing that square was lighting is refused "
+          + "tonight; maims any harvester standing there or arriving "
+          + "that hour. Yours too.",
       },
       {
         key: "chaff", action: "chaff_flare", label: "CHAFF", icon: "chaff",
@@ -4582,7 +4596,8 @@
       action === "probe" ||
       action === "drop" ||
       action === "step" ||
-      action === "emp_launch"
+      action === "emp_launch" ||
+      action === "snap_launch"
     );
   }
 
@@ -4597,6 +4612,7 @@
     if (action === "pickup") return "pickup";
     if (action === "wait") return "wait";
     if (action === "emp_launch") return "EMP @";
+    if (action === "snap_launch") return "SNAP @";
     if (action === "chaff_flare") return "CHAFF";
     return String(action || "?");
   }
@@ -5486,6 +5502,16 @@
           + "destroys probes caught in it \u2014 including yours.",
         weapon: true,
       },
+      {
+        action: "snap_launch", label: "SNAP here",
+        stock: Math.max(0, Number(ws.snap || 0)), queued: qc.snap_launch,
+        glyph: "\u271A", tint: "#ffd166",
+        title: "One missile at THIS square, resolving before anything "
+          + "else in the hour. Kills a probe here early enough to refuse "
+          + "the landing it was lighting, and maims a harvester standing "
+          + "here or walking in this hour \u2014 including yours.",
+        weapon: true,
+      },
     ].filter((b) => !b.weapon || _weaponsOn());
     items.push({ head: "deploy" });
     for (const b of bays) {
@@ -5896,6 +5922,13 @@
             _drawOrderMarker(Number(t[0]), Number(t[1]), "emp", "\u25CF", hostRect); // ● cyan circle
           }
         });
+      } else if (m.a === "snap_launch") {
+        // v1.36 — a plain cross, and no footprint outline beside it:
+        // SNAP is radius 0, so the marker IS the blast and drawing a
+        // one-cell "area" would only repeat the hover ring. The first
+        // cut used a four-pointed star, which at cell size read as a
+        // sparkle sitting on the terrain rather than crosshairs on it.
+        _drawOrderMarker(Number(m.x), Number(m.y), "snap", "\u271A", hostRect);
       }
     }
   }
@@ -5930,6 +5963,8 @@
         return `EMP salvo · click up to ${max} target tiles · click chip to fire`;
       return `EMP salvo · ${n}/${max} targets · click more, re-click to remove, or chip to fire`;
     }
+    if (spec.action === "snap_launch")
+      return "SNAP · click the ONE square — it resolves before anything else that hour";
     if (spec.action === "mine_lay")
       return "mine_lay · click target tile (lays a hidden cluster)";
     return spec.action || "";
@@ -6072,6 +6107,15 @@
           return { a: "waste", reason: "emp_launch missing target" };
         return { a: "emp_launch", at: [Number(m.x), Number(m.y)] };
       }
+      // v1.36 — SNAP takes ONE cell and only one, which is the whole
+      // difference from the salvo above. Emitted as a bare [x,y] pair,
+      // never a list; the engine refuses a list by name rather than
+      // taking the first, so a spread here would be a silent misread.
+      if (m.a === "snap_launch") {
+        if (!Number.isFinite(m.x) || !Number.isFinite(m.y))
+          return { a: "waste", reason: "snap_launch missing target" };
+        return { a: "snap_launch", at: [Number(m.x), Number(m.y)] };
+      }
       if (m.a === "mine_lay") {
         if (!Number.isFinite(m.x) || !Number.isFinite(m.y))
           return { a: "waste", reason: "mine_lay missing target" };
@@ -6133,6 +6177,11 @@
           x: clean[0][0],
           y: clean[0][1],
         };
+      }
+      if (action === "snap_launch") {
+        const at = Array.isArray(entry.at) ? entry.at : [];
+        if (at.length !== 2) return { a: "wait" };
+        return { a: "snap_launch", x: Number(at[0]), y: Number(at[1]) };
       }
       if (action === "mine_lay") {
         const at = Array.isArray(entry.at) ? entry.at : [];
@@ -7597,8 +7646,97 @@
       build_probe: { cr: Number(sp.probe_build ?? 250), blue: 0 },
       repair: { cr: Number(sp.repair ?? 500), blue: 0 },
       build_emp: w("emp", 200, 250),
-      build_chaff: w("chaff", 255, 0),
+      build_chaff: w("chaff", 300, 0),
+      // v1.36 — SNAP. The fallbacks here only matter for a view that
+      // predates the weapon; a live server always publishes the pair.
+      build_snap: w("snap", 100, 250),
     };
+  }
+
+  /** v1.36 — the buy action that stocks each weapon kind.
+   *
+   *  One table, because "which actions are weapon buys", "what does this
+   *  kind cost" and "how much of the cap does the queue eat" were three
+   *  separate literals before SNAP, and the third one silently did not
+   *  know about it. Keyed by engine kind so it lines up with
+   *  ``weapon_prices`` / ``weapon_stock`` without a translation step. */
+  const WEAPON_BUY_ACTION = {
+    emp: "build_emp",
+    chaff: "build_chaff",
+    snap: "build_snap",
+  };
+
+  /** v1.34 — flatten ``station_intel`` into ``seat → {blue, cap}`` for
+   *  station.js. Both halves of the block carry ``arms`` and both are
+   *  exact, because the arsenal is public (RULEBOOK §4.9.8) — the self /
+   *  opponents split that governs every other field does not apply. */
+  function _publishLiveArms(stationIntel) {
+    if (!stationIntel || typeof stationIntel !== "object") return;
+    const out = {};
+    const take = (entry) => {
+      const seat = entry?.seat;
+      const arms = entry?.arms;
+      if (seat && arms && arms.blue != null) {
+        out[seat] = { blue: Number(arms.blue) || 0, cap: Number(arms.cap) || 0 };
+      }
+    };
+    take(stationIntel.self);
+    (stationIntel.opponents || []).forEach(take);
+    window.__SOC_ARMS__ = out;
+    // The viewing seat's own figure, kept separately for the buy panel.
+    // ``station_intel.self`` is always this seat, so this needs no seat
+    // lookup — and being the same number the engine will check the buy
+    // against, the panel cannot disagree with the refusal it will get.
+    const mine = stationIntel.self?.arms;
+    window.__SOC_ARMS_SELF__ = (mine && mine.blue != null)
+      ? Number(mine.blue) || 0
+      : null;
+    if (typeof window.osRefreshArms === "function") window.osRefreshArms();
+  }
+
+  /** v1.34 — the weapon buys, for the arsenal-cap arithmetic. */
+  function _isWeaponAction(action) {
+    return Object.values(WEAPON_BUY_ACTION).includes(action);
+  }
+
+  /** v1.34 — the arsenal ceiling (RULEBOOK §4.9.8), mirrored not
+   *  hard-coded: the engine publishes it on ``meta.rules`` so a retune
+   *  moves the UI without an edit here. */
+  function _weaponBlueCap() {
+    const n = Number(window.__SOC_WEAPON_BLUE_CAP__);
+    return Number.isFinite(n) && n > 0 ? n : 600;
+  }
+
+  /** Blue-worth of ordnance this seat already holds.
+   *
+   *  Prefers the figure the board itself publishes (§4.9.8), which is the
+   *  very number the engine will measure a buy against; the local pricing
+   *  of ``weapon_stock`` is the fallback for a view that predates it. */
+  function _weaponisedBlueHeld(orbitView) {
+    const published = window.__SOC_ARMS_SELF__;
+    if (published != null) return Number(published) || 0;
+    const stock = (orbitView && orbitView.weapon_stock) || {};
+    const p = _orbitPrices();
+    let blue = 0;
+    for (const [kind, action] of Object.entries(WEAPON_BUY_ACTION)) {
+      blue += (Number(stock[kind]) || 0) * (p[action]?.blue || 0);
+    }
+    return blue;
+  }
+
+  /** Blue-worth of weapons already sitting in the pending orbit queue.
+   *  Counted separately from the wallet projection because the cap and
+   *  the wallet run out at different times. */
+  function _queuedWeaponBlue() {
+    const p = _orbitPrices();
+    let blue = 0;
+    for (const a of orbitQueue) {
+      const action = a?.a || "";
+      if (!_isWeaponAction(action)) continue;
+      const each = p[action];
+      if (each) blue += each.blue * Math.max(1, Number(a?.count) || 1);
+    }
+    return blue;
   }
 
   /** v1.25 — price as the panel writes it: ``(200b/250c)``, ``(250c)``,
@@ -7633,6 +7771,8 @@
         return `build EMP \u00D7${n} ${batch}`;
       case "build_chaff":
         return `build CHAFF \u00D7${n} ${batch}`;
+      case "build_snap":
+        return `build SNAP \u00D7${n} ${batch}`;
       default:
         return JSON.stringify(a);
     }
@@ -7675,6 +7815,7 @@
       build_probe: "solo-orbit-probe-count",
       build_emp: "solo-orbit-emp-count",
       build_chaff: "solo-orbit-chaff-count",
+      build_snap: "solo-orbit-snap-count",
     }[action];
     if (!id) return 1;
     const el = /** @type {HTMLInputElement|null} */ (
@@ -7714,6 +7855,11 @@
     const cap = Number(orbitView?.harvester_cap_max ?? 3);
     const queuedHarv = orbitQueue.filter((a) => a?.a === "build_harvester")
       .length;
+    // v1.34 — the arsenal ceiling (RULEBOOK §4.9.8). Projected the same
+    // way the wallet is, so queuing two EMPs dims the third rather than
+    // letting the player declare an order the engine will refuse.
+    const armsCap = _weaponBlueCap();
+    const armsHeld = _weaponisedBlueHeld(orbitView) + _queuedWeaponBlue();
 
     /** @returns {string} empty when the action is fine */
     const reasonFor = (action) => {
@@ -7724,6 +7870,12 @@
       }
       if (action === "build_harvester" && used + queuedHarv >= cap) {
         return `fleet at ${cap}/${cap}`;
+      }
+      // The ceiling reads before the wallet: a seat at the cap with
+      // money in hand is not short of anything, and saying "short 200b"
+      // would send them mining for blue they cannot spend.
+      if (_isWeaponAction(action) && armsHeld + each.blue > armsCap) {
+        return `rack full ${armsHeld}/${armsCap}b`;
       }
       // One unit is the bar, not the whole batch: a batch that only
       // partly fits still buys something, and the queue row says how
@@ -7985,6 +8137,14 @@
         }
       } catch (_e) { /* non-fatal */ }
     }
+    // v1.34 — redo the affordability pass on every queue change. It used
+    // to run only when the panel re-rendered off a poll, so the dimming
+    // described the opening wallet rather than what the queue had left
+    // of it — and the arsenal ceiling, which a queue can reach on its
+    // own, would never have dimmed anything at all.
+    if (lastOrbitView) {
+      _updateOrbitAffordability(lastOrbitView, _lastDamagedCount);
+    }
   }
 
   function clearOrbitQueue() {
@@ -8029,7 +8189,8 @@
       // older parsers happy.
       case "build_emp":
       case "build_mine":
-      case "build_chaff": {
+      case "build_chaff":
+      case "build_snap": {
         const slot = kind.replace("build_", "");
         const input = document.getElementById(`solo-orbit-${slot}-count`);
         let n = 1;
@@ -8204,6 +8365,7 @@
     updateOrbitBudgetProjection();
     // v1.25 — must run AFTER the projection: what you can afford is a
     // question about the remainder, not the opening balance.
+    _lastDamagedCount = damagedCount;
     _updateOrbitAffordability(orbitView, damagedCount);
   }
 
@@ -10604,6 +10766,253 @@
     }
   }
 
+  /** v1.36 — SNAP choreography. One missile, one cell, one hour.
+   *
+   *  Deliberately its own function rather than a branch inside
+   *  ``playEmpFx``, and for the same reason ``snap_clouds`` is its own
+   *  frame key: SNAP is the newest weapon and the one most likely to be
+   *  withdrawn, so retiring it should be deleting this function and its
+   *  one call site. See ``docs/ADDING_A_WEAPON.md``.
+   *
+   *  What the camera should read, in order: a single fast dart (the
+   *  engine publishes ``missile_speed`` and it flies that much quicker
+   *  than a probe or an EMP, which is the only cue the watcher gets that
+   *  this thing lands FIRST), a hard one-cell flash, then the scorch
+   *  mark that dies at the next hour. No ring expansion — there are no
+   *  rings to expand at radius 0, and staging one would draw an area
+   *  the weapon does not have.
+   */
+  function playSnapFx(frame, prevFrame) {
+    if (!mapPlayer) return;
+    if (reduceMotionMq.matches) return;
+    const events = Array.isArray(frame?.snap) ? frame.snap : [];
+    if (!events.length) return;
+
+    const shots = [];
+    for (const ev of events) {
+      if (ev?.kind !== "snap_launch") continue;
+      if (typeof osOnEntityArrival === "function")
+        osOnEntityArrival({ kind: "snap_launch", owner: ev.owner }, null);
+      const at = Array.isArray(ev?.at) ? ev.at : null;
+      if (!at) continue;
+      const cellEl = mapPlayer.querySelector(
+        `[data-x="${at[0]}"][data-y="${at[1]}"]`,
+      );
+      if (cellEl) shots.push({ el: cellEl, owner: ev.owner, ev });
+    }
+    if (!shots.length) return;
+
+    _snapImpactActive = true;
+    _snapImpactLatestFrame = frame;
+    // The gate is released by the landing callback, which rides on
+    // requestAnimationFrame — and rAF stops in a backgrounded tab. A
+    // round that never lands would latch the gate shut and silently
+    // suppress every scorch mark for the rest of the session, so the
+    // flight gets a deadline as well as a callback.
+    window.clearTimeout(_snapImpactWatchdog);
+    _snapImpactWatchdog = window.setTimeout(() => {
+      if (!_snapImpactActive) return;
+      _snapImpactActive = false;
+      paintSnapCloudOverlay(_snapImpactLatestFrame || frame);
+    }, 2500);
+
+    let pending = shots.length;
+    const onLanded = () => {
+      pending -= 1;
+      if (pending > 0) return;
+      window.clearTimeout(_snapImpactWatchdog);
+      _snapImpactActive = false;
+      paintSnapCloudOverlay(_snapImpactLatestFrame || frame);
+      const refFrame = prevFrame || frame;
+      for (const ev of events) {
+        // A probe killed by a SNAP gets the same thin X an EMP kill
+        // gets, gated by the same live-vision rule — you do not learn
+        // about a kill in the dark just because it was fast.
+        for (const dp of (Array.isArray(ev?.destroyed_probes) ? ev.destroyed_probes : [])) {
+          const at = Array.isArray(dp?.at) ? dp.at : null;
+          if (!at) continue;
+          const seen = dp.owner === replayViewSeat
+            || _replayCellVisibleToViewer(refFrame, at)
+            || _viewerHasProbeEchoAt(refFrame, at);
+          if (!seen) continue;
+          const cellEl = mapPlayer.querySelector(
+            `[data-x="${at[0]}"][data-y="${at[1]}"]`,
+          );
+          if (cellEl) spawnXOverlay(cellEl, SNAP_FX_COLOR, 200, { thin: true });
+        }
+        for (const dh of (Array.isArray(ev?.damaged_harvesters) ? ev.damaged_harvesters : [])) {
+          const at = Array.isArray(dh?.at) ? dh.at : null;
+          if (!at) continue;
+          const seen = dh.owner === replayViewSeat
+            || _replayCellVisibleToViewer(refFrame, at);
+          if (!seen) continue;
+          const cellEl = mapPlayer.querySelector(
+            `[data-x="${at[0]}"][data-y="${at[1]}"]`,
+          );
+          if (cellEl) spawnXOverlay(cellEl, SNAP_FX_COLOR, 260);
+        }
+      }
+    };
+
+    for (const shot of shots) {
+      spawnProbeTrail(
+        shot.el, SNAP_FX_COLOR, SNAP_FX_COLOR,
+        () => { _playSnapImpact(shot.el); onLanded(); },
+        Math.round(540 / _snapMissileSpeed()), shot.owner,
+        { weight: 3, headSize: 7 },
+      );
+    }
+  }
+
+  /** The hit — one square burning down the density ramp (v1.40).
+   *
+   *  This replaced a canvas cross that threw glowing bars out past the
+   *  cell. It was legible, and it was wrong twice over: it was drawn
+   *  with ``shadowBlur``, and almost nothing else on this board glows,
+   *  so a SNAP was the one lit object on a flat map. And bars reaching
+   *  two cells out claimed ground the weapon never touches — SNAP takes
+   *  exactly one square, and the picture should not say otherwise.
+   *
+   *  So it strikes in the EMP's own alphabet instead: the same block
+   *  ramp, on the one cell, walked from ``██`` down to the scorch the
+   *  hour will sit on. Same family, different colour, different verb —
+   *  the EMP's field rolls sideways over thirteen cells, this one lands
+   *  hard on a single square and cools. Nothing here escapes the cell,
+   *  which is the honest shape of the weapon.
+   *
+   *  The tile is the same ``.snap-cloud-cell`` the scorch uses, so the
+   *  strike does not hand over to a different-looking mark: it IS the
+   *  mark, arriving hot. */
+  function _playSnapImpact(cellEl) {
+    if (!cellEl || !collisionFxLayer || reduceMotionMq.matches) return;
+    const hostRect = collisionFxLayer.getBoundingClientRect();
+    const r = cellEl.getBoundingClientRect();
+    const tile = document.createElement("div");
+    tile.className = "snap-cloud-cell snap-cloud-cell--strike";
+    tile.style.left = `${r.left - hostRect.left}px`;
+    tile.style.top = `${r.top - hostRect.top}px`;
+    tile.style.width = `${Math.ceil(r.width)}px`;
+    tile.style.height = `${Math.ceil(r.height)}px`;
+    collisionFxLayer.appendChild(tile);
+
+    // Down the ramp from the top: full block, then thinning. Held on
+    // ``██`` for the first step so the arrival reads as an impact
+    // rather than the start of a fade.
+    const STEP = 70;
+    const top = _ORDNANCE_CHARS.length - 1;
+    let i = top;
+    tile.textContent = _ORDNANCE_CHARS[i];
+    const timer = window.setInterval(() => {
+      i -= 1;
+      // Stop two rungs up from the sparsest glyph: what is left is the
+      // scorch, and ``paintSnapCloudOverlay`` takes it from here.
+      if (i <= 1) {
+        window.clearInterval(timer);
+        tile.remove();
+        return;
+      }
+      tile.textContent = _ORDNANCE_CHARS[i];
+    }, STEP);
+  }
+
+  /** Amber, so a SNAP never reads as a small EMP. Cyan is the EMP's and
+   *  the arsenal bar's; sharing it would make the two weapons look like
+   *  one weapon at two sizes, which is exactly wrong. */
+  const SNAP_FX_COLOR = "#ffd166";
+
+  /** True from the moment a SNAP leaves the rail to the moment it lands,
+   *  so the scorch mark cannot paint ahead of its own missile. Mirrors
+   *  ``_empExpansionActive``; the stashed frame is the newest one seen
+   *  while the round was in flight, so a scrub during the shot still
+   *  settles on the right state. */
+  let _snapImpactActive = false;
+  let _snapImpactLatestFrame = null;
+  let _snapImpactWatchdog = 0;
+
+  /** Flight-time multiplier, mirrored off ``weapon_specs.snap`` rather
+   *  than hard-coded — same rule as the EMP radius above. */
+  function _snapMissileSpeed() {
+    const s = Number(window.__SOC_SNAP_SPEED__);
+    return Number.isFinite(s) && s > 0 ? s : 1.5;
+  }
+
+  /** The one-hour scorch mark. Same alphabet and the same tile geometry
+   *  as the EMP cloud overlay but a separate layer class, so clearing
+   *  one never clears the other and a SNAP mark cannot be mistaken for
+   *  smothered ground.
+   *
+   *  v1.40 — it holds a glyph now rather than a tinted box with a glow
+   *  around it. A flat 30% wash was the one thing on the board that had
+   *  no texture, and a lone struck square is exactly where the eye needs
+   *  something to catch. It breathes between the two sparse rungs of the
+   *  ramp: enough to say "still burning", far short of the EMP's rolling
+   *  field, which is the difference between one square for one hour and
+   *  a neighbourhood for eight. */
+  function paintSnapCloudOverlay(frame) {
+    if (!collisionFxLayer || !mapPlayer) return;
+    // v1.36 — hold the mark back while a round is still in the air.
+    // The tick paints this overlay synchronously, but the missile takes
+    // a third of a second to arrive, so without the gate the scorch
+    // appeared on the square first and the round then flew into a cell
+    // that had visibly already been hit. Same defence ``_empExpansionActive``
+    // gives the EMP cloud, and the same reason: see the replay note in
+    // AGENTS.md about the board moving before the sprite lands.
+    if (_snapImpactActive) {
+      _snapImpactLatestFrame = frame;
+      return;
+    }
+    _stopSnapScorchTicker();
+    collisionFxLayer
+      .querySelectorAll(".snap-cloud-cell")
+      .forEach((n) => n.remove());
+    const clouds = Array.isArray(frame?.snap_clouds) ? frame.snap_clouds : [];
+    if (!clouds.length) return;
+    const hostRect = collisionFxLayer.getBoundingClientRect();
+    const tiles = [];
+    for (const cloud of clouds) {
+      const cx = Number(cloud.cx);
+      const cy = Number(cloud.cy);
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+      const cellEl = mapPlayer.querySelector(`[data-x="${cx}"][data-y="${cy}"]`);
+      if (!cellEl) continue;
+      const r = cellEl.getBoundingClientRect();
+      const el = document.createElement("div");
+      el.className = "snap-cloud-cell";
+      el.style.left = `${r.left - hostRect.left}px`;
+      el.style.top = `${r.top - hostRect.top}px`;
+      // Ceil, same as the EMP tiles: a fractional cell width leaves an
+      // anti-aliased seam, and on a one-cell mark that reads as a
+      // rendering fault rather than as a shape.
+      el.style.width = `${Math.ceil(r.width)}px`;
+      el.style.height = `${Math.ceil(r.height)}px`;
+      // Offset per cell so two marks in one hour do not pulse in step.
+      el.dataset.phase = String(((cx * 1237 + cy * 2749) % 4 + 4) % 4);
+      el.textContent = _ORDNANCE_CHARS[1];
+      collisionFxLayer.appendChild(el);
+      tiles.push(el);
+    }
+    if (!tiles.length || reduceMotionMq.matches) return;
+    // Between the two sparse rungs only. Walking the whole ramp would
+    // make a spent square look like it was being hit again every second.
+    _snapScorchTimer = window.setInterval(() => {
+      _snapScorchT += 1;
+      for (const el of tiles) {
+        const n = (_snapScorchT + Number(el.dataset.phase || 0)) % 4;
+        el.textContent = _ORDNANCE_CHARS[n === 0 || n === 3 ? 1 : 2];
+      }
+    }, 260);
+  }
+
+  let _snapScorchTimer = 0;
+  let _snapScorchT = 0;
+
+  function _stopSnapScorchTicker() {
+    if (_snapScorchTimer) {
+      window.clearInterval(_snapScorchTimer);
+      _snapScorchTimer = 0;
+    }
+  }
+
   /** v0.9.4 (rev2) — Mine-lay choreography:
    *
    *  1. **Minelayer flies in like the orblift.** A rhombus glyph
@@ -10761,11 +11170,21 @@
 
   function spawnProbeTrail(
     toLandingCell, trailColor, probeColor, onLand, durationMs = 540, owner = null,
+    opts = null,
   ) {
     if (reduceMotionMq.matches) {
       if (typeof onLand === "function") window.setTimeout(onLand, 0);
       return;
     }
+    // v1.36 — ``weight`` fattens the streak and ``headSize`` the round at
+    // its tip. Both default to what probes and EMPs have always drawn, so
+    // this is opt-in: only SNAP passes them. SNAP needs them because it
+    // flies 1.5x faster over the same distance, which leaves a one-pixel
+    // line on screen for about a third of the time an EMP's is — measured
+    // against the EMP it came out roughly two orders of magnitude fainter,
+    // which is why the first cut read as "no missile at all".
+    const trailWeight = Math.max(1, Math.round(Number(opts?.weight) || 1));
+    const headSize = Math.max(2, Math.round(Number(opts?.headSize) || 4));
 
     const cellRect = toLandingCell.getBoundingClientRect();
     const mapHost = toLandingCell.closest(".map-host");
@@ -10891,13 +11310,19 @@
         if (alpha <= 0) continue;
         anyAlive = true;
         const px = tp.x | 0, py = tp.y | 0;
-        if (px < clipL || px >= clipR || py < clipT || py >= clipB) continue;
-        if (px < 0 || px >= cW || py < 0 || py >= cH) continue;
-        const i = (py * cW + px) * 4;
-        d[i]     = Math.min(255, d[i]     + ((tr * alpha) | 0));
-        d[i + 1] = Math.min(255, d[i + 1] + ((tg * alpha) | 0));
-        d[i + 2] = Math.min(255, d[i + 2] + ((tb * alpha) | 0));
-        d[i + 3] = 255;
+        for (let oy = 0; oy < trailWeight; oy += 1) {
+          for (let ox = 0; ox < trailWeight; ox += 1) {
+            const qx = px + ox - (trailWeight >> 1);
+            const qy = py + oy - (trailWeight >> 1);
+            if (qx < clipL || qx >= clipR || qy < clipT || qy >= clipB) continue;
+            if (qx < 0 || qx >= cW || qy < 0 || qy >= cH) continue;
+            const i = (qy * cW + qx) * 4;
+            d[i]     = Math.min(255, d[i]     + ((tr * alpha) | 0));
+            d[i + 1] = Math.min(255, d[i + 1] + ((tg * alpha) | 0));
+            d[i + 2] = Math.min(255, d[i + 2] + ((tb * alpha) | 0));
+            d[i + 3] = 255;
+          }
+        }
       }
       ctx2.putImageData(img, 0, 0);
 
@@ -10927,7 +11352,8 @@
         ctx2.rect(clipL, clipT, clipR - clipL, clipB - clipT);
         ctx2.clip();
         ctx2.fillStyle = `rgb(${pr},${pg},${pb})`;
-        ctx2.fillRect(cx - 2, cy - 2, 4, 4);
+        const hs = headSize;
+        ctx2.fillRect(cx - hs / 2, cy - hs / 2, hs, hs);
         ctx2.restore();
       }
 
@@ -12340,7 +12766,15 @@
   // ASCII density ramp — sparse to dense. The wave function maps
   // a 0..1 value onto this array; the result flows across the grid
   // over time, producing rolling cloud bands.
-  const _EMP_CHARS = ["░░", "░▒", "▒▒", "▒▓", "▓▓", "██"];
+  //
+  // v1.40 — shared with SNAP, which is why it is no longer called
+  // ``_EMP_CHARS``. Two weapons drawn from one alphabet read as one
+  // game's ordnance; the colour is what tells them apart. They use it
+  // differently, and that difference is the whole point: the EMP walks
+  // the ramp ACROSS a 13-cell rhombus, so the field rolls, while SNAP
+  // walks it DOWN a single square over time, so one cell burns and
+  // cools. A rolling wave on one tile would say nothing.
+  const _ORDNANCE_CHARS = ["░░", "░▒", "▒▒", "▒▓", "▓▓", "██"];
 
   // Paint one cloud tile for time ``t``: stamp the density glyph.
   function _applyEmpTile(tile, t) {
@@ -12356,7 +12790,7 @@
     // sparse "░░" block shows more often and the full cyan "██" square is
     // comparatively rare; the cloud reads lighter / patchier overall.
     const biased = Math.pow(norm, 2.0);
-    return _EMP_CHARS[Math.min(_EMP_CHARS.length - 1, Math.floor(biased * _EMP_CHARS.length))];
+    return _ORDNANCE_CHARS[Math.min(_ORDNANCE_CHARS.length - 1, Math.floor(biased * _ORDNANCE_CHARS.length))];
   }
 
   let _empCloudT = 0;
@@ -12388,7 +12822,7 @@
     function dissipeTile(tile, idx) {
       if (!_empDissipating || !tile.isConnected) return;
       if (idx > 0) {
-        tile.textContent = _EMP_CHARS[idx - 1];
+        tile.textContent = _ORDNANCE_CHARS[idx - 1];
         const jitter = (Math.random() - 0.5) * 18; // ±9 ms per step
         setTimeout(() => dissipeTile(tile, idx - 1), STEP_MS + jitter);
       } else {
@@ -12400,8 +12834,8 @@
 
     for (const tile of cells) {
       const cur = tile.textContent;
-      const idx = _EMP_CHARS.indexOf(cur);
-      const startIdx = idx >= 0 ? idx : _EMP_CHARS.length - 1;
+      const idx = _ORDNANCE_CHARS.indexOf(cur);
+      const startIdx = idx >= 0 ? idx : _ORDNANCE_CHARS.length - 1;
       // 0–50 ms stagger derived from tile position — nearby tiles feel continuous
       const gx = Number(tile.dataset.gx) || 0;
       const gy = Number(tile.dataset.gy) || 0;
@@ -13068,6 +13502,74 @@
    */
   let _lastTutorialKey = "";
 
+  /* v1.35 — "is the board in the middle of showing the player something?"
+   *
+   * The tutorial modal is the only thing that covers the board, and it
+   * was landing on top of the very animations the films talk about: an
+   * orbit resolving, the arsenal filling, the whole night cinematic. A
+   * player in a normal game watches their weapon get built; a player in
+   * the tutorial got a popup where the animation should have been.
+   *
+   * Two of the three states already existed for exactly this reason —
+   * ``applyPhaseDaylight`` and the opening night card both refuse to
+   * touch the board while FX own it. The orbit beat is the third and
+   * had no flag, because until now nothing except the tutorial needed
+   * to know it was running. */
+  let _boardHeldUntilMs = 0;
+
+  /** Mark the board as owning the screen for ``ms`` from now. */
+  function _holdBoardFor(ms) {
+    const n = Number(ms) || 0;
+    if (n > 0) _boardHeldUntilMs = Math.max(_boardHeldUntilMs, Date.now() + n);
+  }
+
+  /** How long the modal will wait on a cinematic that has been PROMISED
+   *  but has not started. Long enough to cover the frame wait
+   *  (``_FRAME_WAIT_MS``) plus the kickoff; short enough that a night
+   *  whose frames never arrive costs the player a pause, not the film. */
+  const _TUTORIAL_DEFER_CAP_MS = 15000;
+  let _softDeferSince = 0;
+
+  function _boardMidAnimation() {
+    if (_resolvingActive || _liveFxPlaying || Date.now() < _boardHeldUntilMs) {
+      _softDeferSince = 0;
+      return true;
+    }
+    // A night that has RESOLVED but whose cinematic has not started yet.
+    // Needed because the view poll that flips the phase and the pull
+    // that starts the cinematic are separate, and without this the
+    // modal wins that race and opens into a board about to animate.
+    //
+    // The only branch that can time out, because it is a prediction
+    // rather than something observed to be running.
+    if (_nightAwaitingCinematic()) {
+      if (!_softDeferSince) _softDeferSince = Date.now();
+      // Note the clock is NOT cleared on the way out of this branch.
+      // Clearing it re-armed the wait on the very next call, so "give
+      // up after fifteen seconds" became "be busy forever, fifteen
+      // seconds at a time" and the modal never opened at all.
+      return (Date.now() - _softDeferSince) < _TUTORIAL_DEFER_CAP_MS;
+    }
+    _softDeferSince = 0;
+    return false;
+  }
+
+  /** Poll for the board going quiet. Nothing else runs on a cadence
+   *  fine enough: the status poll is seconds apart, and a film that
+   *  opens four seconds late reads as broken rather than polite. */
+  let _tutorialIdleTimer = null;
+  let _lastTutorialMeta = null;
+
+  function _watchForBoardIdle() {
+    if (_tutorialIdleTimer) return;
+    _tutorialIdleTimer = setInterval(() => {
+      if (_boardMidAnimation()) return;
+      clearInterval(_tutorialIdleTimer);
+      _tutorialIdleTimer = null;
+      _syncTutorialState(_lastTutorialMeta);
+    }, 200);
+  }
+
   function _syncTutorialState(meta) {
     const tut = String(window.__SOC_TUTORIAL__ || "");
     const body = document.body;
@@ -13082,12 +13584,19 @@
     // has shown PER GAME. Remembering it per reel meant a second
     // tutorial never opened a single film.
     const game = String(sessionId || "");
-    const key = `${tut}|${game}|${Number.isFinite(day) ? day : "?"}|${phase}`;
+    // v1.35 — ``busy`` rides in the key as well as the payload, so the
+    // board going quiet is itself an event. Without that the modal
+    // would be told to wait and then never told it could stop.
+    const busy = _boardMidAnimation();
+    if (meta) _lastTutorialMeta = meta;
+    const key = `${tut}|${game}|${Number.isFinite(day) ? day : "?"}|${phase}`
+      + `|${busy ? "busy" : "idle"}`;
     if (key === _lastTutorialKey) return;
     _lastTutorialKey = key;
     document.dispatchEvent(new CustomEvent("soc:tutorial-state", {
-      detail: { tutorial: tut, day, phase, game },
+      detail: { tutorial: tut, day, phase, game, busy },
     }));
+    if (busy) _watchForBoardIdle();
   }
 
   /**
@@ -15168,6 +15677,43 @@
    *  DESTROYED — which is precisely how a crushed/expired probe or a
    *  dawn-stranded harvester leaves the live HUD. Captions are no
    *  longer parsed; this fixes destroyed probes never leaving orbit. */
+  /** v1.35 — blue-worth of the ordnance ``seat`` has LAUNCHED so far in
+   *  the night the cursor is sitting in.
+   *
+   *  The station's arsenal bar is anchored on the post-orbital snapshot,
+   *  which is authoritative and survives every store; the only thing
+   *  that can move it before the next dawn is a launch. So the bar reads
+   *  ``post − fired`` and this is the ``fired`` half — counted off the
+   *  launch FRAMES rather than ``frame.weapons`` for the same reason
+   *  ``derivedUsed`` below is: the weapons snapshot does not survive the
+   *  Snowflake round-trip, and the launch frames always do.
+   *
+   *  Returns 0 when the prices have not been published yet, which parks
+   *  the bar on its post-orbital reading rather than guessing at a
+   *  price list and moving it to the wrong place.
+   */
+  function armsFiredAtTick(tickIdx, seat) {
+    const costs = window.__SOC_WEAPON_BLUE_COSTS__;
+    if (!costs || !replayTicks.length) return 0;
+    const i = Math.max(0, Math.min(tickIdx, replayTicks.length - 1));
+    const cap = replayTicks[i]?.lastFrameIdx ?? -1;
+    if (cap < 0) return 0;
+    let fired = 0;
+    let prevDay = null;
+    for (let f = 0; f <= cap; f += 1) {
+      const frame = nightReplayFrames[f];
+      if (!frame) continue;
+      const fday = frame.day != null ? Number(frame.day) : prevDay;
+      // Each night starts from whatever the orbit left in the rack.
+      if (fday !== prevDay) { fired = 0; prevDay = fday; }
+      if (frame.owner !== seat) continue;
+      if (frame.tag === "emp_launch") fired += Number(costs.emp) || 0;
+      else if (frame.tag === "chaff_flare") fired += Number(costs.chaff) || 0;
+      else if (frame.tag === "snap_launch") fired += Number(costs.snap) || 0;
+    }
+    return fired;
+  }
+
   function reconstructVaultAtTick(tickIdx, seat) {
     if (!replayTicks.length) return _emptyInventory();
     const i = Math.max(0, Math.min(tickIdx, replayTicks.length - 1));
@@ -15188,7 +15734,7 @@
     // seasons minted before it existed), but the launch frames
     // themselves (tag + owner) always persist. One launch frame drains
     // exactly one weapon, so the count equals ``weapons_used``.
-    const derivedUsed = { emp: 0, mine: 0, chaff: 0 };
+    const derivedUsed = { emp: 0, mine: 0, chaff: 0, snap: 0 };
     const everSeen = new Map();   // id -> { type, owner }
     const gone = new Map();       // id -> { day, by }
     let prevPresent = new Set();
@@ -15209,6 +15755,7 @@
         if (frame.tag === "emp_launch") derivedUsed.emp += 1;
         else if (frame.tag === "mine_lay") derivedUsed.mine += 1;
         else if (frame.tag === "chaff_flare") derivedUsed.chaff += 1;
+        else if (frame.tag === "snap_launch") derivedUsed.snap += 1;
       }
       if (!Array.isArray(frame.entities)) continue;
       const fday = frame.day != null ? Number(frame.day) : prevDay;
@@ -15351,7 +15898,8 @@
     const snapUsed = (wSnap && wSnap.used) || null;
     const snapHasUsed =
       snapUsed &&
-      ((snapUsed.emp || 0) + (snapUsed.mine || 0) + (snapUsed.chaff || 0)) > 0;
+      ((snapUsed.emp || 0) + (snapUsed.mine || 0) + (snapUsed.chaff || 0)
+        + (snapUsed.snap || 0)) > 0;
     const weaponsUsed = snapHasUsed ? snapUsed : derivedUsed;
 
     // Per-tick credits: the snapshot (file store) wins; on Snowflake the
@@ -15991,6 +16539,9 @@
         if (f && Array.isArray(f.emp) && f.emp.length) {
           playEmpFx(f, i > 0 ? nightReplayFrames[i - 1] : null);
         }
+        if (f && Array.isArray(f.snap) && f.snap.length) {
+          playSnapFx(f, i > 0 ? nightReplayFrames[i - 1] : null);
+        }
         if (f && Array.isArray(f.mine) && f.mine.length) {
           playMineFx(f);
         }
@@ -16008,6 +16559,10 @@
     // disk-of-cells overlay for any clouds still alive.
     const lastFrame = nightReplayFrames[tick.lastFrameIdx];
     paintEmpCloudOverlay(lastFrame);
+    // v1.36 — the SNAP scorch mark repaints on the same beat, so a
+    // scrub onto the hour a SNAP landed shows it and a scrub past it
+    // does not. One hour of life means this is usually a no-op.
+    paintSnapCloudOverlay(lastFrame);
     // v0.9.4 — mines are also persistent. Stamp the static
     // pixel-field marker on every cell currently in
     // ``mines_active``; the per-tick re-paint mirrors the EMP
@@ -16196,8 +16751,20 @@
       // cursor). DUSK uses ``idx-1`` to show the PRE-orbital vault (end of the
       // previous night) so the orbital depletion can animate down to post[N].
       window._socReconstructVaultAt = (tickIdx, seat) => reconstructVaultAtTick(tickIdx, seat);
+      // v1.35 — read-only, for the browser probes. "Is the board still
+      // showing the player something?" is the condition the tutorial
+      // modal defers on, and a probe cannot infer it from the DOM.
+      window._socBoardMidAnimation = () => _boardMidAnimation();
+      // v1.35 — lets the arsenal bar fall on the hour a weapon flies
+      // rather than at the next dawn.
+      window._osArmsFiredAtTick = (tickIdx, seat) => armsFiredAtTick(tickIdx, seat);
       window._osOpenReport           = (kind, day) => openReport(kind, day);
       window._osRenderStationObs     = (day, phase, lbl, seat) => renderStationObsPanel(day, phase, lbl, seat);
+      // Newest day we hold "end of Nox" readings for. The station hover
+      // cards need this in live play: their own day counter is parked on
+      // the replay's first tick until a night runs, so a page opened
+      // mid-season would otherwise caption day 1 as the latest news.
+      window._osLatestObsDay         = () => contextDayForReport("recap");
       window._osRenderOrbitalObs     = (day, seat) => renderOrbitalObservations(day, seat);
       window._osRenderCatGrid        = (slots) => _orbitFlashRenderCatGrid(slots);
       window._osRenderCatLegend      = (slots, seats) => _orbitFlashRenderLegend(slots, seats);
@@ -18045,10 +18612,33 @@
       const reading = obs[seat];
       if (!reading) continue;
       const exact = exactSeats.has(seat);
-      cards.appendChild(buildStationObsCard(seat, reading, exact));
+      cards.appendChild(
+        buildStationObsCard(seat, _withLiveArms(seat, reading), exact));
     }
     panel.appendChild(cards);
     return panel;
+  }
+
+  /** v1.35 — the arsenal is the one row on this card that is not a
+   *  historical reading, and it was being drawn as if it were.
+   *
+   *  The hover card asks for the ``pre`` snapshot — honestly "end of
+   *  Nox" for every other row, because a fuzzed vault and a blue grade
+   *  are last night's by nature. The arsenal is not: it is public and
+   *  current by rule (§4.9.8), and the station bar an inch to the left
+   *  already draws it live. A card reading `0/600b` beside a bar
+   *  showing two lit cyan pips is not two timeframes to a player, it
+   *  just reads as broken — which is exactly how it was reported.
+   *
+   *  Live only. A replay frame or an orbital report is a record of a
+   *  moment, and splicing today's rack into one would be a lie about
+   *  the past. */
+  function _withLiveArms(seat, reading) {
+    if (mainMapSource !== "live") return reading;
+    if (!_weaponsOn()) return reading;
+    const live = window.__SOC_ARMS__?.[seat];
+    if (!live || live.blue == null) return reading;
+    return { ...reading, arms: live };
   }
 
   function buildStationObsCard(seat, reading, exact) {
@@ -18122,20 +18712,27 @@
     return 4;
   }
 
-  /** Turn a station-obs reading dict into three meter rows: hold
-   *  (material in vault), fissile (blue purity), and green squares
-   *  (count). The toxic-green PURITY row is intentionally dropped —
-   *  every green square is canonically 255 purity, so its purity grade
-   *  carries no signal; only the square COUNT matters. ``exact`` appends
-   *  the raw numbers the engine only reveals to self. */
+  /** Turn a station-obs reading dict into meter rows: hold (material in
+   *  vault), fissile (blue purity), green squares (count), and — since
+   *  v1.34 — the arsenal. The toxic-green PURITY row is intentionally
+   *  dropped: every green square is canonically 255 purity, so its
+   *  purity grade carries no signal; only the square COUNT matters.
+   *  ``exact`` appends the raw numbers the engine only reveals to self.
+   *
+   *  The arsenal row does NOT consult ``exact``, and that is the whole
+   *  point of it (RULEBOOK §4.9.8). Every other row here is a silhouette
+   *  for a rival and a number for you; ordnance is a number for
+   *  everybody. It is omitted entirely when the reading carries no
+   *  ``arms`` block, which is how a weapons-off game arrives. */
   function formatStationObsRows(reading, exact) {
     const f = reading.fullness || {};
     const b = reading.blue || {};
     const g = reading.green || {};
+    const arms = reading.arms;
     const fGrade = f.grade ?? "\u2014";
     const bGrade = b.grade ?? "\u2014";
     const gEst = g.estimate ?? "\u2014";
-    return [
+    const rows = [
       {
         key: "hold",
         glyph: "\u25A6",            // ▦ — the vault hold
@@ -18169,6 +18766,26 @@
           : `~ ${gEst}`,
       },
     ];
+    if (arms && arms.blue != null) {
+      const cap = Number(arms.cap) || _weaponBlueCap();
+      const held = Math.max(0, Number(arms.blue) || 0);
+      const segments = 6;
+      rows.push({
+        key: "arsenal",
+        glyph: "\u25B2",            // ▲ — ordnance, not cargo
+        color: "#39d3d3",
+        segments,
+        // The bar is the silhouette and the value is the precision, the
+        // same division of labour as the rows above. Rounding up means a
+        // seat holding anything at all lights at least one segment —
+        // "some" and "none" is the read that matters at a glance.
+        level: held > 0
+          ? Math.max(1, Math.ceil((held / cap) * segments))
+          : 0,
+        val: `${held}/${cap}b`,
+      });
+    }
+    return rows;
   }
 
   /** Per-player orbit action log for ``day`` — money spent, builds,
@@ -19700,7 +20317,23 @@
       if (rulesBlock && typeof rulesBlock === "object") {
         window.__SOC_WEAPONS_ON__ = rulesBlock.weapons_enabled !== false;
         window.__SOC_SIGNS_ON__ = rulesBlock.signs_enabled !== false;
+        // v1.34 — mirrored, never hard-coded (RULEBOOK §4.9.8).
+        window.__SOC_WEAPON_BLUE_CAP__ = Number(
+          rulesBlock.weapon_blue_cap ?? 600,
+        );
+        // v1.35 — and the prices behind it, which the station bars need
+        // to price a rack between hours of a night.
+        if (rulesBlock.weapon_blue_costs
+            && typeof rulesBlock.weapon_blue_costs === "object") {
+          window.__SOC_WEAPON_BLUE_COSTS__ = rulesBlock.weapon_blue_costs;
+        }
       }
+      // v1.34 — the live arsenal, for the station bars. station.js reads
+      // its readings out of the per-day snapshots, which is right for a
+      // replay and wrong the moment the state was not produced by one:
+      // a turn-lab board is a frozen season whose snapshots predate the
+      // rack the lab stamped on it. This is the fallback that covers it.
+      _publishLiveArms(j?.agent_view?.station_intel);
       window.__SOC_TUTORIAL__ = String(j?.agent_view?.meta?.tutorial || "");
       _syncTutorialState(j?.agent_view?.meta);
       // v0.9.x — live EMP salvo size for the targeting picker.
@@ -19716,6 +20349,15 @@
       // the night will not deliver.
       if (empSpec && Number.isFinite(Number(empSpec.radius))) {
         window.__SOC_EMP_RADIUS__ = Number(empSpec.radius);
+      }
+      // v1.36 — SNAP publishes how much faster its missile flies, for
+      // the same reason: the speed IS the tell that it lands first, and
+      // a second copy of the number in JS would drift off a retune.
+      const snapSpec =
+        j?.agent_view?.orbit?.weapon_specs?.snap
+        ?? j?.orbit?.weapon_specs?.snap;
+      if (snapSpec && Number.isFinite(Number(snapSpec.missile_speed))) {
+        window.__SOC_SNAP_SPEED__ = Number(snapSpec.missile_speed);
       }
       // v0.9.x — stash the static blue-sign overlay (orbit-wide,
       // fog-independent radiative signatures) for the map painter.
@@ -19838,7 +20480,7 @@
       const _blob = window._socOrbitalData?.catapultByDay?.[String(_day)];
       if (!_blob || !orbitBlobHasActivity(_blob)) return;
       if (typeof window.osOnLiveDusk !== "function") return;
-      window.osOnLiveDusk(_day);
+      _holdBoardFor(window.osOnLiveDusk(_day));
       setClock(_day, "VESPERA");
     } catch (_e) { /* non-fatal cosmetic drive */ }
   }

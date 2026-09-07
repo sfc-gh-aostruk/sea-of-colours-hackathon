@@ -4127,6 +4127,86 @@ body.cc-mode {
   box-shadow: 0 0 3px rgba(255, 255, 255, 0.9);
 }
 
+/* SNAP (v1.36) — an amber four-pointed star, drawn as two crossed
+   bars rather than a glyph so it stays sharp at 14px.
+
+   Amber and NOT cyan, deliberately. Cyan is the EMP's colour and the
+   arsenal bar's; a cyan SNAP would read as a small EMP, and the whole
+   point of the weapon is that it is a different thing — one square,
+   one hour, and first in the hour. The star also reads as "fast" next
+   to the EMP's halo, which is the other thing a player has to know. */
+.cc-weapon-icon-snap::before,
+.cc-weapon-icon-snap::after {
+  content: "";
+  position: absolute;
+  background: #ffd166;
+  box-shadow: 0 0 4px rgba(255, 209, 102, 0.7);
+}
+.cc-weapon-icon-snap::before {
+  left: 50%;
+  top: 1px;
+  bottom: 1px;
+  width: 1.8px;
+  margin-left: -0.9px;
+}
+.cc-weapon-icon-snap::after {
+  top: 50%;
+  left: 1px;
+  right: 1px;
+  height: 1.8px;
+  margin-top: -0.9px;
+}
+
+/* The one-hour scorch mark a SNAP leaves. Separate class from
+   ``.emp-cloud-cell`` on purpose: an EMP cloud says "anything in here
+   is smothered", and this says only "something went off here". Painting
+   them the same would make the SNAP mark a lie about the ground. */
+/* SNAP — one struck square, drawn in the EMP cloud's block alphabet and
+   the SNAP amber (v1.40).
+
+   Flat, deliberately. This used to be a tinted box wearing a 1.5px
+   border and two box-shadows, inset and out. It was the only glowing
+   object on a board that is otherwise all flat fills and glyphs, so a
+   SNAP did not read as this game's ordnance — it read as a lit sprite
+   from a different one. Everything that made it glow is gone: no
+   box-shadow, no border, and no text-shadow either, which is the one
+   place this departs from `.emp-cloud-cell` rather than copying it.
+
+   Sized and positioned to the exact cell bounds by the caller, so the
+   mark is the square — a centred chip would understate how total the
+   denial is on the one cell it applies to. */
+.snap-cloud-cell {
+  position: absolute;
+  pointer-events: none;
+  z-index: 6;
+  background: rgba(255, 209, 102, 0.1);
+  font-family: var(--mono, "JetBrains Mono", "Fira Mono", monospace);
+  font-size: var(--map-font-size, 14px);
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: rgba(255, 209, 102, 0.95);
+  white-space: pre;
+}
+
+/* The arrival. Scaled up and dropped onto the cell so the round visibly
+   lands, over a fifth of a second — long enough to see, short enough
+   that it never competes with the missile that caused it. The scorch
+   left behind does not animate its geometry at all; only the glyph
+   changes, so a spent square sits still on the board. */
+.snap-cloud-cell--strike {
+  background: rgba(255, 209, 102, 0.22);
+  animation: snap-strike-in 200ms ease-out;
+}
+
+@keyframes snap-strike-in {
+  0%   { opacity: 0; transform: scale(1.55); }
+  55%  { opacity: 1; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
 /* CHAFF — a white density glyph that loops from light to full
    shade. Uses the unicode block range U+2591..U+2588 (light
    shade → full block) as the animation frames. The font keeps
