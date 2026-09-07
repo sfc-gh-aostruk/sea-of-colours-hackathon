@@ -93,8 +93,56 @@ def board_summary(agent_view: Mapping[str, Any]) -> str:
     return (
         f"red_tiles={len(red)} (live={live} echo={echo})  "
         f"redsigns={len(signs)}  enemy_probes={len(enemy_probes)}  "
-        f"probe_stock={probe_stock}"
+        f"probe_stock={probe_stock}  {arms_summary(agent_view)}"
     )
+
+
+def arms_summary(agent_view: Mapping[str, Any]) -> str:
+    """Who was armed with what, as the seat could see it.
+
+    v1.38 — the card said nothing about weapons at all, which made it
+    useless for the question the turn lab exists to ask. A lab run arms
+    a seat and casts a fork into the turn; if the take then plays as
+    though the board were quiet, the first thing you need to know is
+    whether the fork *saw* the rack or saw it and ignored it. Without
+    this line those two look identical on the card, and they need
+    completely different fixes.
+
+    Read off ``station_intel`` — the same public block the estimator
+    reads — rather than off the lab's ``arms`` argument. That is
+    deliberate: the lab's intent is what was *asked for*, and this
+    records what actually reached the percept. When they disagree, the
+    disagreement is the bug, and a card sourced from the intent would
+    hide it.
+
+    Renders own stock as counts (yours is not a secret from you) and
+    each rival as its public total.
+    """
+    intel = agent_view.get("station_intel") or {}
+    if not isinstance(intel, Mapping):
+        return "arms=n/a"
+
+    parts = []
+    own = (agent_view.get("orbit") or {}).get("weapon_stock") or {}
+    mine = ", ".join(
+        f"{k} x{int(v)}" for k, v in sorted(own.items()) if int(v or 0) > 0
+    )
+    parts.append(f"mine={mine or 'none'}")
+
+    seen_any = False
+    for opp in intel.get("opponents") or []:
+        if not isinstance(opp, Mapping):
+            continue
+        arms = opp.get("arms")
+        if not isinstance(arms, Mapping):
+            continue
+        seen_any = True
+        parts.append(f"{opp.get('seat','?')}={int(arms.get('blue') or 0)}b")
+    if not seen_any:
+        # No ``arms`` block anywhere is weapons-disabled, which is a
+        # different fact from "everyone is at zero" and worth saying.
+        parts.append("rivals=weapons-off")
+    return "arms[" + " ".join(parts) + "]"
 
 
 def _sub(extras: Mapping[str, Any], kind: str) -> Dict[str, Any]:

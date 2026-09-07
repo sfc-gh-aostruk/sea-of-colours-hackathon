@@ -908,6 +908,39 @@ def _pack_seam(pk: _Packer, payload: Mapping[str, Any]) -> None:
         key=lambda w: (int(w.get("wave") or 0), int(w.get("earliest_hour") or 0)),
     )
     for w in waves:
+        # v13 EMP-only wave: fire the salvo, spend the enabling probe (if any),
+        # commit NO harvester. Case A's H1 shield, case B/C's H3 halo lock —
+        # the harvester wave that follows is deferred to cloud-lift by its
+        # own ``defer_until_clear`` flag (below).
+        #
+        # Defensive: exceptions in the compound EMP branches MUST NOT crash
+        # the packager (a crash here routes the seat to _heuristic_fallback,
+        # which is the worst outcome on the board). Wrap the branch so a
+        # broken wave logs and the seam pattern falls back to its remaining
+        # (non-EMP) waves.
+        if w.get("emp_only") and w.get("emp_launch_at"):
+            try:
+                aim = [
+                    c for c in (_cell(t) for t in (w.get("emp_launch_at") or [])) if c
+                ]
+                if not aim:
+                    pk.log.append(
+                        f"seam wave {w.get('wave')} emp_only: no valid target cells"
+                    )
+                    continue
+                if w.get("probe_at") is not None:
+                    pk.spend_probe(w.get("probe_at"))
+                if not pk.spend_emp(aim):
+                    pk.log.append(
+                        f"seam wave {w.get('wave')} emp_only: rack empty — "
+                        "the compound pattern's shield never went up"
+                    )
+            except Exception as e:  # pragma: no cover — defensive
+                pk.log.append(
+                    f"seam wave {w.get('wave')} emp_only crashed ({e!r}) — "
+                    "skipped; the base pattern book still stands"
+                )
+            continue
         # Part B — a DENY-ONLY wave commits NO harvester: it only spends its
         # supersede + confirm probe (blind the finder, light a fogged rival seam
         # for a real strike tomorrow). Never a blind harvester drop onto green.
@@ -928,6 +961,54 @@ def _pack_seam(pk: _Packer, payload: Mapping[str, Any]) -> None:
             pk.spend_probe(w.get("supersede"))
         if w.get("probe_at") is not None:
             pk.spend_probe(w.get("probe_at"))
+        # v13 — a wave with ``defer_until_clear`` holds its drop+comb until the
+        # last EMP cloud from earlier waves lifts (case A wave 2, case B/C
+        # wave 3). Everything else in the queue runs during the wait, and the
+        # deferred walk is spliced in the moment the cloud clears — same
+        # mechanism the shaped-scorch play (BLIND_SCORCH) already uses.
+        #
+        # Defensive: any exception here is caught and the wave falls back to
+        # the ordinary emit_chain path (which is what the pattern would have
+        # done without deferral). Better to skip the shield timing than to
+        # bomb out the whole packager and route to fallback.
+        drop_at = _cell(w.get("drop_at"))
+        comb_path = list(w.get("comb_path") or [])
+        if w.get("defer_until_clear") and drop_at is not None:
+            try:
+                not_before = pk.clear_hour_max()
+                if not_before <= len(pk.moves):
+                    # Cloud already lifted (or nothing scorched yet) — the
+                    # deferred gate is redundant; fall through to the normal
+                    # emit path below.
+                    pass
+                else:
+                    # Land the drop-legality probe now if the drop cell is
+                    # not already covered — otherwise the deferred landing
+                    # arrives to a dark cell and the sanitizer deletes it.
+                    if (drop_at not in pk._probed_cells
+                            and w.get("probe_at") is None):
+                        pk.spend_probe(drop_at)
+                    pk.moves.append(
+                        {"a": "drop", "unit": unit, "at": [drop_at[0], drop_at[1]]},
+                    )
+                    pk._drop_cells.add(drop_at)
+                    pk.defer(
+                        unit=unit, start=drop_at, comb=comb_path,
+                        not_before=not_before,
+                    )
+                    pk.log.append(
+                        f"seam wave {w.get('wave')} held until hour "
+                        f"{not_before} (cloud-lift): the drop lands after "
+                        "the salvo clears, then combs the halo the cloud "
+                        "has been protecting."
+                    )
+                    continue
+            except Exception as e:  # pragma: no cover — defensive
+                pk.rollback(mark)
+                pk.log.append(
+                    f"seam wave {w.get('wave')} defer branch crashed "
+                    f"({e!r}) — falling back to immediate emit_chain"
+                )
         ok = pk.emit_chain(
             unit, w.get("drop_at"), w.get("comb_path") or [],
             contested=bool(w.get("contested")),

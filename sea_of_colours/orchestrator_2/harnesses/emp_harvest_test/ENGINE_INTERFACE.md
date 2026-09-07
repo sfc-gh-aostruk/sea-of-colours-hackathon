@@ -58,9 +58,9 @@ top-level keys v12 consumes:
 | `entities` | harvesters, probes, stations — mine and any rival's that are visible |
 | `probe_stock` | probes in inventory, the hard cap on how many the plan may spend |
 | `competitor_intel` | rival probe sightings, harvester trails, `new_this_day` events |
-| `station_intel`, `opponents` | seat identities and station positions |
+| `station_intel`, `opponents` | seat identities and station positions, each with `arms.blue` / `arms.cap` (the **public** arsenal, exact) and an `activity` tally of that seat's observable orbital actions — `probes`, `dropped`, `recovered`, `emps`, `chaff`, `snaps` (v1.39; SNAP shipped without a counter here and read as flat) |
 | `last_night` | the engine's own recap of the resolved night |
-| `combat_events` | EMP / chaff resolutions (an archived season may also carry mine events — see §3.1) |
+| `combat_events` | SNAP / EMP / chaff resolutions (an archived season may also carry mine events — see §3.1) |
 | `orbit` | ORBIT-phase economy state (credits, build options) |
 
 **Fog is respected as given.** If a cell is not in `world.live`, the harness
@@ -68,6 +68,17 @@ treats it as unseen even when it can infer what is probably there. The one
 nuance worth knowing is that a *sign* is deliberately smeared by the engine —
 you learn an area, never a square — and `out_of_grid.py` exists specifically to
 present that as an area and not let the model read it as a coordinate.
+
+**`recent_log` is there, and this harness does not read it.** The view also
+carries the tail of the engine's night log as free text. Until v1.38 it was the
+*shared* feed — every seat's rows, rival landing coordinates included — and a
+fork that piped it into a prompt would have been reading its opponent's orders.
+It is now cut to rows naming no other seat (§3.15, issue 45), so it is safe to
+read; it is simply redundant, because `last_night` and `combat_events` carry
+the same events already parsed. Prefer those. If you do use it, do not rebuild
+rival inference on top of it — what a rival lawfully leaks reaches you through
+`competitor_intel` and `station_intel`, and those are the fields that will keep
+working when the log's wording changes.
 
 ### 2.2 Engine truth about last night
 
@@ -91,7 +102,7 @@ Per the repo's fan-out rule, tuning values are imported rather than duplicated:
 |---|---|
 | `game.tuning.probe_vision_radius` | `packager.py`, `out_of_grid.py` |
 | `game.tuning.probe_lifetime_nights` | `option_economics.py`, `supersede.py` |
-| `game.weapons` (EMP/chaff dials) | `prompt.py`, `seam_control.py` |
+| `game.weapons` (SNAP/EMP/chaff dials) | `prompt.py`, `seam_control.py` |
 
 If a dial moves in the engine, these follow automatically. **Adding a hardcoded
 copy of an engine constant to this package is the failure mode this table
@@ -125,12 +136,41 @@ so the packager's sequencing is part of the plan's meaning — this is why
 `_order_for_probe_support` reorders runs so a probe that grants drop legality
 lands before the drop that needs it.
 
-The wider night grammar also holds `wait`, `emp_launch` and `chaff_flare`; a
-fork that reaches for weapons emits those. It must **not** emit `mine_lay`.
+The wider night grammar also holds `wait`, `emp_launch`, `chaff_flare` and
+`snap_launch` (v1.36); a fork that reaches for weapons emits those. It must
+**not** emit `mine_lay`.
+
+`snap_launch` takes a bare `{"a": "snap", "at": [x, y]}` — one cell, and a
+payload offering a *list* of cells is refused by name rather than quietly
+taking the first. It is worth knowing what you are buying: SNAP resolves
+**above** the hour's vision snapshot and the EMP resolves below it, so a
+SNAP that kills a beacon denies the drop that beacon was lighting *the same
+night*, and an EMP on the same beacon in the same hour does not. That is the
+one asymmetry in the weapon set that a plan can actually be built around
+(RULEBOOK §4.9.4). The stock version is `weapon_stock.snap`; the published
+spec is `weapon_specs.snap`, carrying `resolves_before_vision` and
+`missile_speed` precisely because a seat cannot plan against them otherwise.
+
+A SNAP also **guards** the square it lands on for the rest of that hour,
+and the two ways of arriving there resolve differently — worth knowing
+before a fork plans a landing into contested ground. A harvester that
+*steps* onto a SNAPped cell completes the step and is crippled on it. A
+harvester that tries to *land* on one is refused: the drop does not
+happen, the hull is damaged in orbit, and its one outing for the night
+is unspent. Either way the square banks nothing that turn.
+
+You read both off `combat_events`. The strike is public —
+`{"type": "snap", "owner", "at", "hours"}` — and is recorded even when it
+hits nothing, so "they spent a round on an empty square" is visible.
+Whether it hit *you* arrives as `{"type": "snap_hit", "unit", "victim",
+"by", "hours", "outcome"}`, private to the victim, with `outcome` either
+`"crippled"` or `"landing_aborted"`. Do not infer one from the other:
+both leave a damaged hull, but only the first leaves it on the board.
 
 **Retired verbs are refused, not ignored (v1.31).** `mine_lay` — and its orbit
 half `build_mine` — are rejected by `game/policy.py` with a named reason ("the
-caltrop mine was retired in v1.31 — EMP and chaff are the remaining weapons"),
+caltrop mine was retired in v1.31 — ... are the remaining weapons", with the
+roster derived from the live price table rather than typed out),
 and the row still burns one of the 21 slots. A fork that carries a stale tag
 therefore loses a slot per occurrence and sees the reason on the card, which is
 the whole point of refusing by name rather than dropping silently. Note the v7
@@ -158,7 +198,7 @@ game.
 | `SOC_AGENT_MEMORY` | `memory.py` (v7), `journal.py` | per session+seat+day: agent-authored `intent`/`reflection`, plus engine truth folded in (`happened`, `actual_banked`, `probe_crushes`, chosen option IDs) |
 | hazard memory | `hazard_memory.py` | the fog-surviving union of stripped/GREEN cells — monotonic, so it is a safe permanent "never drop or step here" set |
 | frontier memory | `frontier.py` | which frontier cells have already been mined for exploration probes |
-| weapon estimates | `opponent_weapons.py` (v7) | inferred rival EMP/chaff stocks, in-process per session |
+| weapon estimates | `opponent_weapons.py` (v7) | rival racks decoded from the **public** weaponised-blue total (§4.9.8). At the 100/200/300 prices most totals are ambiguous, so the answer is a *set* of racks — `est.racks` — and the seat holds **exactly one** of them. The `emps_max` / `chaff_max` / `snap_max` fields are independent marginals over that set: sound for "could this seat have any X" (`est.could_hold(kind)`), and **wrong if read together** — at 600 they read as 3 EMPs *and* 2 chaff, which is 1200 blue under a 600 cap (v1.39). Render `racks`, gate on `could_hold` |
 | turn snapshots | `harness.py` / v7 recorder | turn-start score and probe counts, the anchor next turn's reflection is measured against |
 
 **Why hazard memory is harness-side and not a view field:** the engine tells you

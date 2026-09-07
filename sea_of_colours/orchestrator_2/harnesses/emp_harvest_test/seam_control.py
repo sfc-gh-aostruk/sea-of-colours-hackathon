@@ -83,6 +83,9 @@ from sea_of_colours.orchestrator_2.harnesses.emp_harvest_test._v7.probe_hints im
 from sea_of_colours.orchestrator_2.harnesses.emp_harvest_test._v7.validators import (
     _live_vision_cells,
 )
+# v13 — the EMP compound patterns share their geometry with the standalone
+# scorch options (shaped salvo, probe/blast diamonds, rack introspection).
+from sea_of_colours.orchestrator_2.harnesses.emp_harvest_test import scorch
 
 try:  # keep geometry honest against the real engine dials when available
     from sea_of_colours.game.weapons import (
@@ -343,6 +346,21 @@ class SeamWave:
     # step onto FOG cells — it only refuses KNOWN stripped/green (hazard memory).
     # This is the accepted-risk attack on a fresh, mass-rich rival redsign.
     blind_walk: bool = False
+    # v13 EMP-doctrine — a wave may FIRE an EMP salvo instead of / in addition
+    # to spending a probe. Three shapes:
+    #   * emp_launch_at set, emp_only=True  -> pure salvo wave (no harvester).
+    #   * emp_launch_at set, emp_only=False -> salvo THEN drop the same wave
+    #     (case C: drop lands on emp_hole after salvo lands the missiles).
+    #   * emp_hole set                      -> the salvo is aimed to leave this
+    #     cell OUTSIDE any blast (case C's "hole is the pure").
+    # The packager compiles these in _pack_seam via _Packer.spend_emp().
+    emp_launch_at: Optional[List[Tuple[int, int]]] = None
+    emp_hole: Optional[Tuple[int, int]] = None
+    emp_only: bool = False
+    # A defer key — when set, the wave's drop+comb is held until the salvo's
+    # cloud clears. Used by case A / case B / case C to spool the follow-up
+    # harvester behind the previous wave's EMP without hand-sequencing hours.
+    defer_until_clear: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -365,6 +383,16 @@ class SeamWave:
             "direction": self.direction,
             "unit_ordinal": self.unit_ordinal,
             "note": self.note,
+            "emp_launch_at": (
+                [[int(c[0]), int(c[1])] for c in self.emp_launch_at]
+                if self.emp_launch_at is not None else None
+            ),
+            "emp_hole": (
+                [int(self.emp_hole[0]), int(self.emp_hole[1])]
+                if self.emp_hole is not None else None
+            ),
+            "emp_only": bool(self.emp_only),
+            "defer_until_clear": bool(self.defer_until_clear),
         }
 
 
@@ -1656,6 +1684,299 @@ def _walkin_rival_patterns(
     return patterns
 
 
+# ── EMP compound patterns (v13 — the doctrine matrix) ─────────────────
+#
+# Three redsign states, three named plays. Each fires a salvo AND spools a
+# harvester wave behind the cloud, so the option carries a real yield number
+# rather than the +0 the plain BLIND/EMP/SCORCH salvos render. The LLM picks
+# one compound id and the packager emits every hour in the right order.
+
+
+def _fmt_cell_short(c: Tuple[int, int]) -> str:
+    return f"({c[0]},{c[1]})"
+
+
+def _count_opponents(agent_view: Mapping[str, Any]) -> int:
+    """Best-effort opponent count from the entities/probes view."""
+    seen: Set[str] = set()
+    for e in (agent_view.get("entities", {}) or {}).values():
+        if isinstance(e, list):
+            for row in e:
+                if isinstance(row, Mapping):
+                    owner = str(row.get("owner") or "")
+                    if owner and owner != "mine":
+                        seen.add(owner)
+    for r in (agent_view.get("redsign") or []):
+        if isinstance(r, Mapping):
+            owner = str(r.get("owner") or "")
+            if owner and owner != "mine":
+                seen.add(owner)
+    return max(1, len(seen))
+
+
+def _classify_redsign_case(
+    agent_view: Mapping[str, Any],
+    hint: Mapping[str, Any],
+    beacon: Tuple[int, int],
+    region: Mapping[str, Any],
+) -> str:
+    """Return one of 'mine_alone', 'mine_contested', 'shared_vision',
+    'rival_blind', 'rival_sighted', or 'unclassified'.
+
+    Only the first three drive EMP compound patterns; the last two fall
+    through to the ordinary CASE-1/CASE-2 book (mine/rival_patterns).
+    """
+    mine = hint.get("mine") if hint.get("mine") is not None else region.get("mine")
+    core = _known_core(agent_view, beacon)
+    my_probes = set(_live_vision_cells(agent_view))
+    # ``_enemy_probe_cells`` returns a list of DICTS ({"at": (x,y), ...}),
+    # not tuples — passing that straight into set() raises TypeError on the
+    # unhashable dict. Normalise to (x, y) tuples for membership testing.
+    enemy_probes: Set[Tuple[int, int]] = set()
+    for row in (_enemy_probe_cells(agent_view) or []):
+        at = row.get("at") if isinstance(row, Mapping) else row
+        if isinstance(at, (list, tuple)) and len(at) >= 2:
+            try:
+                enemy_probes.add((int(at[0]), int(at[1])))
+            except (TypeError, ValueError):
+                continue
+    opps = _count_opponents(agent_view)
+
+    if mine is True:
+        return "mine_alone" if opps <= 1 else "mine_contested"
+    if core is not None and core[0] in my_probes and core[0] in enemy_probes:
+        return "shared_vision"
+    if core is None:
+        return "rival_blind"
+    return "rival_sighted"
+
+
+def _pattern_smash_then_lock(
+    agent_view: Mapping[str, Any],
+    beacon: Tuple[int, int],
+    hint: Mapping[str, Any],
+    threat: Mapping[str, Any],
+) -> Optional[SeamPattern]:
+    """CASE B — MY redsign, alone or dominant.
+
+    H1 SMASH the pure (auto-harvest + pickup), then H3 EMP shaped so the
+    pure stays clear but the halo darkens for 8h. Wave 3 (if a 2nd unit is
+    alive) works the visible mass ring at cloud-lift.
+    """
+    rack = scorch.stock(agent_view)
+    if rack.get("emp", 0) <= 0:
+        return None
+    core = _known_core(agent_view, beacon)
+    if core is None:
+        return None
+    pure_cell = core[0]
+    if not _drop_legal_now(agent_view, pure_cell):
+        return None
+
+    radius, missiles, cloud_hours = scorch.specs(agent_view)
+    width, height = _grid_dims(agent_view)
+    halo_pool = [
+        c for c in scorch.diamond(pure_cell, _PROBE_RADIUS, (width, height))
+        if c != pure_cell
+    ]
+    shape = scorch.shaped_salvo(
+        halo_pool, radius=radius, missiles=missiles, hole=pure_cell,
+    )
+    if shape is None:
+        return None
+    targets = [tuple(t) for t in shape["targets"]]
+
+    visible = _visible_red(agent_view)
+    ring_cells = sorted(
+        (c for c in halo_pool if visible.get(c, 0) >= 100),
+        key=lambda c: (
+            -_TIER_MULT.get(_tier_name(int(visible.get(c, 0))), 1.0)
+            * visible.get(c, 0),
+            abs(c[0] - pure_cell[0]) + abs(c[1] - pure_cell[1]),
+        ),
+    )
+    ring_start = ring_cells[0] if ring_cells else None
+    ring_comb = ring_cells[1:1 + _MASS_SHORT_STEPS]
+
+    waves = [
+        SeamWave(
+            wave=1,
+            earliest_hour=_H_SMASH,
+            drop_at=pure_cell,
+            unit_ordinal=0,
+            pickup_after=True,
+            note=(
+                "H1 smash the pure (auto-harvest), H2 lift. Beats EMP and "
+                "collision — the certain grab."
+            ),
+        ),
+        SeamWave(
+            wave=2,
+            earliest_hour=3,
+            drop_at=pure_cell,
+            emp_launch_at=targets,
+            emp_hole=pure_cell,
+            emp_only=True,
+            unit_ordinal=-1,
+            note=(
+                f"H3 salvo -> {targets}. Cloud saturates the halo, "
+                f"pure @{_fmt_cell_short(pure_cell)} stays clear. Rivals "
+                "locked out of the halo for 8h."
+            ),
+        ),
+    ]
+    if ring_start is not None:
+        waves.append(SeamWave(
+            wave=3,
+            earliest_hour=3 + cloud_hours,
+            drop_at=ring_start,
+            comb_path=list(ring_comb),
+            unit_ordinal=1,
+            pickup_after=True,
+            defer_until_clear=True,
+            note=(
+                "second harvester works the halo mass at cloud-lift — the "
+                "ground the salvo denied to them is now denied to nobody but us."
+            ),
+        ))
+
+    return SeamPattern(
+        pattern_id="SMASH_THEN_LOCK",
+        kind="SMASH_THEN_LOCK",
+        beacon=beacon,
+        mine=True,
+        title=(
+            "Smash the pure @H1, LOCK the halo @H3 (case B) — pure banked, "
+            "8h denial, 2nd unit combs at cloud-lift"
+        ),
+        when=(
+            "Your redsign, quiet board (0-1 rivals). H1 smash the pure, H3 "
+            "EMP the halo AROUND the pure (hole = pure), 2nd harvester "
+            "combs the mass ring when the cloud lifts."
+        ),
+        rationale=(
+            "SMASH_GRAB alone banks 765 and leaves the halo — worth 400-600 "
+            "in mass — for anyone who arrives after you. Adding the salvo "
+            "denies that halo for 8h, and shaping the missiles so the pure "
+            "stays clear means your OWN second harvester lands on it if you "
+            "have one. The hour cost is H3 — the smash-and-lift takes H1-H2, "
+            "so nothing else was scheduled to run in H3 anyway. If you have "
+            "no 2nd unit, run this as the 2-wave lock: the seam is still "
+            "yours next night, and the rival lost a night on it."
+        ),
+        waves=waves,
+    )
+
+
+def _pattern_race_crash_emp(
+    agent_view: Mapping[str, Any],
+    beacon: Tuple[int, int],
+    hint: Mapping[str, Any],
+    threat: Mapping[str, Any],
+    *,
+    harvesters_alive: int,
+) -> Optional[SeamPattern]:
+    """CASE C — I and >=1 rival both see the pure.
+
+    Drop@H1 expecting a crash (aerial denial does NOT consume the pure).
+    EMP@H3 with the hole aimed at the pure. Second harvester drops on the
+    pure at cloud-lift and lifts. Skipped when chaff is in play.
+    """
+    rack = scorch.stock(agent_view)
+    if rack.get("emp", 0) <= 0:
+        return None
+    if threat.get("chaff_in_play"):
+        return None
+    if harvesters_alive < 2:
+        return None
+    core = _known_core(agent_view, beacon)
+    if core is None:
+        return None
+    pure_cell = core[0]
+    if not _drop_legal_now(agent_view, pure_cell):
+        return None
+
+    radius, missiles, cloud_hours = scorch.specs(agent_view)
+    width, height = _grid_dims(agent_view)
+    halo_pool = [
+        c for c in scorch.diamond(pure_cell, _PROBE_RADIUS, (width, height))
+        if c != pure_cell
+    ]
+    shape = scorch.shaped_salvo(
+        halo_pool, radius=radius, missiles=missiles, hole=pure_cell,
+    )
+    if shape is None:
+        return None
+    targets = [tuple(t) for t in shape["targets"]]
+
+    return SeamPattern(
+        pattern_id="RACE_CRASH_EMP",
+        kind="RACE_CRASH_EMP",
+        beacon=beacon,
+        mine=None,
+        title=(
+            f"Race + crash + EMP (case C) — H1 drop, H2 lift, H3 salvo "
+            f"(hole=pure), 2nd unit drops @{_fmt_cell_short(pure_cell)} at cloud-lift"
+        ),
+        when=(
+            "You and a rival both see the pure. Race the H1 drop — expect "
+            "collision, aerial denial does NOT consume the pure. Then EMP "
+            "with the hole ON the pure so YOUR second harvester can drop "
+            "back onto it after cloud-lift while rivals cannot walk in."
+        ),
+        rationale=(
+            "H1 racing is unavoidable when both sides can drop on the pure — "
+            "either you land and bank, or you crash and both spill. Crashing "
+            "keeps the pure on the board (§4.9: aerial denial does NOT "
+            "consume the cell), so a second unit re-landing under an EMP "
+            "shield is a legal path to the same jackpot with the rival "
+            "locked out for 8 hours. Do NOT run this if chaff is in play: "
+            "chaff cancels the H1 landing outright and the second-unit "
+            "re-drop cannot follow a landing that never happened. Two "
+            "harvesters minimum."
+        ),
+        waves=[
+            SeamWave(
+                wave=1,
+                earliest_hour=_H_SMASH,
+                drop_at=pure_cell,
+                unit_ordinal=0,
+                pickup_after=True,
+                note="H1 drop @ pure; auto-harvest if we land, deny if we crash",
+            ),
+            SeamWave(
+                wave=2,
+                earliest_hour=3,
+                drop_at=pure_cell,
+                emp_launch_at=targets,
+                emp_hole=pure_cell,
+                emp_only=True,
+                unit_ordinal=-1,
+                note=(
+                    "H3 salvo shaped so the pure stays clear — halo denied "
+                    "to rivals, pure walkable for us"
+                ),
+            ),
+            SeamWave(
+                wave=3,
+                earliest_hour=3 + cloud_hours,
+                drop_at=pure_cell,
+                unit_ordinal=1,
+                pickup_after=True,
+                defer_until_clear=True,
+                note=(
+                    "second harvester drops on the pure at cloud-lift — if "
+                    "wave 1 crashed, the pure was still on the board, and "
+                    "the salvo has locked every rival out"
+                ),
+            ),
+        ],
+    )
+
+
+# ── end EMP compound patterns ─────────────────────────────────────────
+
+
 def _mine_patterns(
     agent_view: Mapping[str, Any],
     hint: Mapping[str, Any],
@@ -2757,6 +3078,7 @@ def build_seam_menu(
     max_beacons: int = 2,
     seat_index: int = 0,
     probe_stock: Optional[int] = None,
+    harvesters_alive: Optional[int] = None,
 ) -> List[SeamPattern]:
     """Build the redsign pattern menu — REGION-driven so a rival's fogged beacon
     is on the menu too (the dual-redsign gap).
@@ -2837,8 +3159,41 @@ def build_seam_menu(
     emitted = 0  # count NON-EMPTY groups so suffixing tracks what's shown, not
     #             the raw source index (a starved own-seam must not push the
     #             rival group to a misleading "#2").
+    # v13 — resolve harvesters_alive once for the case-C guard; the caller may
+    # not have wired the argument through yet, in which case we assume >=2 (the
+    # pattern's own two-harvester guard is redundant with the packager's
+    # ``next_harvester()`` return-None branch, so a wrong-side call here is
+    # safe: the pattern will simply drop its third wave).
+    n_alive = int(harvesters_alive) if harvesters_alive is not None else 99
+
+    def _region_for(beacon: Tuple[int, int]) -> Mapping[str, Any]:
+        # Return the RAW agent_view region (with its ``cells`` list intact),
+        # not the summarised one from ``_redsign_regions`` above. The compound
+        # EMP patterns need the smear geometry, which the summariser strips.
+        #
+        # Widen the match to Chebyshev ``_REGION_MATCH_RADIUS`` (same window
+        # the region summariser uses to attribute hot-drops to a beacon) —
+        # a hint-driven beacon may be a rounded float that no longer equals
+        # the region's own center exactly, and a strict equality miss silently
+        # drops every compound pattern for the seat.
+        best: Optional[Tuple[int, Mapping[str, Any]]] = None
+        for r in (agent_view.get("redsign") or []):
+            if not isinstance(r, Mapping):
+                continue
+            c = r.get("center")
+            if isinstance(c, (list, tuple)) and len(c) == 2:
+                try:
+                    cx, cy = int(round(float(c[0]))), int(round(float(c[1])))
+                except (TypeError, ValueError):
+                    continue
+                d = max(abs(cx - beacon[0]), abs(cy - beacon[1]))
+                if d <= _REGION_MATCH_RADIUS and (best is None or d < best[0]):
+                    best = (d, r)
+        return best[1] if best is not None else {}
+
     for src in sources[:max_beacons]:
         beacon, hint, mine = src["beacon"], src["hint"], src.get("mine")
+        region = _region_for(beacon)
         if mine is True:
             group = _mine_patterns(agent_view, hint, beacon, threat, probe_stock=ps)
         else:
@@ -2861,6 +3216,97 @@ def build_seam_menu(
                 weapons=bool(threat.get("chaff_seen")) or emp_r is not None,
                 have_probes=ps >= 1,
             )
+
+        # v13 — EMP COMPOUND PATTERNS. Classified by redsign state; prepended
+        # so they appear ABOVE the base case-1/case-2 book when applicable.
+        # The pattern builders each return None when their preconditions are
+        # not met (no charge in the rack, no known core, chaff in play for
+        # case C, etc.), so this loop is safely additive.
+        #
+        # Defensive: any exception raised here (a fixture shape we did not
+        # anticipate, a scorch geometry corner case) MUST NOT propagate out
+        # — the compound patterns are an extra layer, and dropping them for
+        # this seat is strictly better than crashing the whole harness turn.
+        # A crash here is what routes the seat to _heuristic_fallback, which
+        # is the worst outcome available on the board.
+        emp_extras: List[SeamPattern] = []
+        emp_trace: List[str] = []
+        # Case starts as ``unknown`` and is overwritten the moment the classifier
+        # returns successfully. That way an exception in the classifier itself
+        # leaves the diagnostic sink with a meaningful reason string, and the
+        # try/except cleanup does not have to defend a downstream index.
+        case = "unknown"
+        # ``rival_blind`` is handled by the existing BLIND_SCORCH option in
+        # _emp_options (agency.py) — its H3 hole-drop dominates any delayed
+        # cloud-lift landing (see doctrine). No compound pattern is emitted
+        # for that case; the case-A doctrine block points at BLIND_SCORCH
+        # by name. Compound plays exist only for case B (mine_alone /
+        # mine_contested — SMASH_THEN_LOCK) and case C (shared_vision /
+        # mine_contested — RACE_CRASH_EMP) where BLIND_SCORCH cannot
+        # express the required timing.
+        try:
+            case = _classify_redsign_case(
+                agent_view, hint or {}, beacon, region,
+            )
+            emp_trace.append(f"case={case}")
+            if case == "mine_alone":
+                p_b = _pattern_smash_then_lock(
+                    agent_view, beacon, hint or {}, threat,
+                )
+                if p_b is not None:
+                    emp_extras.append(p_b)
+            elif case == "shared_vision" or case == "mine_contested":
+                p_c = _pattern_race_crash_emp(
+                    agent_view, beacon, hint or {}, threat,
+                    harvesters_alive=n_alive,
+                )
+                if p_c is not None:
+                    emp_extras.append(p_c)
+                if case == "mine_contested":
+                    p_b = _pattern_smash_then_lock(
+                        agent_view, beacon, hint or {}, threat,
+                    )
+                    if p_b is not None:
+                        emp_extras.append(p_b)
+        except Exception as e:  # pragma: no cover — defensive; surface on card
+            import logging
+            logging.getLogger(__name__).exception(
+                "EMP compound pattern generation failed for beacon %r; "
+                "skipping and falling through to the base pattern book",
+                beacon,
+            )
+            emp_trace.append(f"EXCEPTION: {type(e).__name__}: {e}")
+            emp_extras = []
+
+        # v13 diagnostic — surface a single-line reason on the CARD when a
+        # compound was EXPECTED (redsign live, charge in the rack, case B/C)
+        # but did not fire. This is a triage tool while the patterns are new;
+        # drop the block once the code stabilises. Never emit for case A
+        # (rival_blind) — BLIND_SCORCH covers it, no compound is expected.
+        _expects_compound = {"mine_alone", "mine_contested", "shared_vision"}
+        if (not emp_extras
+                and case in _expects_compound
+                and scorch.stock(agent_view).get("emp", 0) > 0):
+            trace_text = " | ".join(emp_trace) if emp_trace else f"case={case}"
+            emp_extras.append(SeamPattern(
+                pattern_id="EMP_COMPOUND_DIAG",
+                kind="diag",
+                beacon=beacon,
+                mine=None,
+                title="[diag] EMP compound not offered — why",
+                when=f"beacon @({beacon[0]},{beacon[1]}) — {trace_text}",
+                rationale=(
+                    "This is a diagnostic entry, not a play. The compound EMP "
+                    "patterns (SMASH_THEN_LOCK / RACE_CRASH_EMP) are offered "
+                    "when a redsign is live, a matching case applies, and you "
+                    "hold a charge. If you see this line, one of the "
+                    "preconditions failed — the reason is in the ``when`` "
+                    "line above. Ignore this ID; do NOT select it."
+                ),
+                waves=[],
+            ))
+        group = emp_extras + group
+
         if not group:
             continue
         suffix = "" if emitted == 0 else f"#{emitted + 1}"

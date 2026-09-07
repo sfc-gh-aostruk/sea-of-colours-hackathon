@@ -287,22 +287,54 @@ def format_opponent_block(agent_view: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _any_could_hold(estimates: "Mapping[str, Any] | None", kind: str) -> bool:
+    """Could ANY opponent be holding a ``kind``?
+
+    v1.38 — the one gate every weapon warning in this module asks, so
+    they cannot drift apart. It defers to
+    ``WeaponEstimate.could_hold``, which is true only when some rack
+    that fits the seat's published total contains that kind. The minimum
+    spend is therefore enforced by the decode and not by a threshold
+    repeated here: no chaff warning under the 300 blue a chaff costs, no
+    EMP warning under 200, no SNAP warning under 100.
+
+    ``getattr`` because a fork may still be storing estimates pickled by
+    a pre-v1.38 harness, which have no ``could_hold``; those fall back
+    to the named maxima and simply never report SNAP.
+    """
+    for est in (estimates or {}).values():
+        probe = getattr(est, "could_hold", None)
+        if callable(probe):
+            if probe(kind):
+                return True
+            continue
+        stem = {"emp": "emps", "chaff": "chaff", "snap": "snap"}.get(kind, kind)
+        if int(getattr(est, f"{stem}_max", 0) or 0) > 0:
+            return True
+    return False
+
+
 def format_weapon_geometry_block(
     estimates: "Mapping[str, Any] | None",
 ) -> str:
     """WEAPON GEOMETRY constants (from v8 §4d).
 
-    Only rendered when some opponent is estimated to hold EMP or chaff, so the
-    agent reasons about EMP as a targeted orbital strike with a KNOWN blast
-    radius on a known beacon — not a distance-from-a-cluster gamble.
+    Rendered when some opponent could be holding something, so the agent
+    reasons about a strike with a KNOWN blast radius on a known beacon —
+    not a distance-from-a-cluster gamble.
+
+    v1.38 — each weapon's paragraph is gated on that weapon being
+    possible for someone, rather than the whole block being gated on EMP
+    or chaff. That fixes two things at once: a seat holding only SNAP no
+    longer produces an empty block, and a seat that cannot afford a
+    chaff no longer gets chaff geometry recited at it.
     """
     if not estimates:
         return ""
-    armed = any(
-        getattr(e, "emps_max", 0) > 0 or getattr(e, "chaff_max", 0) > 0
-        for e in estimates.values()
-    )
-    if not armed:
+    could_emp = _any_could_hold(estimates, "emp")
+    could_chaff = _any_could_hold(estimates, "chaff")
+    could_snap = _any_could_hold(estimates, "snap")
+    if not (could_emp or could_chaff or could_snap):
         return ""
     try:
         from sea_of_colours.game.weapons import (
@@ -310,22 +342,43 @@ def format_weapon_geometry_block(
             EMP_MISSILES_PER_LAUNCH,
             EMP_CLOUD_HOURS,
             CHAFF_DURATION_HOURS,
+            SNAP_CLOUD_HOURS,
+            SNAP_MISSILES_PER_LAUNCH,
         )
     except Exception:  # pragma: no cover - defensive
         EMP_RADIUS, EMP_MISSILES_PER_LAUNCH = 2, 3
         EMP_CLOUD_HOURS, CHAFF_DURATION_HOURS = 8, 3
-    return (
-        "WEAPON GEOMETRY (reason with the exact numbers, not vibes):\n"
-        f"  EMP: an orbital salvo of {EMP_MISSILES_PER_LAUNCH} missiles; each "
-        f"forms a Manhattan-radius-{EMP_RADIUS} cloud (~13 cells) that lasts "
-        f"{EMP_CLOUD_HOURS}h. Inside it: probes DESTROYED, harvesters "
-        f"DISABLED (they keep their haul — only a dawn crash kills them). It "
-        f"is aimed at a CELL (usually your latest probe or a pure beacon), "
-        f"reachable anywhere on the map.\n"
-        f"  CHAFF: cancels every OTHER seat's actions for {CHAFF_DURATION_HOURS} "
-        f"consecutive hours. A pickup inside that window is lost -> dawn-crash "
-        f"risk. It has no location — it is a seat-wide jam.\n"
-    )
+        SNAP_CLOUD_HOURS, SNAP_MISSILES_PER_LAUNCH = 1, 1
+    out = "WEAPON GEOMETRY (reason with the exact numbers, not vibes):\n"
+    if could_emp:
+        out += (
+            f"  EMP: an orbital salvo of {EMP_MISSILES_PER_LAUNCH} missiles; "
+            f"each forms a Manhattan-radius-{EMP_RADIUS} cloud (~13 cells) "
+            f"that lasts {EMP_CLOUD_HOURS}h. Inside it: probes DESTROYED, "
+            f"harvesters DISABLED (they keep their haul — only a dawn crash "
+            f"kills them). It is aimed at a CELL (usually your latest probe "
+            f"or a pure beacon), reachable anywhere on the map.\n"
+        )
+    if could_snap:
+        out += (
+            f"  SNAP: {SNAP_MISSILES_PER_LAUNCH} missile at exactly ONE cell, "
+            f"cloud {SNAP_CLOUD_HOURS}h. It resolves BEFORE the hour's vision "
+            f"snapshot and before every drop, step and pickup on that square, "
+            f"which is the whole weapon: a probe there is destroyed BEFORE it "
+            f"sees, so a drop relying on that sight is refused. A harvester "
+            f"standing there or stepping in is DAMAGED and harvests nothing; "
+            f"a landing into it is REFUSED (stays in orbit, damaged, outing "
+            f"unspent). One cell only — spreading across distinct cells beats "
+            f"it, re-timing does not.\n"
+        )
+    if could_chaff:
+        out += (
+            f"  CHAFF: cancels every OTHER seat's actions for "
+            f"{CHAFF_DURATION_HOURS} consecutive hours. A pickup inside that "
+            f"window is lost -> dawn-crash risk. It has no location — it is a "
+            f"seat-wide jam.\n"
+        )
+    return out
 
 
 def _harvester_worth_line(*, day: int, day_cap: int, vault_score: int) -> str:
@@ -563,11 +616,19 @@ def format_situational_facts_block(
 ) -> str:
     """v10 SITUATIONAL FACTS — the ground truth the thinker must reason over.
 
-    Surfaces exactly the four dials the thinker echoes back in ``situational``
-    (mine? / players / chaff / emp) so its structured read is GROUNDED, not
-    guessed. ``mine`` is engine truth; chaff/emp fuse "seen last night" (recap)
-    with "estimated in stock" (opponent inference). Rendered only in the thinker
-    pass. Always non-empty (it anchors the decision even off-seam).
+    Surfaces exactly the dials the thinker echoes back in ``situational``
+    (mine? / players / chaff / emp / snap) so its structured read is
+    GROUNDED, not guessed. ``mine`` is engine truth; the weapon dials fuse
+    "seen last night" (recap) with "could be in stock" (the public
+    arsenal). Rendered only in the thinker pass. Always non-empty (it
+    anchors the decision even off-seam).
+
+    Adding a dial here is a four-file edit and all four are load-bearing:
+    this line, the ``situational`` schema in ``chat_schema`` (strict mode
+    forbids a key it does not declare), ``_SITUATIONAL_KEYS`` in
+    ``directive`` (which drops anything unlisted), and the field list in
+    this module's header docstring, which is what the model actually
+    reads. ``snap`` went in at v1.38.
     """
     any_mine, any_not = _redsign_ownership(agent_view)
     if any_mine and any_not:
@@ -586,18 +647,26 @@ def format_situational_facts_block(
         if isinstance(a, Mapping)
     )
     emp_seen = bool(ln.get("emp_scars"))
-    est_emp = est_chaff = False
-    for e in (opponent_weapon_estimates or {}).values():
-        if getattr(e, "emps_max", 0) > 0:
-            est_emp = True
-        if getattr(e, "chaff_max", 0) > 0:
-            est_chaff = True
+    # v1.38 — a SNAP that hit you arrives as a victim-private
+    # ``snap_hit``; there is no scar list to read because the cloud
+    # lives one hour and leaves nothing to age.
+    snap_seen = any(
+        str(a.get("type") or "") in ("snap", "snap_hit")
+        for a in (ln.get("combat_events") or [])
+        if isinstance(a, Mapping)
+    )
+    est_emp = _any_could_hold(opponent_weapon_estimates, "emp")
+    est_chaff = _any_could_hold(opponent_weapon_estimates, "chaff")
+    est_snap = _any_could_hold(opponent_weapon_estimates, "snap")
 
     def _w(seen: bool, est: bool) -> str:
         if seen:
             return "YES (hit you last night)"
         if est:
-            return "possible (a rival is estimated to hold stock)"
+            # v1.34 — no longer a guess. The engine broadcasts every
+            # seat's weaponised blue (§4.9.8), so this is a fact about
+            # what a rival is carrying, not a suspicion.
+            return "YES (a rival is holding stock — public, see ARSENALS)"
         return "none observed"
 
     players_s = str(player_count) if player_count else "unknown"
@@ -608,6 +677,7 @@ def format_situational_facts_block(
         f"  players: {players_s}\n"
         f"  chaff: {_w(chaff_seen, est_chaff)}\n"
         f"  emp: {_w(emp_seen, est_emp)}\n"
+        f"  snap: {_w(snap_seen, est_snap)}\n"
     )
 
 
@@ -974,38 +1044,60 @@ def _assemble_doctrine(
     jam_events = _my_jam_events(agent_view)
     was_chaffed = any(str(e.get("type")) == "chaff_jam" for e in jam_events)
     was_empd = any(str(e.get("type")) == "emp_hit" for e in jam_events)
+    # v1.38 — ``snap_hit`` is the victim-private half of a SNAP (§4.9.4);
+    # the public ``snap`` says a shot was fired, this says it landed on
+    # us. Being hit forces the doctrine on regardless of what the seat
+    # can still afford, exactly as for the other two.
+    was_snapped = any(str(e.get("type")) == "snap_hit" for e in jam_events)
     if jam_events:
         from sea_of_colours.orchestrator_2.harnesses.emp_harvest_test._v7.prompt import (
             _format_combat_event,
         )
         jam_lines = "; ".join(_format_combat_event(e) for e in jam_events[:3])
-        text += (
-            "\n\nTHREAT LAST NIGHT (react NOW): " + jam_lines +
-            " Do NOT schedule a pickup in the jammed hours again — the opponent "
-            "blind-fires the same predictable window. Pick up EARLY (hour <=4) "
-            "or shift the window."
-        )
+        text += "\n\nTHREAT LAST NIGHT (react NOW): " + jam_lines
+        # The two weapons deny an HOUR, so the counter is to move the
+        # window. SNAP denies a CELL, so moving the window changes
+        # nothing and the counter is to move the aim point — v1.38, when
+        # SNAP joined this list and would otherwise have inherited
+        # advice that does not apply to it.
+        if was_chaffed or was_empd:
+            text += (
+                " Do NOT schedule a pickup in the jammed hours again — the "
+                "opponent blind-fires the same predictable window. Pick up "
+                "EARLY (hour <=4) or shift the window."
+            )
+        if was_snapped:
+            text += (
+                " That was a CELL denied, not an hour, so re-timing will not "
+                "help: they read your aim point. Land OFFSET from the obvious "
+                "beacon and spread across DISTINCT cells — one SNAP takes one "
+                "square, and at 100 blue they can hold several."
+            )
 
-    opp_has_emp = opp_has_chaff = False
-    if opponent_weapon_estimates:
-        opp_has_emp = any(
-            getattr(e, "emps_max", 0) > 0
-            for e in opponent_weapon_estimates.values()
-        )
-        opp_has_chaff = any(
-            getattr(e, "chaff_max", 0) > 0
-            for e in opponent_weapon_estimates.values()
-        )
+    # v1.38 — one gate, asked per weapon. ``could_hold`` is true only if
+    # some rack that fits the seat's public total contains that kind, so
+    # the minimum spend is enforced by the decode rather than by a
+    # threshold written out here: no chaff warning below the 300 a chaff
+    # costs, no EMP warning below 200, and SNAP — which had no gate at
+    # all before, because it had no field — from 100 up.
+    opp_has_emp = _any_could_hold(opponent_weapon_estimates, "emp")
+    opp_has_chaff = _any_could_hold(opponent_weapon_estimates, "chaff")
+    opp_has_snap = _any_could_hold(opponent_weapon_estimates, "snap")
     # v10: whenever any weapon is in play, reframe it as an orbital strike, then
     # add the OFFENSIVE read — commit more harvesters to the seam on distinct
     # cells rather than retreating to one short (jammable) chain.
-    if opp_has_emp or opp_has_chaff or was_empd or was_chaffed:
+    if (
+        opp_has_emp or opp_has_chaff or opp_has_snap
+        or was_empd or was_chaffed or was_snapped
+    ):
         text += "\n\n" + doctrine.DOCTRINE_WEAPONS_ORBITAL
         text += "\n\n" + doctrine.DOCTRINE_WEAPONS_MULTIWAVE
     if opp_has_emp or was_empd:
         text += "\n\n" + doctrine.DOCTRINE_BEWARE_EMP
     if opp_has_chaff or was_chaffed:
         text += "\n\n" + doctrine.DOCTRINE_BEWARE_CHAFF
+    if opp_has_snap or was_snapped:
+        text += "\n\n" + doctrine.DOCTRINE_BEWARE_SNAP
 
     # This fork's reason to exist. Gated on OWNING a charge, not on the
     # rivals owning one: every block above is about surviving someone

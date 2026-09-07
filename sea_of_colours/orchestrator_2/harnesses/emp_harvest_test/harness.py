@@ -61,6 +61,7 @@ from sea_of_colours.orchestrator_2.harnesses.emp_harvest_test._v7 import (
     move_sanitizer,
     opponent_weapons,
     probe_hints as probe_hints_mod,
+    snap_cover as snap_cover_mod,
     recorder,
 )
 from sea_of_colours.orchestrator_2.harnesses.emp_harvest_test._v7 import (
@@ -450,6 +451,7 @@ def run(
             or (agent_view.get("orbit") or {}).get("probe_stock")
             or 0
         ),
+        harvesters_alive=len(probe_hints_mod._orbit_harvester_ids(agent_view)),
     )
     # The cells the seam menu already commits a probe to (BLIND_GRAB cover /
     # supersede, UNBEATEN_FLANK / CONTEST_DENY probes, own-seam waves). A frontier
@@ -529,6 +531,17 @@ def run(
     # PUBLIC (§3.15), so this is legitimate intelligence and not a fog
     # leak — it is the one thing you always know about a rival's night.
     enemy_probes = probe_hints_mod._enemy_probe_cells(agent_view)
+    # v1.40 — SNAP cover. Needs the estimates (is anyone even able to hold a
+    # SNAP) and the menu's landings (is there anything worth insuring), so it
+    # runs after both and before the registry that offers it. Returns [] on an
+    # ordinary night, and returns [] for good on a board that never prices
+    # SNAP — retiring the weapon retires this with it.
+    snap_cover_hints = snap_cover_mod.cover_hints(
+        agent_view,
+        seam_patterns=seam_patterns,
+        hot_drop_hints=hot_drop_hints,
+        estimates=weapon_estimates,
+    )
     option_registry = agency_mod.build_registry(
         agent_view=agent_view,
         seam_patterns=seam_patterns,
@@ -536,6 +549,7 @@ def run(
         probe_hints=probe_hints,
         chain_hints=chain_hints,
         supersede_hints=supersede_hints,
+        snap_cover_hints=snap_cover_hints,
         blue_requested=want_blue,
         harvesters_alive=harvesters_alive,
         hazard_cells=hazard_cells,

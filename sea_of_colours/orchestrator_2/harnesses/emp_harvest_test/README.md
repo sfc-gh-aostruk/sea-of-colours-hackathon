@@ -1,249 +1,85 @@
-# V12 — the agent you fork
+# EMP_HARVEST_TEST — the worked example
 
-V12 is the LLM agent this distribution ships, and the baseline your
-hackathon entry has to beat. It is strong at what it does and has two
-deliberate holes. Closing either one is a good day's work; closing both
-should win you the room.
+This is **not** the agent you fork, and it is **not** the baseline you are
+measured against. Both of those are `harnesses/tabula_v12/`.
 
-**Don't edit this directory.** Fork it:
+This directory ships as a **worked example**: one team's attempt at V12's
+first deliberate gap — *it buys weapons and never fires them* — left in the
+kit so you can read a real attempt before you start your own. It is a
+demonstration, not a finished agent. Read it, disagree with it, do better.
+
+To start your own entry, don't copy this directory. Mint a fresh one:
 
 ```bash
-python scripts/new_agent.py --team redwatch --name reaper
+soc new --team redwatch --name reaper --participants "Ada, Grace"
 ```
-
-That copies these files to `harnesses/redwatch_reaper/`, repoints the
-imports, renames the agent identity so your turns show up under your own
-name in the audit trail, and registers the binding. Restart the server
-and `REDWATCH_REAPER` is in the New Game dropdown. Keeping V12 pristine
-is what lets you answer "is my change actually better?" — you need
-something to play against.
 
 ---
 
-## The two gaps (this is the exercise)
+## The finding this example exists to record
 
-### Gap 1 — it buys weapons and never fires them
+The obvious reading of gap 1 is that V12 *can't* fire — that the plumbing
+to get a salvo from the model's reply into the engine is missing. So you
+build that plumbing. `docs/TEACHING_WEAPONS.md` calls it the four rungs:
+the weapon reaches the prompt, the model can name it, the sanitiser lets
+it through, the engine resolves it.
 
-V12 builds EMPs and chaff in orbit, then plays the whole night as if it
-were unarmed. The stockpile just grows.
+Building all four rungs took about a day, and at the end of it the agent
+**still would not fire.** Every rung passed in isolation and the model
+kept choosing harvest chains anyway.
 
-The buying half **is** yours to change (v1.40). It used to delegate to the
-shared heuristic, which meant no fork could edit its own economy; the
-policy now lives in the fork, with the thresholds hoisted into one
-dataclass at the top of the file:
+The reason is economics, not plumbing. Each option on the menu is
+rendered with the yield it banks. A harvest chain shows a real number. A
+plain salvo — `BLIND`, `EMP`, `SCORCH` — shows `+0`, because blowing up
+an opponent's holding banks nothing for you that night. A model asked to
+pick the best-scoring option will never pick the one that scores zero,
+no matter how many rungs you built underneath it.
 
-```44:75:sea_of_colours/orchestrator_2/harnesses/emp_harvest_test/orbit_policy.py
-@dataclass(frozen=True)
-class OrbitDials:
-    probe_target_stock: int = 4
-    blue_always_build: int = 300
-    blue_emp_roll: int = 250
-    emp_stockpile_cap: int = 2
-    # ... prices below are fallbacks; the engine's win
-```
+**Firing a weapon is not a plumbing problem. It is a menu-pricing
+problem.** That is the thing worth taking away from this directory, and
+it generalises past weapons to anything you want an agent to start doing.
 
-Retuning those is the cheapest experiment in the kit — `blue_always_build`
-alone decides whether the seat is ever armed before night three. But note
-the trap: **buying more weapons without closing the firing half makes the
-agent worse**, because BLUE spent on an unused rack is BLUE not spent on
-harvesters. The two halves of gap 1 have to move together.
+## What this example does about it (v13)
 
-The not-firing is structural. Check where you stand at any point with:
+Rather than teach the model that `+0` is sometimes worth it, this attempt
+changes what is on the menu. A **compound play** bundles the salvo with
+the harvester wave that exploits it, and offers the pair as one option —
+so the thing the model is choosing between now carries a real yield
+number, and competes on the same terms as an ordinary harvest.
 
-```bash
-python scripts/soc.py weapons --agent <yours>
-```
+Two are offered, each keyed to a redsign state the plain patterns handle
+badly:
 
-It walks four rungs and names the next action. They are ordered because
-each is invisible until the one before it works — building doctrine
-first changes nothing you can observe.
-
-**Rung 1 — the agent does not know it owns a rack.** The only module in
-the whole harness that reads `weapon_stock` is `orbit_policy.py`, the
-buying code. `world_view.py` does not carry it and `prompt.py` never
-says it. What the prompt *does* render is the opponents' estimated
-arsenal, and only when a rival is thought to be armed. So the agent is
-told what might be shot at it, and never what is in its own rack. Start
-here: it is about twenty lines, and the change is immediately visible on
-the card.
-
-**Rungs 2–4** are the four places below that must all agree before a
-salvo launches:
-
-1. **The move schema doesn't allow it.** The LLM is physically unable to
-   emit a weapon move, because the JSON schema constrains the verb to
-   four values:
-
-```43:43:sea_of_colours/orchestrator_2/harnesses/emp_harvest_test/_v7/chat_schema.py
-        "a": {"type": "string", "enum": ["drop", "step", "pickup", "probe"]},
-```
-
-2. **The option menu has no weapon plays.** `agency.build_registry()`
-   registers seams, hot drops, probes, chains, supersedes and grabs.
-   Nothing offensive. The model picks from this menu, so an absent
-   option is an unthinkable move.
-3. **The doctrine is defensive-only.** `doctrine.py` tells the agent how
-   to *survive* an EMP (`DOCTRINE_BEWARE_EMP`) and how to shorten chains
-   when chaffed, never how to use its own.
-4. **The packager can't compile one.** Even a hand-written weapon
-   selection wouldn't survive `packager.py` → `move_sanitizer.py`.
-
-The engine supports all of it — `RED_HARVEST` (weapons on) fires both,
-in `sea_of_colours/agent/heuristic_agent.py` around lines 2250–2410.
-That's the reference for what legal weapon moves look like.
-
-**Rough shape of the work:** widen the schema, add weapon options to the
-menu, teach the doctrine when firing beats harvesting, extend the
-packager and sanitizer to pass the new verbs through. Do them in that
-order and you can test after each step.
-
-### Gap 2 — it treats BLUE as an afterthought
-
-BLUE funds the weapons economy, so gap 2 is partly *why* gap 1 stays
-unexploited. V12 will grab blue, but only through a narrow gate, and
-five separate mechanisms push in the same direction:
-
-| Lever | Where | Current setting |
+| Play | When | What it does |
 | --- | --- | --- |
-| Purity floor before blue is even offered | `value_pyramid.py` | `_BLUE_GRAB_MIN = 192` |
-| Blue must not cost a harvester a strong red chain | `value_pyramid.py` | `_STRONG_CHAIN_RED_MIN = 150` |
-| Blue only "requested" when the vault is short **and** ≥2 harvesters live | `prompt.py` | `blue_is_requested()` |
-| Blue chain hints suppressed unless requested | `harness.py` | `want_blue` gate |
-| Doctrine explicitly ranks blue below red | `doctrine.py` | "RED always outranks blue for a scarce harvester" |
+| `SMASH_THEN_LOCK` | mine, contested | Smash the pure at H1, lock the halo at H3 — pure banked and the halo denied |
+| `RACE_CRASH_EMP` | shared vision, contested | Drop at H1, lift at H2, salvo at H3 — take the pure, then close the door behind you |
 
-Loosening one lever alone usually does nothing, because another still
-gates it. That is the interesting part of the problem.
+The model picks one compound id; `packager.py` emits every hour of it in
+the right order. Salvo-only waves still bank nothing, and
+`option_economics.py` is explicit about that so the accounting stays
+honest.
 
----
+Where to look:
 
-## How a turn actually works
+- `seam_control.py` — the compound patterns and the `emp_launch_at` /
+  `emp_hole` / `defer_until_clear` wave fields they need
+- `packager.py` — `spend_emp`, which turns a chosen compound into hours
+- `doctrine.py` — the case matrix that decides which play is offered
+- `option_economics.py` — why an `emp_only` wave banks nothing
 
-Read this before changing anything; most "my edit did nothing" reports
-are edits to a stage that gets overridden two stages later.
+## Whether it works is your experiment
 
-```
-run()                                    harness.py:284
-  ├─ orbit? → orbit.py (heuristic, no LLM)
-  └─ night:
-      1. read memory, last night, journal
-      2. PRECOMPUTE THE MENU  ← deterministic Python, no LLM
-         chain hints · probe hints · hot drops · seam patterns
-         · supersedes · frontier · grabs   →  agency.build_registry()
-      3. THINK   → prose reasoning about the board        (LLM call)
-      4. PLAN    → picks option ids, e.g. ["SMASH_GRAB", "PR2"]  (LLM call)
-      5. resolve ids → concrete waves → packager compiles moves
-      6. sanitize (fix illegal drops, collisions, self-crush)
-      7. submit_policy()
-      8. write the card + memory
-```
-
-The single most important thing to understand: **the LLM does not invent
-moves. It picks ids off a menu that Python built.** If a play isn't in
-the menu, no amount of prompt editing will produce it. That is why
-"teach V12 to use weapons" is a code change, not a prompt change.
-
-### What a "card" is
-
-`card.py` is not part of the prompt — it is the **debug artifact**. One
-human-readable page per turn: the prompt the model saw, the reasoning it
-wrote back, and what that compiled to. Turn it on:
+This example records an approach and the reasoning behind it. It does not
+come with a scoreboard, and you should not assume the compound plays are
+an improvement. Cast it into a frozen turn next to stock V12 and look at
+what actually changed:
 
 ```bash
-SOC_CARD_DUMP_DIR=/tmp/cards python run_web.py
-# then read /tmp/cards/d03_p2.txt after night 3
+soc lab            # what frozen turns exist, and who can play them
+python run_web.py  # then visit /lab and cast EMP_HARVEST_TEST into a seat
 ```
 
-This is the fastest debugging loop you have. When your agent does
-something baffling, the card usually shows either a menu that didn't
-contain the play you expected, or a plan that named an id the packager
-then dropped.
-
----
-
-## Where to make changes
-
-| I want to… | Edit | Notes |
-| --- | --- | --- |
-| Add a named multi-wave play | `seam_control.py` | Add a `SeamPattern`; it's picked up automatically |
-| Change what counts as worth grabbing | `value_pyramid.py` | The constants at the top |
-| Add a new kind of play | `agency.py` `build_registry()` | Plus a builder module for the geometry |
-| Change strategy advice | `doctrine.py` | Prose the model reads |
-| Change *when* advice appears | `prompt.py` `_assemble_doctrine()` | State-gated |
-| Change the output contract | `chat_schema.py` | Then packager + sanitizer must agree |
-| Change move compilation | `packager.py` | Ids → concrete moves |
-| Change move repair | `_v7/move_sanitizer.py` | Last line before submit |
-| Change orbit buying | `orbit.py` | Currently delegates to the heuristic |
-
-### `_v7/` — the substrate
-
-Vendored from the retired `tabula_v7` harness when V12 was made
-self-contained. Geometry, validators, hint compilers, the sanitizer.
-Prefer changing `emp_harvest_test/` proper; touch `_v7/` only for shared
-infrastructure, and expect wider blast radius when you do.
-
----
-
-## Dials you can turn without writing code
-
-| Env var | Default | Effect |
-| --- | --- | --- |
-| `EMP_HARVEST_TEST_SINGLE` | `0` | `1` skips the THINK/PLAN split — one LLM call, faster, dumber |
-| `EMP_HARVEST_TEST_AUTOFILL` | `0` | `1` lets the packager top up a short plan |
-| `SOC_CARD_DUMP_DIR` | unset | Write a debug card per turn |
-
-(In your fork these are renamed to your agent — `REDWATCH_REAPER_SINGLE`
-and so on — so two teams on one machine don't fight over them.)
-
-Tuning constants worth knowing: `_BLUE_GRAB_MIN` and
-`_STRONG_CHAIN_RED_MIN` in `value_pyramid.py`, `_PROBE_FLOOR` in
-`orbit.py`, `_MAX_PLAN_IDS` in `_v7/directive.py`.
-
----
-
-## Testing your fork
-
-```bash
-# Scenario suite — fixed boards with assertions:
-python -m sea_of_colours.orchestrator_2.evals.cli \
-    --config redwatch_reaper --runtime cortex --backend memory
-
-# Head-to-head against the baseline:
-python scripts/run_matchup_v12.py --modes lite
-
-# Fast sanity check, no credentials:
-pytest sea_of_colours/orchestrator_2/tests -q
-```
-
-Your registered label works as an eval `--config` with no extra setup —
-registering the binding is the only registration there is.
-
-## Known rough edges
-
-Worth knowing before you spend an hour blaming your own change.
-
-- **The finisher fallback is dead.** When the mover returns unparseable
-  JSON, `harness.py` tries a "finisher" repair call
-  (`CortexAgentInvoker(agent_name=FINISHER_AGENT_NAME)`) before giving
-  up. That invoker talks to the Cortex **Agents API** and asks for an
-  agent *object* — `SOC_RED_REAPER_TABULA_V7_FINISHER` — which was
-  deleted along with the rest of the agent specs when V12 moved to
-  Cortex inference over REST. So the repair call fails and the turn
-  drops straight to `_heuristic_fallback_decision`. Effect is a worse
-  recovery, not a crash. Repairing it (port the call to
-  `CortexChatInvoker`) is a legitimate, self-contained hackathon win.
-- **Orbit doesn't think.** `orbit.py` delegates to the shared heuristic,
-  so the LLM has no say in what gets bought. If your strategy depends on
-  buying different things, that is where to start.
-- **`_v7` docstrings still say v7.** They describe the vendored
-  substrate accurately; only the name is historical.
-
-## Also worth reading
-
-- `manual/agent.html` — one real V12 turn taken apart, percept to moves.
-  Start here if the pipeline above felt abstract.
-- `ENGINE_INTERFACE.md` (this directory) — the engine boundary a harness
-  must respect.
-- `../../README.md` — the plug-in contract, if you'd rather write an
-  agent from scratch than fork this one.
-- `RULEBOOK.md` — canonical rules. If the doctrine text and the RULEBOOK
-  disagree, the RULEBOOK is right and the doctrine is a bug.
+The lab deliberately gives you a divergence view rather than a mark. The
+question it answers is *how is this different*, which is the only
+question an example like this can honestly settle.
