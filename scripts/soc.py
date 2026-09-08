@@ -665,11 +665,24 @@ def cmd_doctor(args) -> int:
     for man in found:
         print(f"                   {man.label}  ({man.directory.name}/)")
 
-    # Ask the invoker, not the environment. The documented setup puts
-    # the PAT in ``~/.ssh/sf_config``, so an env-var-only check reported
-    # "absent" to everyone who followed the guide — the worst possible
-    # false negative, because this is the command you run when your
-    # agent will not think and it sent you looking for the wrong bug.
+    # v1.45 — name the connection we resolved. "absent" used to be the
+    # whole story, which was useless when the real problem was the right
+    # file and the wrong section: the fix for those two is not the same,
+    # and this is the command you run to tell them apart.
+    try:
+        from sea_of_colours.snowpark import sfconn
+
+        _props, where = sfconn.resolve_source()
+        print(f"  snowflake conn   {where}")
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        print(f"  snowflake conn   could not be resolved ({exc})")
+
+    # Ask the invoker, not the environment. The PAT may live on the
+    # resolved connection rather than in the shell, so an env-var-only
+    # check reported "absent" to everyone who followed the guide — the
+    # worst possible false negative, because this is the command you run
+    # when your agent will not think and it sent you looking for the
+    # wrong bug.
     try:
         from sea_of_colours.orchestrator_2.cortex_chat import (
             credentials_status,

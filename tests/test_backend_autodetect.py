@@ -42,10 +42,12 @@ def sf_config(tmp_path, monkeypatch):
 # ── detection ──────────────────────────────────────────────────────────
 
 def test_no_config_is_not_ready(sf_config):
-    sf_config(None)
+    path = sf_config(None)
     ready, reason, fix = soc_backend.snowflake_readiness()
     assert ready is False
-    assert "no Snowflake config" in reason
+    # v1.45 — the reason names the file it looked at rather than saying
+    # "no config" and leaving you to guess which of several it meant.
+    assert path in reason
     assert fix
 
 

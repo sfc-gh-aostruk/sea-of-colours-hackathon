@@ -101,12 +101,6 @@ class BackendResolution:
         return "store backend: memory — sessions will not persist"
 
 
-def _sf_config_path() -> str:
-    return os.environ.get(
-        "SF_CONFIG_FILE", os.path.expanduser("~/.ssh/sf_config"),
-    )
-
-
 def snowflake_readiness() -> tuple[bool, str, str]:
     """Can the Snowpark path work? Offline, cheap enough to run at import.
 
@@ -128,20 +122,20 @@ def snowflake_readiness() -> tuple[bool, str, str]:
             "pip install -r requirements-snowflake.txt",
         )
 
-    config = _sf_config_path()
-    if not os.path.exists(config):
-        return (
-            False,
-            f"no Snowflake config at {config}",
-            "see docs/SNOWFLAKE_SETUP.md §2",
-        )
+    # v1.45 — the standard Snowflake connection store, same as the CLI.
+    from sea_of_colours.snowpark import sfconn
 
     try:
-        from scripts.deploy_soc_schema import _load_sf_props
-
-        props = _load_sf_props(config)
+        props, config = sfconn.resolve_source()
     except Exception as exc:  # pragma: no cover - defensive
-        return (False, f"could not read {config}: {exc}", "")
+        return (False, f"could not read Snowflake config: {exc}", "")
+
+    if not props:
+        return (
+            False,
+            config,  # already says what is wrong: missing, or a bad name
+            "snow connection add, or see docs/SNOWFLAKE_SETUP.md §2",
+        )
 
     # Key-pair auth, not the PAT. A PAT-only config is the *Cortex* setup
     # (docs §1) and says nothing about wanting persistence — resolving to
@@ -151,7 +145,7 @@ def snowflake_readiness() -> tuple[bool, str, str]:
     if not key_file:
         return (
             False,
-            f"{config} has no private_key_file= (key-pair auth not set up)",
+            f"{config} has no private_key_file (key-pair auth not set up)",
             "see docs/SNOWFLAKE_SETUP.md §2",
         )
     if not os.path.exists(os.path.expanduser(key_file)):
@@ -278,13 +272,17 @@ def _max_connections() -> int:
 
 
 def _build_snowpark_session():
-    """Create a Snowpark session from ``SF_CONFIG_FILE`` / ``~/.ssh/sf_config``."""
-    config = _sf_config_path()
+    """Create a Snowpark session from the resolved Snowflake connection.
+
+    v1.45 — resolution is the standard connection store (see
+    :mod:`sea_of_colours.snowpark.sfconn`), so passing no file is correct
+    here rather than lazy.
+    """
     # Lazy import so importing this module doesn't require snowpark on
     # the memory path.
     from scripts.deploy_soc_schema import create_snowpark_session
 
-    return create_snowpark_session(config)
+    return create_snowpark_session()
 
 
 def _get_snowflake_store() -> SocStore:
