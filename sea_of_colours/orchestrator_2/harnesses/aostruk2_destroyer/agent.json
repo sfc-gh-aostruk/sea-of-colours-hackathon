@@ -1,0 +1,10 @@
+{
+  "team": "aostruk2",
+  "name": "destroyer",
+  "participants": [
+    "Alex Ostruk"
+  ],
+  "menu_label": "AOSTRUK2_DESTROYER \u2014 aostruk2's agent (needs a Snowflake PAT \u00b7 slow)",
+  "entry": "harness:run",
+  "needs_llm": true
+}
