@@ -51,9 +51,20 @@ This file is always-on context for AI agents; keep it lean and current.
  what's already decided, and a concrete inventory for the next
  pending phase. Update its status table as phases complete.
 - `docs/HACKATHON_AGENTS.md` — the attendee-facing guide for the day:
- mint a fork, improve it, score it, publish it, league. Its companion
- `docs/AGENT_LOOP_PLAN.md` is the reasoning behind the tooling and
- tracks what's built vs still open.
+  mint a fork, improve it, score it, publish it, league. Its companion
+  `docs/AGENT_LOOP_PLAN.md` is the reasoning behind the tooling and
+  tracks what's built vs still open.
+- `docs/TEAM_LEADER_GUIDE.md` — the same day seen by the one person per
+  team who owns *sequence* rather than code: install → tutorial →
+  play → mint → publish empty → weapon shape → name the moves → the
+  three-track cycle → evaluate → final push → league, with a checkpoint
+  per stage. It deliberately does not restate mechanics
+  (HACKATHON_AGENTS.md wins on those); it owns ordering, the four
+  surfaces a weapon touches, and the appendix on why a minted agent does
+  or doesn't show up in the lab, the New Game modal and headless runs.
+  **`guide/leader.html` is the same document rendered** — a fan-out
+  pair, so change both. The HTML is self-contained (it must open off
+  disk) and sits beside `guide/index.html`, which links to it.
 
 ## Run & test
 
