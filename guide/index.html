@@ -1353,6 +1353,18 @@ PY</pre>
               to become resolvable here, and falls through if it never does.
               <code>/api/tunnel/status</code> says which one won.
             </p>
+            <p>
+              <b class="tag">If the links stop working mid-game</b>
+              A tunnel can drop. The server notices and restarts it, but a
+              restart means a <em>new address</em>, so the QRs you already
+              handed out are dead. Look at the terminal running
+              <code>run_web.py</code>: it prints the new URL with
+              <code>NEW ADDRESS</code> beside it. That's the only place it
+              can tell you &mdash; everyone's browser, yours included, is
+              sitting on an address that no longer exists. Re-share and
+              carry on; the game itself is untouched, because it lives on
+              the server and not in the link.
+            </p>
             <p class="dim">
               That wait is deliberate, and it's the one thing to know if you
               ever debug this: a tunnel hostname doesn't exist for a second or

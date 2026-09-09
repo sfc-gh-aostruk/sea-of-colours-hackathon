@@ -495,7 +495,16 @@ publishes a public URL *that this machine can actually resolve* —
 stable for the life of the process; the fallback is there because egress
 filtering on locked-down networks drops SSH or non-443 ports for some
 providers and not others, so between them almost every network is covered. `GET /api/tunnel/status` reports which one is carrying
-the tunnel, and whether its address is one that rotates.
+the tunnel, whether its address is one that rotates, and which providers
+lost on the way there — a silent downgrade onto the rotating fallback
+looks exactly like a clean start until the invite links start dying.
+
+A tunnel that dies is **restarted** (up to three times). That gives it a
+new address, so it kills the links already handed out, but a fresh link
+beats a dead server. The new URL is printed to this terminal, because
+every browser pointed at the tunnel is by then stranded on a hostname
+that no longer exists and cannot be told the new one by a server it can
+no longer reach.
 
 The resolve check is the important part, and the counter-intuitive bit is
 that it **waits before looking**. A hostname exists a couple of seconds

@@ -2265,3 +2265,186 @@ through to the developer's real `~/.ssh/sf_config`, and the failing assertion
 printed a live PAT into the terminal. The fixture now redirects the legacy
 path for every test in the module: a suite must not be able to read, let
 alone echo, a credential belonging to the machine it happens to run on.
+
+## 50. ✅ (DONE, v1.46) A multiplayer game "went out of sync" — eight faults, one outage
+
+**Symptom.** A three-player game behind the Multiplayer tunnel became
+unplayable twice in two hours. Invite links stopped working with no error
+anywhere; players who had already submitted sat watching "LOCKED IN —
+waiting for <names>" forever; each of them concluded they were waiting on
+someone else. The game itself was never damaged — Snowflake-backed,
+server-authoritative, and it advanced from day 4 to day 6 across the whole
+episode — so what actually went out of sync was *addresses and beliefs*,
+never state.
+
+**Root cause.** Four independent defects, each of which alone would have
+been survivable. Four more came out of the post-mortem — three from
+asking why the *first* provider lost, and one from noticing that the fix
+for the fourth watched for the wrong kind of death.
+
+1. **The provider downgrade was silent.** `server/tunnel.py` tries
+   providers strictly in order — Cloudflare first, because its hostname
+   survives the whole process, then localhost.run, whose anonymous names
+   rotate. Falling through is therefore a *positive failure* of the
+   provider above, never a race. But `start()` built a `failures` list and
+   returned the instant a later provider won, dropping it; and
+   `_scrape_url` drained each provider's output hunting for a URL and
+   discarded every other line. So a successful start looked identical
+   whichever provider answered, and this host — with `cloudflared`
+   installed and working, as a later quick tunnel confirmed — spent the
+   session on the rotating fallback with nothing to say so.
+2. **The one warning that did fire misdiagnosed itself.** The share card
+   correctly warns when `rotates` is set, then advised "Installing
+   cloudflared avoids it" — to a host who had cloudflared installed. It
+   read as "unavoidable on your setup" when the true answer was "press it
+   again".
+3. **A hung poll retired live-sync permanently.** This is the one that
+   made it feel like a freeze rather than an outage. `pollLiveSync` set
+   `liveSyncBusy = true`, awaited `fetch` with **no deadline**, and
+   released the latch in `finally` — i.e. only if the promise settled. A
+   tunnel edge that accepts a connection and never answers produces
+   exactly that. Measured in a browser: **one poll attempted in fourteen
+   seconds of outage**, against the five the 2.5s interval owes. So the
+   page did not degrade, it stopped, and could not recover on its own even
+   when the connection came back.
+4. **And every failure was swallowed.** `catch (_e) { /* transient */ }`,
+   plus a bare `return` on `!res.ok` that never even reached it — which is
+   precisely where a 503 from a dead tunnel edge landed. "Transient" was
+   an assumption with nothing to test it against. Because the committed
+   wait frame deliberately locks the button until the poller sees a phase
+   change, a player in it had no button, no error, and a headline naming a
+   teammate.
+
+**Fix.**
+
+- `tunnel.py` keeps the skip record (`status()["skipped"]`: provider,
+  reason, and a bounded tail of what it actually printed), through the
+  winning return and through tunnel reuse, cleared on stop.
+- The share-card warning derives its remedy from `providers` and
+  `skipped` instead of assuming, so an installed-but-lost provider is
+  reported as "tried, failed because X, try again" .
+- The poll takes an `AbortController` deadline, so it always settles and
+  the latch always clears.
+- Offline is declared on **two** conditions together — consecutive
+  failures *and* time since the last good poll — because the two outage
+  shapes fail on different clocks: a refusal or a 503 fails instantly, a
+  hang only fails when its deadline expires.
+- A locked-in player's headline is replaced with `CONNECTION LOST`, which
+  outranks every "waiting for" branch beneath it.
+
+**The part that nearly shipped half-fixed.** The headline alone was not
+enough. The committed-wait overlay is built by the submit handler and does
+**not survive a reload** — so the very player most likely to be affected,
+the one who has just been handed a fresh invite link after a rotation, has
+no overlay to write into, already-submitted orders on the server, and a
+screen painted entirely from the last successful poll that simply freezes.
+Hence `#cc-offline-banner`, drawn from our own counter and nothing else:
+it is the one element that can still speak when the payload cannot. It
+says the sent orders are safe, deliberately — the instinct it exists to
+prevent is reloading, re-planning and re-sending a turn already committed.
+
+**Verify with `backstage/probes/_probe_connection_lost.py`.** Four scenes: the
+three outage shapes (refused, 503, hung) and the reloaded player. Each
+asserts the page names the connection *and* clears afterwards — a warning
+that cannot clear is its own false alarm. `tests/test_tunnel_providers.py`
+covers the skip record, including the starved-provider case (out of shared
+budget is not the same as failed) and the bounded tail.
+
+**Three more, found by asking why the *first* provider lost.** The four
+above are all about surviving the downgrade. These are about not taking
+it in the first place, and the last one about not staying down.
+
+5. **The preferred provider got exactly one attempt.** Its failure modes
+   are dominated by timing — a URL printed a second after we stopped
+   waiting, a DNS record not yet published — and those are coin flips,
+   not verdicts. Losing one bought the whole session on a provider that
+   rotates. It now gets a second attempt (`_ATTEMPTS_PREFERRED`), *funded
+   from spare budget only*, so a provider that fails fast is retried and
+   one that fails slowly has already spent its second chance. The last
+   provider is never retried: nothing behind it needs protecting and a
+   second try only delays an honest failure.
+6. **The DNS gate spent the fallback's time.** The gate ran *after* the
+   per-provider polling loop, so it fell outside that provider's `wait_s`
+   while still consuming the shared deadline. Worst case, Cloudflare
+   could publish slowly, fail the gate and walk off with 48s of a 60s
+   budget, leaving localhost.run 12s against the 25 it needs merely to
+   negotiate SSH — "no tunnel at all" caused purely by accounting.
+   Latent: never observed, found by adding the numbers up. Each provider
+   is now costed at publish + gate (`_provider_cost`) and each attempt
+   holds back a *floor* for the providers behind it (`_provider_floor` —
+   enough to succeed, deliberately not enough to fail slowly in, because
+   reserving two worst cases exceeds any budget a human waits through).
+   A squeezed gate sheds retries and never its grace, since being early
+   is the failure that poisons the resolver for half an hour (see the
+   v1.18 note above). The endpoint budget is 60s → **75s**, which is the
+   point where Cloudflare keeps its full 20s publish window and three
+   lookups while localhost.run keeps its 37s floor: at 60s the honest
+   accounting squeezed the *stable* provider hardest, which would have
+   pushed the room onto the rotating one by arithmetic.
+7. **Nothing restarted a dead tunnel.** The watchdog noticed the
+   subprocess had exited and returned, so a game went off the air
+   permanently and silently at whatever hour its provider gave up. It now
+   relaunches, bounded (`_MAX_REVIVALS`), and reports `revivals` /
+   `reviving` / `expected` from `status()` so the four states a host has
+   to tell apart — never started, up, briefly down, down for good — are
+   finally distinguishable. Two details matter more than the restart:
+   death is now detected in ≤0.5s rather than at the next 30s probe tick
+   (`_settle` — an HTTP round trip is expensive, `poll()` is free, and
+   conflating them cost half a minute of guests staring at a dead link);
+   and the new URL is **printed to the server console**, because every
+   browser including the host's is stranded on a hostname that no longer
+   exists and cannot be told the new one by a server it can no longer
+   reach. The console is the only channel left. `stop()` clears the
+   intent that `_stop_locked()` deliberately does not, so a human closing
+   a tunnel is never undone by its own supervisor.
+
+8. **And the restart watched for the wrong death.** Fault 7 fires on the
+   subprocess *exiting* — but the outage at the top of this entry was the
+   opposite shape: `ssh` stayed alive and healthy while the edge served
+   503 for twelve minutes on a hostname localhost.run had already moved
+   on from. `proc.poll()` is `None` throughout, so the revival would
+   never have fired on the very incident that motivated it. The liveness
+   watchdog had detected it correctly since v1.16 and written
+   `serving: false`, and nothing ever read that field — the one failure
+   we had genuinely observed was the one we did not repair. A dead route
+   now restarts the tunnel too, after `_ROUTE_DEAD_AFTER` consecutive
+   failures (~90s at the 30s probe interval) rather than the ≤0.5s a
+   process exit gets, because a false positive changes the hostname and
+   costs everyone their links. A tunnel that has **never** answered is
+   deliberately excluded: with no prior success we cannot separate a dead
+   edge from a probe path that never worked from this machine, and
+   restarting on that would loop over a tunnel guests can reach fine.
+
+**What the players see.** A restart splits the room, and the halves
+cannot help each other: whoever is still connected holds the only working
+copy of the new address, and everyone else is on a hostname that no
+longer resolves and cannot be *told* anything, because reaching the
+server is precisely what they have lost. There is no push that fixes
+that. So the recovery is a human passing one URL along and the UI's job
+is to make that the only step — `showTunnelDownModal` is one component
+with two faces: `restarted` (fresh per-seat links and QRs, for whoever
+can still reach us) and `stranded` (a box to paste the new address into).
+It works because only the *origin* of a seat link changes: session and
+seat are already in the stranded page's own URL, so it rebuilds its own
+link and the host never has to work out who needs which one.
+
+That also fixed a promise we should not have made. The offline banner
+ended "this page catches up on its own when it returns", which is true
+for a LAN blip and false after a restart — that address never returns,
+and a player who believes it waits forever. It is now conditional on
+`_looksLikeTunnelOrigin()`, itself a negative test (not loopback, not a
+private range) rather than a list of the two providers we ship, so an
+unknown third provider fails safe instead of being classified as a LAN
+game and told to sit tight.
+
+**Verify with `backstage/probes/_probe_tunnel_down.py`** (both halves in a real
+browser; uses Chromium's `--host-resolver-rules` to put the page on a
+genuine tunnel-looking hostname, since the origin classifier is the thing
+under test and `127.0.0.1` would not exercise it). The load-bearing
+assertion is that pasting the new address lands the player back in
+*their own* seat — it joins as `p2` deliberately, because a bug that
+rebuilt the link from a default seat would pass as `p1` and be invisible.
+
+**Still open, deliberately.** A reloaded player who has already submitted
+gets an *enabled* TRANSMIT button, because nothing on load restores the
+committed lock from `pending[MY_SEAT]`. Worth doing; not this bug.
