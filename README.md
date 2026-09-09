@@ -51,9 +51,10 @@ which remote you are publishing to, so run it early if you are unsure.
 > with it and your game dies mid-night. It looks exactly like the app
 > crashing. Open a terminal, run it yourself, and leave it running.
 
-Open <http://127.0.0.1:8000> and hit **Quick game** — that spawns you vs
-`RED_HARVEST_LITE` and drops you straight on the board. **Play** opens
-the launcher instead, if you want to choose the map, the seats or the
+Open <http://127.0.0.1:8000> and hit **Tutorial** — that offers Basic,
+Advanced, or **Quick game**, which spawns you vs `RED_HARVEST_LITE` and
+drops you straight on the board with no teaching. **Play** opens the
+launcher instead, if you want to choose the map, the seats or the
 opponent.
 
 **New here? Open [`guide/index.html`](guide/index.html) in a browser** —
@@ -295,7 +296,7 @@ need no Snowflake and no setup.
 | Preset | Board | Nights | Rules |
 | --- | --- | --- | --- |
 | Basic | 24×16 | 3 | no weapons, no signs |
-| Advanced | 24×16 | 3 | everything on |
+| Advanced | 24×16 | 4 | everything on |
 | Quick game | full 40×28 | 3 | everything on |
 
 Basic is a genuine subset, not a simulation: the engine refuses the
