@@ -40,6 +40,9 @@ import random as _random
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Tuple
 
+# --- weapon-forge hook (installed by forge_install.py) ---
+from sea_of_colours.orchestrator_2.harnesses.aostruk2_destroyer import weapon_forge
+
 
 @dataclass(frozen=True)
 class OrbitDials:
@@ -93,7 +96,10 @@ class OrbitDials:
 
 
 #: The shipped economy. Fork-local, so retuning it cannot affect a rival.
-DEFAULT_DIALS = OrbitDials()
+# --- weapon-forge hook (installed by forge_install.py) ---
+# ECONOMY from weapon_plays.py: buy the cheapest declared weapon as
+# soon as it is affordable, and never buy ordnance with no play.
+DEFAULT_DIALS = weapon_forge.tune_dials(OrbitDials())
 
 
 # ── View readers ──────────────────────────────────────────────────

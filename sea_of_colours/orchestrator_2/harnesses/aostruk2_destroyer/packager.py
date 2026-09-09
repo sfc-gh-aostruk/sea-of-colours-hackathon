@@ -31,6 +31,9 @@ from sea_of_colours.orchestrator_2.harnesses.aostruk2_destroyer import (
     option_economics as econ,
 )
 
+# --- weapon-forge hook (installed by forge_install.py) ---
+from sea_of_colours.orchestrator_2.harnesses.aostruk2_destroyer import weapon_forge
+
 # Kinds that each COMMIT ONE HARVESTER for a single outing (RULEBOOK §3.9.2 —
 # one outing per harvester per night). ``seam`` is handled separately because a
 # multi-wave campaign consumes one harvester PER non-deny wave.
@@ -1007,3 +1010,8 @@ def pack_recipe(
             supersede_hints=supersede_hints,
         )
     return pk.moves, pk.log
+
+# --- weapon-forge hook (installed by forge_install.py) ---
+# Register a packer per declared weapon. Without a _DISPATCH entry the
+# option is offered, chosen, and silently never compiles.
+_DISPATCH.update(weapon_forge.packers())
