@@ -892,7 +892,7 @@ different frame of the same tick.
   Without it the harvester blinked out at paint and the collision landed
   on an empty square — the first attempt at this fix did exactly that.
 
-**Verification:** `scripts/_fx_census.py`, which supersedes the two
+**Verification:** `backstage/probes/_fx_census.py`, which supersedes the two
 narrower harnesses that missed this. Tick 10 of the reel now reads:
 inbound ghost +2652ms, impact +3183ms, unit lifted +3766ms — cause before
 effect, with no blink-out.
@@ -941,7 +941,7 @@ pixels.
 The supersede path (`§3.16(a)`) lays no terrain stand-in, so it was never
 occluded; it picks up the markup half of the fix only.
 
-**Verification:** `scripts/_fx_pixels.py` — screenshots one cell every
+**Verification:** `backstage/probes/_fx_pixels.py` — screenshots one cell every
 250ms through a tick and contact-sheets the result, deliberately ignoring
 the DOM. Before: the cell is bare from +0ms. After: the probe is on screen
 at +0ms in its real markup, holds to +2000ms, and is replaced by the
@@ -1303,7 +1303,7 @@ removing the button. Old un-scoped entries are ignored rather than migrated;
 worst case someone mid-game sees one reel a second time. The list is capped
 so a browser that plays many tutorials does not grow it forever.
 
-**Why no test caught it:** `scripts/films/_fx_tutorial.py` gets a clean browser
+**Why no test caught it:** `backstage/films/_fx_tutorial.py` gets a clean browser
 profile on every run, and this bug only exists on the *second* game in one
 profile. It now plays a second tutorial in the same context and asserts the
 modal opens again, plus a third with mute set to assert mute still wins. Both
@@ -1677,7 +1677,7 @@ prefers it whenever the UI is not showing the past. Replay is untouched:
 `_showingPast` gates the new branch, so a scrub still reads the day under
 the cursor.
 
-**Verified:** `scripts/_probe_arms_bar.py` hovers a rival mid-season and
+**Verified:** `backstage/probes/_probe_arms_bar.py` hovers a rival mid-season and
 prints the card; it read `arsenal 0/600b` against a true 200 before, and
 `200/600b` after.
 
@@ -1709,7 +1709,7 @@ projection meant to dim it never ran.
 `lastOrbitView`, with the damaged-harvester tally cached from the last
 render (`_lastDamagedCount`) so it does not need a full redraw.
 
-**Verified:** `scripts/_probe_arms_bar.py` pins the cap at the seat's
+**Verified:** `backstage/probes/_probe_arms_bar.py` pins the cap at the seat's
 current holding and reads the buttons; they now say `rack full 200/200b`.
 
 ---
@@ -1754,7 +1754,7 @@ load, matching post-LIVE. Mid-season with a real score: `0, 217.75`
 plus the leader highlight on load, identical to post-LIVE, where
 before it was `—,—`. Day one: `0,0`. Scrubbing still tracks the tick
 and LIVE still restores, so the init settle pins nothing.
-`scripts/_probe_arms_bar.py` passes all three scenes with no console
+`backstage/probes/_probe_arms_bar.py` passes all three scenes with no console
 errors.
 
 ---
@@ -1831,7 +1831,7 @@ screen showed none of it.
    1.5× faster than an EMP over the same distance, so its one-pixel
    trail was on screen about a third as long as an EMP's — and where an
    EMP answers its missiles with `_playEmpExpansion`, SNAP had no impact
-   beat at all. Measured with `scripts/films/ink_check.py`, the strike
+   beat at all. Measured with `backstage/films/ink_check.py`, the strike
    peaked at **61 px** of amber against the EMP cloud's **12,180 px**.
    Every individual piece was present and correct. Together they were
    invisible.
@@ -1852,13 +1852,13 @@ at usable opacity; and a `_snapImpactActive` gate, with a watchdog,
 holding the mark until the round lands.
 
 **Why nothing caught it:** `tests/test_snap.py` pins the engine and
-`scripts/_probe_snap.py` pins the DOM, and both were green throughout —
+`backstage/probes/_probe_snap.py` pins the DOM, and both were green throughout —
 the launch *did* resolve and the frame *did* carry the payload. The FX
 is canvas-drawn, so there is nothing in the DOM to assert on, and the
 one film of it went out as a minute of narration over an empty board.
 The gap was that no check ever asked whether a thing was **drawn**, only
-whether it **happened**. `scripts/films/ink_check.py` is that check, and
-`scripts/_probe_snap.py` scene 5 shoots the platform in isolation
+whether it **happened**. `backstage/films/ink_check.py` is that check, and
+`backstage/probes/_probe_snap.py` scene 5 shoots the platform in isolation
 against the EMP as a control.
 
 **Redrawn in v1.40, because the fix over-corrected.** Everything above
@@ -1884,7 +1884,7 @@ Measured the same way it was caught: **268 px** peak against the old
 cross's 323 px, so it is flatter without being fainter in any way that
 matters (the invisible first cut was 61 px). `adv_snap.webm` was
 re-shot — a film is build output, and leaving it would have taught a
-visual the game no longer draws. `scripts/_probe_snap_ink.py` is the
+visual the game no longer draws. `backstage/probes/_probe_snap_ink.py` is the
 new companion check: it asks what the mark *looks like* rather than
 whether it happened, asserting the glyph comes from the shared ramp and
 that the computed style carries no box-shadow, text-shadow or filter.

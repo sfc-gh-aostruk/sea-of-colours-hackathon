@@ -312,9 +312,9 @@ recorder:
 
 ```bash
 SOC_BACKEND=memory python run_web.py --no-reload --port 8022 &
-python scripts/films/make_tutorial_films.py --base http://127.0.0.1:8022
-python scripts/films/make_tutorial_films.py --list          # what there is
-python scripts/films/make_tutorial_films.py --only basic_drop   # just one
+python backstage/films/make_tutorial_films.py --base http://127.0.0.1:8022
+python backstage/films/make_tutorial_films.py --list          # what there is
+python backstage/films/make_tutorial_films.py --only basic_drop   # just one
 ```
 
 Each film drives the real UI in a real browser, so a film cannot show an
@@ -326,8 +326,8 @@ text and the turn each reel belongs to live in
 it does the trim, the camera moves and the compress in one pass, and
 falls back to the raw capture without it.
 
-The whole filming kit is contained in `scripts/films/` and nothing else
-in the repo imports any of it; `scripts/films/README.md` is the guide.
+The whole filming kit is contained in `backstage/films/` and nothing else
+in the repo imports any of it; `backstage/films/README.md` is the guide.
 
 ---
 
