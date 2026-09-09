@@ -10928,6 +10928,35 @@ button.cli-btn.cc-advisor-tab[hidden] { display: none; }
 .soc-tut-nav [hidden] { display: none; }
 .soc-tut-go { border-color: var(--green); color: var(--green); }
 
+/* Narration toggle (v1.47). Quiet until it is on — it sits next to
+ * "don't show these again", and a lit button beside a checkbox reads as
+ * the primary action when it is the least important control here.
+ *
+ * Qualified `button.` for the usual reason (see the note at
+ * .cc-queue-toolbar--mini): the base rule is `button.cli-btn` at
+ * specificity (0,1,1), so a bare `.soc-tut-narrate` loses and the
+ * button comes out full-size green as if it were the main action.
+ * Hover and focus are left alone deliberately — they should behave like
+ * every other button in the UI. */
+button.soc-tut-narrate {
+  font-size: 11px;
+  padding: 3px 8px;
+  color: var(--dim);
+  border-color: var(--frame);
+}
+button.soc-tut-narrate[hidden] { display: none; }
+
+/* Lit only AT REST. `button.cli-btn:hover` is also (0,2,1) and sits
+ * ~9400 lines earlier, so an unguarded `.is-on` wins on source order
+ * and repaints the text green ON the green hover fill — a solid block
+ * with the label invisible inside it. Excluding the two states that
+ * fill the background is what keeps hover behaving like every other
+ * button in the UI. */
+button.soc-tut-narrate.is-on:not(:hover):not(:focus-visible) {
+  color: var(--green);
+  border-color: var(--green);
+}
+
 .soc-tut-btn { margin-left: 10px; }
 
 @media (prefers-reduced-motion: reduce) {
